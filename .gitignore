@@ -1,0 +1,18 @@
+# Root .gitignore to exclude build artifacts and dependencies from Git
+
+# Flutter-specific exclusions
+driver_app/build/
+driver_app/.dart_tool/
+driver_app/.flutter-plugins
+driver_app/.flutter-plugins-dependencies
+driver_app/android/local.properties
+
+# Web-specific exclusions
+admin_dashboard/node_modules/
+admin_dashboard/dist/
+admin_dashboard/.env
+
+# General exclusions
+.DS_Store
+*.log
+pass.txt
