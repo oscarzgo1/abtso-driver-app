@@ -187,7 +187,7 @@ void onStart(ServiceInstance service) async {
     positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 2, // Check location updates frequently
+        distanceFilter: 0, // Force updates regardless of distance
       ),
     ).listen((Position position) {
       lastPosition = position;
@@ -241,7 +241,7 @@ void onStart(ServiceInstance service) async {
         'longitude': lastPosition!.longitude,
         'speed': lastPosition!.speed,
         'accuracy': lastPosition!.accuracy,
-        'recorded_at': lastPosition!.timestamp.toUtc().toIso8601String(),
+        'recorded_at': DateTime.now().toUtc().toIso8601String(),
       };
 
       if (supabaseClient != null) {
