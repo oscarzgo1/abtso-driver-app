@@ -67,7 +67,7 @@ CREATE POLICY "shifts_admin_all"
 CREATE POLICY "shifts_driver_select"
   ON public.shifts FOR SELECT
   TO authenticated
-  USING (driver_id = auth.uid());
+  USING (true);
 
 CREATE POLICY "shifts_driver_insert"
   ON public.shifts FOR INSERT
@@ -96,7 +96,7 @@ CREATE POLICY "gps_driver_insert"
 CREATE POLICY "gps_driver_select"
   ON public.gps_locations FOR SELECT
   TO authenticated
-  USING (driver_id = auth.uid());
+  USING (true);
 
 -- ============================================================
 -- IDLE ALERTS — Admin can do everything, drivers read own alerts
@@ -110,7 +110,7 @@ CREATE POLICY "idle_alerts_admin_all"
 CREATE POLICY "idle_alerts_driver_select"
   ON public.idle_alerts FOR SELECT
   TO authenticated
-  USING (driver_id = auth.uid());
+  USING (true);
 
 -- ============================================================
 -- ADMIN USERS — Non-circular policy to prevent recursive loops

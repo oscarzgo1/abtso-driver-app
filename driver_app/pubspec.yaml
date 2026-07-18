@@ -22,6 +22,7 @@ dependencies:
 
   # Location & GPS
   geolocator: ^13.0.2
+  flutter_background_service: ^5.0.7
   flutter_map: ^7.0.2
   latlong2: ^0.9.1
 

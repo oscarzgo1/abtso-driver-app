@@ -4,8 +4,12 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/theme.dart';
 import 'config/router.dart';
 
+import 'core/services/location_service.dart';
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  await LocationService.initializeService();
 
   await Supabase.initialize(
     // TODO: Replace with your Supabase project credentials

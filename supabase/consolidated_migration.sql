@@ -828,7 +828,13 @@ DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.sos_alerts;
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.shifts;
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.gps_locations;
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.idle_alerts;
   END IF;
 END $$;
 
 ALTER TABLE public.sos_alerts REPLICA IDENTITY FULL;
+ALTER TABLE public.shifts REPLICA IDENTITY FULL;
+ALTER TABLE public.gps_locations REPLICA IDENTITY FULL;
+ALTER TABLE public.idle_alerts REPLICA IDENTITY FULL;

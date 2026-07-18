@@ -16,7 +16,8 @@ import {
   Check, 
   Volume2, 
   VolumeX,
-  Compass
+  Compass,
+  RefreshCw
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -123,12 +124,28 @@ export default function App() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [alerts, setAlerts] = useState<IdleAlert[]>([]);
+  const [clearedAlertIds, setClearedAlertIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('cleared_alerts');
+      return saved ? JSON.parse(saved) : [];
+    } catch (_) {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('cleared_alerts', JSON.stringify(clearedAlertIds));
+    } catch (_) {}
+  }, [clearedAlertIds]);
   const [liveLocations, setLiveLocations] = useState<LiveLocation[]>([]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const mockProgressRef = useRef<{ [driverId: string]: { index: number; direction: 'forward' | 'backward'; waitTicks: number } }>({});
 
   // Audio Control
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const audioIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSirenPlayRef = useRef<number>(0);
 
   // Driver CRUD Forms State
   const [isAddingEmployee, setIsAddingEmployee] = useState(false);
@@ -140,7 +157,7 @@ export default function App() {
   const [newEmployeeRateProfile, setNewEmployeeRateProfile] = useState('LWR');
 
   const [rateProfiles, setRateProfiles] = useState<{ [employeeId: string]: string }>({});
-  const [weeklyOverrides, setWeeklyOverrides] = useState<any[]>([]);
+
   const [crudError, setCrudError] = useState('');
 
   // Report Filters
@@ -254,6 +271,14 @@ export default function App() {
   // ── Audio Alert Synthesizer ─────────────────────────────────
   const playAlertSiren = () => {
     if (isAudioMuted) return;
+    
+    // Cooldown check: prevent duplicate overlapping beep loops
+    const now = Date.now();
+    if (now - lastSirenPlayRef.current < 1500) {
+      return;
+    }
+    lastSirenPlayRef.current = now;
+
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
@@ -318,7 +343,8 @@ export default function App() {
   }, [alerts, isAudioMuted]);
 
   // ── Database / API Loading ──────────────────────────────────
-  const loadData = async () => {
+  const loadData = async (overrideClearedIds?: string[]) => {
+    const activeClearedIds = overrideClearedIds || clearedAlertIds;
     if (isMockMode) {
       // Mock data loader
       setEmployees(mockEmployees);
@@ -344,13 +370,14 @@ export default function App() {
 
     // Production Supabase Load
     try {
+      // Trigger idle alerts calculation in database first
+      await supabase!.rpc('detect_idle_drivers');
+
       // Fetch Drivers
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
       setEmployees(drvs || []);
 
-      // Fetch Weekly Rate Overrides
-      const { data: overridesData } = await supabase!.from('weekly_rate_overrides').select('*');
-      setWeeklyOverrides(overridesData || []);
+
 
       // Fetch Shifts
       const { data: sfts } = await supabase!
@@ -371,29 +398,33 @@ export default function App() {
         .from('idle_alerts')
         .select('*, drivers(full_name, driver_id)')
         .order('started_at', { ascending: false });
-
-      const mappedIdle = (alrts || []).map((a: any) => ({
-        ...a,
-        driver_name: a.drivers?.full_name,
-        driver_code: a.drivers?.driver_id,
-        is_sos: false,
-        timestamp: a.started_at,
-      }));
-
+ 
+      const mappedIdle = (alrts || [])
+        .filter((a: any) => !activeClearedIds.includes(a.id))
+        .map((a: any) => ({
+          ...a,
+          driver_name: a.drivers?.full_name,
+          driver_code: a.drivers?.driver_id,
+          is_sos: false,
+          timestamp: a.started_at,
+        }));
+ 
       // Fetch Active SOS Alerts
       const { data: sosAlrts } = await supabase!
         .from('sos_alerts')
         .select('*, drivers(full_name, driver_id)')
         .order('created_at', { ascending: false });
 
-      const mappedSOS = (sosAlrts || []).map((a: any) => ({
-        ...a,
-        driver_name: a.drivers?.full_name,
-        driver_code: a.drivers?.driver_id,
-        is_sos: true,
-        started_at: a.created_at, // Map for start time rendering
-        timestamp: a.created_at,
-      }));
+      const mappedSOS = (sosAlrts || [])
+        .filter((a: any) => !activeClearedIds.includes(a.id))
+        .map((a: any) => ({
+          ...a,
+          driver_name: a.drivers?.full_name,
+          driver_code: a.drivers?.driver_id,
+          is_sos: true,
+          started_at: a.created_at, // Map for start time rendering
+          timestamp: a.created_at,
+        }));
 
       // Combine and sort by timestamp descending
       const combinedAlerts = [...mappedIdle, ...mappedSOS].sort(
@@ -449,10 +480,44 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
+  const handleMapRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await loadData();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+   useEffect(() => {
     if (isAuthenticated) {
       loadData();
     }
+  }, [isAuthenticated]);
+
+  // Periodic background refresh for idle checks & offline sync
+  useEffect(() => {
+    if (isMockMode || !isAuthenticated) return;
+
+    const runIdleDetection = async () => {
+      try {
+        await supabase!.rpc('detect_idle_drivers');
+      } catch (err) {
+        console.error('Failed to trigger idle detection RPC:', err);
+      }
+    };
+
+    runIdleDetection();
+
+    // Trigger detection and reload data every 15 seconds to catch manual entries
+    const interval = setInterval(async () => {
+      await runIdleDetection();
+      await loadData();
+    }, 15000);
+
+    return () => clearInterval(interval);
   }, [isAuthenticated]);
 
   // ── Supabase Auth State Change Listener ──────────────────────────
@@ -699,6 +764,35 @@ export default function App() {
     }
   };
 
+  const handleClearAllAlerts = async () => {
+    if (isMockMode) {
+      setAlerts([]);
+      return;
+    }
+
+    try {
+      // 1. Bulk acknowledge all active alerts in the database to trigger loop guards
+      await supabase!
+        .from('idle_alerts')
+        .update({ acknowledged: true })
+        .eq('acknowledged', false);
+
+      await supabase!
+        .from('sos_alerts')
+        .update({ acknowledged: true })
+        .eq('acknowledged', false);
+
+      // 2. Add current active alert IDs to local cleared storage
+      const activeIds = alerts.map(a => a.id);
+      const nextClearedIds = [...clearedAlertIds, ...activeIds];
+      setClearedAlertIds(nextClearedIds);
+
+      loadData(nextClearedIds);
+    } catch (e) {
+      console.error('Failed to clear all alerts:', e);
+    }
+  };
+
   // ── Employee Profiles CRUD Actions ──────────────────────────
   const handleAddEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -869,70 +963,6 @@ export default function App() {
     }
   };
 
-  const handleLockRate = async (employeeId: string, weekStartDate: string, rateStr: string) => {
-    const rate = parseFloat(rateStr);
-    if (isNaN(rate) || rate <= 0) {
-      alert('Please enter a valid hourly rate.');
-      return;
-    }
-
-    if (isMockMode) {
-      setWeeklyOverrides(prev => {
-        const existing = prev.find(o => o.driver_id === employeeId && o.week_start_date === weekStartDate);
-        if (existing) {
-          return prev.map(o => o.driver_id === employeeId && o.week_start_date === weekStartDate ? { ...o, locked_rate: rate } : o);
-        } else {
-          return [...prev, { driver_id: employeeId, week_start_date: weekStartDate, locked_rate: rate }];
-        }
-      });
-      alert(`Weekly override locked at £${rate.toFixed(2)}/hr (Sandbox Mode).`);
-      return;
-    }
-
-    try {
-      const { error } = await supabase!
-        .from('weekly_rate_overrides')
-        .upsert({
-          driver_id: employeeId,
-          week_start_date: weekStartDate,
-          locked_rate: rate
-        }, { onConflict: 'driver_id,week_start_date' });
-
-      if (error) {
-        alert('Failed to lock weekly rate: ' + error.message);
-      } else {
-        await loadData();
-        alert(`Weekly rate successfully locked at £${rate.toFixed(2)}/hr.`);
-      }
-    } catch (e: any) {
-      alert('Connection error: ' + (e?.message ?? 'Failed to lock weekly rate.'));
-    }
-  };
-
-  const handleUnlockRate = async (employeeId: string, weekStartDate: string) => {
-    if (isMockMode) {
-      setWeeklyOverrides(prev => prev.filter(o => !(o.driver_id === employeeId && o.week_start_date === weekStartDate)));
-      alert('Weekly override removed (Sandbox Mode).');
-      return;
-    }
-
-    try {
-      const { error } = await supabase!
-        .from('weekly_rate_overrides')
-        .delete()
-        .eq('driver_id', employeeId)
-        .eq('week_start_date', weekStartDate);
-
-      if (error) {
-        alert('Failed to unlock weekly rate: ' + error.message);
-      } else {
-        await loadData();
-        alert('Weekly rate lock removed. Retroactive calculation restored.');
-      }
-    } catch (e: any) {
-      alert('Connection error: ' + (e?.message ?? 'Failed to unlock weekly rate.'));
-    }
-  };
 
   const handleManualClockIn = async (driverId: string) => {
     if (isMockMode) {
@@ -1180,7 +1210,8 @@ export default function App() {
             <span style="color:#888888;font-size:11px;">Speed: ${loc.speed_mph.toFixed(0)} mph</span><br>
             <span style="color:${loc.status === 'idle' ? '#CC0000' : '#2E7D32'};font-size:11px;font-weight:bold;">
               Status: ${loc.status.toUpperCase()}
-            </span>
+            </span><br>
+            <a href="https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">🗺️ View in Google Maps</a>
           </div>
         `);
         markersRef.current[loc.driver_id] = marker;
@@ -1202,7 +1233,8 @@ export default function App() {
             <div style="font-family:'Outfit',sans-serif;">
               <b style="font-size:13px;color:#CC0000;">🚨 EMERGENCY SOS BREAKDOWN</b><br>
               <b style="font-size:12px;color:#333333;">${alert.driver_name} (${alert.driver_code})</b><br>
-              <span style="color:#888888;font-size:11px;">Triggered at: ${new Date(alert.created_at as string).toLocaleTimeString()}</span>
+              <span style="color:#888888;font-size:11px;">Triggered at: ${new Date(alert.created_at as string).toLocaleTimeString()}</span><br>
+              <a href="https://www.google.com/maps/search/?api=1&query=${alert.latitude},${alert.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">🗺️ Open Google Maps</a>
             </div>
           `);
           markersRef.current[markerId] = marker;
@@ -1398,6 +1430,34 @@ export default function App() {
             {/* Live map layout */}
             <div style={{ position: 'relative', height: '480px' }}>
               <div id="live-dispatch-map" className="h-full w-full"></div>
+              
+              {/* Floating Map Refresh Button */}
+              <button
+                className={`btn btn-secondary flex align-center gap-8 ${isRefreshing ? 'loading-pulse' : ''}`}
+                style={{
+                  position: 'absolute',
+                  top: '12px',
+                  right: '12px',
+                  zIndex: 1000,
+                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+                  borderRadius: '12px',
+                  padding: '8px 16px',
+                  backgroundColor: '#FFFFFF',
+                  color: '#333333',
+                  border: '1px solid #E2E8F0',
+                  fontWeight: 900,
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                }}
+                onClick={handleMapRefresh}
+                disabled={isRefreshing}
+              >
+                <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} style={{ marginRight: '6px' }} />
+                {isRefreshing ? 'REFRESHING...' : 'REFRESH POSITIONS'}
+              </button>
             </div>
 
             {/* Live Telemetry lists */}
@@ -1427,8 +1487,20 @@ export default function App() {
                       liveLocations.map(loc => (
                         <tr key={loc.driver_id}>
                           <td className="font-bold text-primary">{loc.driver_name} ({loc.driver_code})</td>
-                          <td className="font-mono text-secondary text-sm">
-                            {loc.latitude.toFixed(6)}, {loc.longitude.toFixed(6)}
+                           <td className="font-mono text-secondary text-sm">
+                            <div className="flex align-center gap-8">
+                              <span>{loc.latitude.toFixed(6)}, {loc.longitude.toFixed(6)}</span>
+                              <a
+                                href={`https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="btn btn-secondary p-4"
+                                style={{ display: 'inline-flex', padding: '4px 8px', fontSize: '10px', minHeight: 'auto', borderRadius: '4px', gap: '4px', textDecoration: 'none' }}
+                                title="Open in Google Maps"
+                              >
+                                🗺️ View Maps
+                              </a>
+                            </div>
                           </td>
                           <td className="font-semibold">{loc.speed_mph.toFixed(0)} mph</td>
                           <td>
@@ -1453,11 +1525,26 @@ export default function App() {
             <div className="flex align-center justify-between mb-24">
               <h2 className="text-xl font-black text-primary m-0">ACTIVE GEOFENCE & IDLE ALERTS</h2>
               
-              {/* Audio controller toggle */}
-              <button className="btn btn-secondary" onClick={() => setIsAudioMuted(!isAudioMuted)}>
-                {isAudioMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                {isAudioMuted ? 'UNMUTE ALARM' : 'MUTE ALARM'}
-              </button>
+              <div className="flex gap-12">
+                {/* Audio controller toggle */}
+                <button className="btn btn-secondary" onClick={() => setIsAudioMuted(!isAudioMuted)}>
+                  {isAudioMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                  {isAudioMuted ? 'UNMUTE ALARM' : 'MUTE ALARM'}
+                </button>
+
+                {/* Clear all alerts button */}
+                <button 
+                  className="btn btn-primary" 
+                  onClick={handleClearAllAlerts}
+                  disabled={alerts.length === 0}
+                  style={{
+                    opacity: alerts.length === 0 ? 0.5 : 1,
+                    cursor: alerts.length === 0 ? 'not-allowed' : 'pointer'
+                  }}
+                >
+                  CLEAR ALERTS
+                </button>
+              </div>
             </div>
 
             <div className="flex flex-col gap-16">
@@ -1498,8 +1585,18 @@ export default function App() {
                             }</b> ({Math.round((Date.now() - new Date(alert.started_at as string).getTime()) / 60000)} minutes ago)
                       </p>
                       
-                      <p className="text-xs text-muted font-mono mt-8 mb-0">
-                        GPS Coordinate: {alert.latitude.toFixed(6)}, {alert.longitude.toFixed(6)}
+                      <p className="text-xs text-muted font-mono mt-8 mb-0 flex align-center gap-12">
+                        <span>GPS Coordinate: {alert.latitude.toFixed(6)}, {alert.longitude.toFixed(6)}</span>
+                        <a
+                          href={`https://www.google.com/maps/search/?api=1&query=${alert.latitude},${alert.longitude}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn btn-secondary p-4"
+                          style={{ display: 'inline-flex', padding: '4px 8px', fontSize: '10px', minHeight: 'auto', borderRadius: '4px', gap: '4px', textDecoration: 'none' }}
+                          title="Open location in Google Maps"
+                        >
+                          🗺️ Open in Google Maps
+                        </a>
                       </p>
                     </div>
 
@@ -1711,50 +1808,7 @@ export default function App() {
           const totalEarnings = filteredShifts.reduce((sum, s) => sum + (s.total_pay || 0), 0);
           const totalHours = filteredShifts.reduce((sum, s) => sum + (s.total_hours || 0), 0);
 
-          const selectedEmp = employees.find(e => e.id === reportEmployeeFilter);
-          const weeklySummaries: any[] = [];
-          if (selectedEmp) {
-            const empShifts = shifts.filter(s => s.driver_id === selectedEmp.id);
-            const groups: { [weekStart: string]: Shift[] } = {};
-            empShifts.forEach(s => {
-              const date = new Date(s.start_time);
-              const day = date.getDay();
-              const sunDate = new Date(date);
-              sunDate.setDate(date.getDate() - day);
-              const weekKey = sunDate.toISOString().split('T')[0];
-              if (!groups[weekKey]) groups[weekKey] = [];
-              groups[weekKey].push(s);
-            });
 
-            Object.keys(groups).forEach(weekKey => {
-              const weekShifts = groups[weekKey];
-              const completedHours = weekShifts
-                .filter(s => s.status === 'completed')
-                .reduce((sum, s) => sum + (s.total_hours || 0), 0);
-              const completedPay = weekShifts
-                .filter(s => s.status === 'completed')
-                .reduce((sum, s) => sum + (s.total_pay || 0), 0);
-              const hasWeekend = weekShifts.some(s => {
-                const d = new Date(s.start_time).getDay();
-                return d === 0 || d === 6;
-              });
-              const hasSunday = weekShifts.some(s => new Date(s.start_time).getDay() === 0);
-              const hasSaturday = weekShifts.some(s => new Date(s.start_time).getDay() === 6);
-              const lock = weeklyOverrides.find(o => o.driver_id === selectedEmp.id && o.week_start_date === weekKey);
-              
-              weeklySummaries.push({
-                weekStartDate: weekKey,
-                shifts: weekShifts,
-                completedHours,
-                completedPay,
-                hasWeekend,
-                hasSaturday,
-                hasSunday,
-                lockedRate: lock ? lock.locked_rate : null,
-              });
-            });
-            weeklySummaries.sort((a, b) => b.weekStartDate.localeCompare(a.weekStartDate));
-          }
 
           return (
             <div className="flex-1">
@@ -1809,87 +1863,7 @@ export default function App() {
                 </div>
               </div>
 
-              {selectedEmp && weeklySummaries.length > 0 && (
-                <div className="glass-panel p-20 mb-24" style={{ borderRadius: '16px', background: 'rgba(255, 255, 255, 0.9)' }}>
-                  <h3 className="text-md font-black text-primary mb-16 flex align-center gap-8">
-                    <span>📅</span> WEEK-BY-WEEK PAYROLL SUMMARY & LOCKS
-                  </h3>
-                  <div className="grid grid-cols-1 gap-12">
-                    {weeklySummaries.map(week => {
-                      const isLocked = week.lockedRate !== null;
-                      const profile = selectedEmp.rate_profile || 'LWR';
-                      const showWarning = !week.hasWeekend && !isLocked && week.completedHours > 0;
-                      const sundayRate = profile === 'HIR' ? 19 : 18;
-                      const potentialIncrease = week.completedHours * 2.00;
 
-                      return (
-                        <div key={week.weekStartDate} className="p-16 border flex flex-wrap align-center justify-between gap-16" style={{ borderRadius: '12px', background: isLocked ? 'rgba(16, 185, 129, 0.03)' : 'white', borderColor: isLocked ? '#10B981' : '#E2E8F0' }}>
-                          <div>
-                            <div className="font-black text-primary text-sm">
-                              Week: Sunday {new Date(week.weekStartDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – Saturday {(() => {
-                                const sat = new Date(week.weekStartDate);
-                                sat.setDate(sat.getDate() + 6);
-                                return sat.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-                              })()}
-                            </div>
-                            <div className="text-secondary text-xs mt-6 flex flex-wrap gap-12 font-bold">
-                              <span>Hours: <span className="text-primary">{week.completedHours.toFixed(2)} hrs</span></span>
-                              <span>Earnings: <span className="text-success">£{week.completedPay.toFixed(2)}</span></span>
-                              <span>Profile: <span className="text-primary">{profile}</span></span>
-                              {isLocked && <span className="text-success">🔒 LOCKED WEEKLY RATE: £{week.lockedRate.toFixed(2)}/hr</span>}
-                            </div>
-                            
-                            {showWarning && (
-                              <div className="text-warning text-xs font-bold mt-8 p-8 border" style={{ background: 'rgba(245, 158, 11, 0.05)', borderColor: 'rgba(245, 158, 11, 0.2)', borderRadius: '8px' }}>
-                                ⚠️ Note: If this employee works this weekend, their weekly rate will retroactively upgrade to £{sundayRate}/hr ({profile} profile), increasing total current payroll cost by £{potentialIncrease.toFixed(2)}.
-                              </div>
-                            )}
-                          </div>
-                          
-                          <div className="flex align-center gap-8">
-                            {isLocked ? (
-                              <button 
-                                className="btn btn-secondary" 
-                                style={{ padding: '6px 12px', fontSize: '11px', color: '#EF4444', borderColor: 'rgba(239, 68, 68, 0.2)', width: 'auto', minWidth: '0' }}
-                                onClick={() => handleUnlockRate(selectedEmp.id, week.weekStartDate)}
-                              >
-                                UNLOCK RATE
-                              </button>
-                            ) : (
-                              <div className="flex align-center gap-4">
-                                <input 
-                                  type="number" 
-                                  step="0.01" 
-                                  placeholder="Flat rate (e.g. 17.50)" 
-                                  className="input-field" 
-                                  style={{ width: '130px', padding: '6px 10px', fontSize: '11px', height: '32px' }}
-                                  id={`lock-rate-${week.weekStartDate}`}
-                                />
-                                <button 
-                                  className="btn btn-primary" 
-                                  style={{ padding: '6px 12px', fontSize: '11px', height: '32px', width: 'auto', minWidth: '0' }}
-                                  onClick={() => {
-                                    const el = document.getElementById(`lock-rate-${week.weekStartDate}`) as HTMLInputElement;
-                                    if (el) handleLockRate(selectedEmp.id, week.weekStartDate, el.value);
-                                  }}
-                                >
-                                  LOCK RATE
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {!selectedEmp && (
-                <div className="glass-panel p-16 mb-24 text-center text-secondary text-sm font-semibold" style={{ borderRadius: '12px', borderStyle: 'dashed' }}>
-                  ℹ️ Select a specific employee filter to view weekly retroactive profiles, override locks, and predictive cost warnings.
-                </div>
-              )}
 
               {/* Reports Payroll Data Table */}
               <div className="table-container">
