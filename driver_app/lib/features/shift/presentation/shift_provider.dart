@@ -156,6 +156,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription?.cancel();
     _positionSubscription = null;
 
+    if (kIsWeb) return;
+
     final service = FlutterBackgroundService();
     final isRunning = await service.isRunning();
     if (!isRunning) {
@@ -164,17 +166,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
     service.invoke('setAsForeground');
 
-    const url = String.fromEnvironment('SUPABASE_URL',
-        defaultValue: 'https://imfgzhxdzxkifuncowrl.supabase.co');
-    const anonKey = String.fromEnvironment('SUPABASE_ANON_KEY',
-        defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImltZmd6aHhkenhraWZ1bmNvd3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MDI5NzUsImV4cCI6MjA5OTA3ODk3NX0.AmQesj8ZH2vB6hsQ2dYi3sgiHEWK3kuNc6IWSUitt5M');
-
-    service.invoke('startTracking', {
+    service.invoke('startService', {
       'driverId': driverId,
       'shiftId': shiftId,
-      'supabaseUrl': url,
-      'supabaseAnonKey': anonKey,
-      'isMockMode': SupabaseService.isMockMode,
     });
 
     _backgroundSubscription?.cancel();
@@ -201,6 +195,11 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   Future<void> _stopBackgroundTrackingService() async {
     _backgroundSubscription?.cancel();
     _backgroundSubscription = null;
+
+    if (kIsWeb) {
+      await startRealtimeLocationListener();
+      return;
+    }
 
     final service = FlutterBackgroundService();
     service.invoke('stopService');
@@ -232,7 +231,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 2, // Trigger on 2 meters change (perfect for testing)
+        distanceFilter: kDebugMode ? 0 : 2, // If debug mode, bypass the 2-meter filter
       ),
     ).listen(
       (Position position) {
@@ -363,7 +362,15 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     final isPlayback = state.isPlaybackRunning;
 
     // FIX: Remove strict mock environment gate to let standard telemetry pings pass through
-    if (isPlayback || _lastUploadTime == null || now.difference(_lastUploadTime!) >= const Duration(minutes: 2)) {
+    // kDebugMode from package:flutter/foundation.dart bypasses the throttle.
+    final bool shouldUpload;
+    if (kDebugMode || isPlayback) {
+      shouldUpload = true;
+    } else {
+      shouldUpload = _lastUploadTime == null || now.difference(_lastUploadTime!) >= const Duration(minutes: 2);
+    }
+
+    if (shouldUpload) {
       if (!isPlayback) {
         _lastUploadTime = now;
       }
@@ -612,7 +619,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription = null;
     _backgroundSubscription?.cancel();
     _backgroundSubscription = null;
-    FlutterBackgroundService().invoke('stopService');
+    if (!kIsWeb) {
+      FlutterBackgroundService().invoke('stopService');
+    }
 
     final mockPos = Position(
       latitude: lat,
@@ -641,7 +650,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription = null;
     _backgroundSubscription?.cancel();
     _backgroundSubscription = null;
-    FlutterBackgroundService().invoke('stopService');
+    if (!kIsWeb) {
+      FlutterBackgroundService().invoke('stopService');
+    }
 
     _playbackTimer?.cancel();
     _playbackTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
@@ -815,7 +826,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription = null;
     _backgroundSubscription?.cancel();
     _backgroundSubscription = null;
-    FlutterBackgroundService().invoke('stopService');
+    if (!kIsWeb) {
+      FlutterBackgroundService().invoke('stopService');
+    }
     _playbackTimer?.cancel();
     _playbackTimer = null;
     _lastCompletedShiftId = null;
