@@ -162,6 +162,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       await service.startService();
     }
 
+    service.invoke('setAsForeground');
+
     const url = String.fromEnvironment('SUPABASE_URL',
         defaultValue: 'https://imfgzhxdzxkifuncowrl.supabase.co');
     const anonKey = String.fromEnvironment('SUPABASE_ANON_KEY',
@@ -497,6 +499,13 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         _lastCompletedShiftId = null; // Clear completed shift filter on new clock-in
         _isInternalClockOut = false; // Reset internal clock-out flag on new clock-in
         await loadActiveShift();
+        
+        final driverId = SupabaseService.currentDriverId;
+        final shiftId = state.activeShift?.id;
+        if (driverId != null && shiftId != null) {
+          await _startBackgroundTrackingService(driverId, shiftId);
+        }
+
         _lastUploadTime = null; // Clear timer to force immediate GPS upload
         await _maybeUploadPing(pos);
         _lastUploadTime = DateTime.now(); // Reset upload delay timer for subsequent pings
