@@ -9,8 +9,7 @@ import 'core/services/location_service.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await LocationService.initializeService();
-
+  // 1. First initialize the persistence/network layer to expose configuration credentials
   await Supabase.initialize(
     // TODO: Replace with your Supabase project credentials
     url: const String.fromEnvironment('SUPABASE_URL',
@@ -18,6 +17,9 @@ Future<void> main() async {
     publishableKey: const String.fromEnvironment('SUPABASE_ANON_KEY',
         defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImltZmd6aHhkenhraWZ1bmNvd3JsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MDI5NzUsImV4cCI6MjA5OTA3ODk3NX0.AmQesj8ZH2vB6hsQ2dYi3sgiHEWK3kuNc6IWSUitt5M'),
   );
+
+  // 2. Then spin up the background process execution layer
+  await LocationService.initializeService();
 
   runApp(
     const ProviderScope(

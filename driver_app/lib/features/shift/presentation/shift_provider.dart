@@ -362,12 +362,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     final now = DateTime.now();
     final isPlayback = state.isPlaybackRunning;
 
-    if (!isPlayback && !SupabaseService.isMockMode) {
-      return;
-    }
-    
-    // Bypass the 2-minute throttling limit during developer simulation playbacks
-    // so that the vehicle moves smoothly on the live admin panel map.
+    // FIX: Remove strict mock environment gate to let standard telemetry pings pass through
     if (isPlayback || _lastUploadTime == null || now.difference(_lastUploadTime!) >= const Duration(minutes: 2)) {
       if (!isPlayback) {
         _lastUploadTime = now;
