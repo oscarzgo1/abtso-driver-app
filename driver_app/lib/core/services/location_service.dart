@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../../main.dart';
 
 class LocationService {
@@ -105,15 +106,32 @@ class LocationService {
     if (kIsWeb) return;
     final service = FlutterBackgroundService();
 
-    // Configure notification channel
+    // 1. CREATE NOTIFICATION CHANNEL FIRST
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
+      'abtso_location_service',
+      'ABTSO Shift Tracking',
+      description: 'Maintains GPS tracking in the background.',
+      importance: Importance.high,
+    );
+
+    final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+        FlutterLocalNotificationsPlugin();
+
+    await flutterLocalNotificationsPlugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
+
+    // 2. CONFIGURE BACKGROUND SERVICE
     await service.configure(
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
-        autoStart: false, // Started manually when driver clocks in
+        autoStart: false,
         isForegroundMode: true,
-        notificationChannelId: 'abtso_location_service',
+        notificationChannelId: 'abtso_location_service', // Now this channel exists
         initialNotificationTitle: 'ABTSO Logistics',
         initialNotificationContent: 'Shift active. Tracking location in background.',
+        foregroundServiceNotificationId: 888, // Force a persistent ID
       ),
       iosConfiguration: IosConfiguration(
         autoStart: false,
