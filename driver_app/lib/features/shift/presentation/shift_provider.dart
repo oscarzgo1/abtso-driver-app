@@ -162,6 +162,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     final isRunning = await service.isRunning();
     if (!isRunning) {
       await service.startService();
+      // Allow background isolate to fully initialize before passing parameters
+      await Future.delayed(const Duration(seconds: 2));
     }
 
     service.invoke('setAsForeground');
