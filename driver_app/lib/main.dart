@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'config/theme.dart';
 import 'config/router.dart';
 import 'core/services/location_service.dart';
@@ -86,6 +87,11 @@ void onStart(ServiceInstance service) async {
   Position? lastPosition;
   String? driverId;
   String? shiftId;
+  
+  // Recover IDs from SharedPreferences in case of background restart
+  final prefs = await SharedPreferences.getInstance();
+  driverId = prefs.getString('active_driver_id');
+  shiftId = prefs.getString('active_shift_id');
 
   if (service is AndroidServiceInstance) {
     service.on('setAsForeground').listen((event) {
@@ -105,6 +111,10 @@ void onStart(ServiceInstance service) async {
   service.on('startService').listen((event) async {
     driverId = event?['driverId'];
     shiftId = event?['shiftId'];
+    
+    // Save IDs securely so they survive Doze mode restarts
+    if (driverId != null) await prefs.setString('active_driver_id', driverId!);
+    if (shiftId != null) await prefs.setString('active_shift_id', shiftId!);
 
     // Set notification details on Android
     if (service is AndroidServiceInstance) {
