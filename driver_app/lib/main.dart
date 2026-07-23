@@ -121,13 +121,8 @@ void onStart(ServiceInstance service) async {
     positionSubscription = GeolocatorPlatform.instance.getPositionStream(
       locationSettings: AndroidSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: kDebugMode ? 0 : 2, // If debug mode, bypass 2m filter
+        distanceFilter: kDebugMode ? 0 : 2,
         intervalDuration: const Duration(seconds: 10),
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationText: 'Shift active. Tracking location in background.',
-          notificationTitle: 'ABTSO Logistics',
-          enableWakeLock: true,
-        ),
       ),
     ).listen((Position position) {
       lastPosition = position;
