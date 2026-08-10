@@ -37,6 +37,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- Helper function: check if user is any admin (payroll or logistics)
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.user_roles 
+    WHERE (email = auth.email() OR user_id = auth.uid())
+  ) OR EXISTS (
+    SELECT 1 FROM public.admin_users 
+    WHERE email = auth.email()
+  ) OR (COALESCE(auth.email(), '') LIKE '%@abtso.co.uk');
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 -- RLS policies for user_roles
 CREATE POLICY "user_roles_read_own"
   ON public.user_roles FOR SELECT
