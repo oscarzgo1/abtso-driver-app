@@ -197,17 +197,19 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
     final double totalHours = _shifts.fold(0.0, (sum, s) => sum + ((s['total_hours'] as num?)?.toDouble() ?? 0.0));
     final double totalPay = _shifts.fold(0.0, (sum, s) => sum + ((s['total_pay'] as num?)?.toDouble() ?? 0.0));
     
-    // Derive profile-aware fallback rate
+    // Derive rate from admin-set employee_rates (fetched at login from Supabase)
     final authState = ref.watch(authProvider);
-    final rateProfile = authState.driver?['rate_profile'] ?? 'LWR';
-    final fallbackRate = rateProfile == 'HIR' ? 17.00 : 16.00;
+    final driverMap = authState.driver;
+    final monFriRate = (driverMap?['mon_fri_rate'] as num?)?.toDouble()
+        ?? (driverMap?['hourly_rate'] as num?)?.toDouble()
+        ?? 16.00;
 
     final rates = _shifts
-        .map((s) => (s['effective_rate'] as num?)?.toDouble() ?? (s['base_hourly_rate'] as num?)?.toDouble() ?? fallbackRate)
+        .map((s) => (s['effective_rate'] as num?)?.toDouble() ?? (s['base_hourly_rate'] as num?)?.toDouble() ?? monFriRate)
         .toSet()
         .toList();
     rates.sort();
-    final ratesString = rates.isNotEmpty ? rates.map((r) => '£${r.toStringAsFixed(0)}/HR').join(', ') : '£${fallbackRate.toStringAsFixed(0)}/HR';
+    final ratesString = rates.isNotEmpty ? rates.map((r) => '£${r.toStringAsFixed(2)}/HR').join(', ') : '£${monFriRate.toStringAsFixed(2)}/HR';
 
     return Scaffold(
       backgroundColor: Colors.white,

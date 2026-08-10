@@ -13,8 +13,7 @@ class SupabaseService {
         defaultValue: 'https://imfgzhxdzxkifuncowrl.supabase.co');
     return url.isEmpty ||
         (!url.startsWith('http://') && !url.startsWith('https://')) ||
-        url.toLowerCase().contains('your_project') ||
-        url.toLowerCase().contains('lewwfurlewlbgikzunsi');
+        url.toLowerCase().contains('your_project');
   }
 
   static String? _mockDriverId;
@@ -60,19 +59,48 @@ class SupabaseService {
 
       final session = response.session;
       if (session != null) {
+        final driverUuid = session.user.id;
+
+        // Fetch driver profile
         final profile = await client
             .from('drivers')
             .select()
-            .eq('id', session.user.id)
+            .eq('id', driverUuid)
             .single();
+
+        // Fetch rate breakdown from employee_rates (set by admin panel)
+        double monFriRate = profile['hourly_rate'] != null
+            ? (profile['hourly_rate'] as num).toDouble()
+            : 16.00;
+        double satRate = monFriRate + 1.0;
+        double sunRate = monFriRate + 2.0;
+
+        try {
+          final rateRow = await client
+              .from('employee_rates')
+              .select('mon_fri_rate, sat_rate, sun_rate, rate_type, agency_name')
+              .eq('driver_id', driverUuid)
+              .maybeSingle();
+
+          if (rateRow != null) {
+            monFriRate = (rateRow['mon_fri_rate'] as num?)?.toDouble() ?? monFriRate;
+            satRate = (rateRow['sat_rate'] as num?)?.toDouble() ?? satRate;
+            sunRate = (rateRow['sun_rate'] as num?)?.toDouble() ?? sunRate;
+          }
+        } catch (e) {
+          debugPrint('employee_rates fetch (non-fatal): $e');
+        }
 
         return {
           'success': true,
           'driver': {
-            'id': session.user.id,
+            'id': driverUuid,
             'driver_id': profile['driver_id'],
             'name': profile['full_name'],
-            'hourly_rate': profile['hourly_rate'] != null ? (profile['hourly_rate'] as num).toDouble() : null,
+            'hourly_rate': monFriRate,
+            'mon_fri_rate': monFriRate,
+            'sat_rate': satRate,
+            'sun_rate': sunRate,
             'rate_profile': profile['rate_profile'] ?? 'LWR',
           },
         };

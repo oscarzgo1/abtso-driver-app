@@ -1143,21 +1143,27 @@ export default function App() {
         .upsert(rateData, { onConflict: 'driver_id' });
 
       if (error) {
-        console.warn('Supabase employee_rates notice:', error.message);
-        const msg = error.message.includes('schema cache') || error.message.includes('find the table')
-          ? 'Rate profile updated locally! (Note: Execute migration 009_payroll_and_user_roles.sql on your Supabase project for remote persistence)'
-          : `Rate profile updated locally! (${error.message})`;
-        alert(msg);
+        console.warn('employee_rates upsert error:', error.message);
+        alert(`Rate save failed: ${error.message}`);
       } else {
+        // ── Sync drivers.hourly_rate so mobile app reflects the new rate ──
+        // The mobile app reads drivers.hourly_rate directly; employee_rates
+        // stores the full day-of-week breakdown. Keep both in sync.
+        await supabase!
+          .from('drivers')
+          .update({ hourly_rate: rateData.mon_fri_rate })
+          .eq('id', driverId);
+
         try {
-          // Trigger shift financials recalculation for this driver
+          // Recalculate shift financials for this driver using updated rate
           await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: driverId });
         } catch (_) {}
+
         await loadData();
-        alert('Driver rate profile updated and synced to Supabase successfully.');
+        alert(`Rate profile saved. Mon-Fri: £${rateData.mon_fri_rate}/hr • Sat: £${rateData.sat_rate}/hr • Sun: £${rateData.sun_rate}/hr. Mobile app will reflect the updated rate on the driver's next login.`);
       }
     } catch (e: any) {
-      alert('Driver rate profile updated locally.');
+      alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
     }
   };
 
