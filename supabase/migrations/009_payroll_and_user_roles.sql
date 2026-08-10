@@ -305,3 +305,34 @@ BEGIN
   );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- 8. RPC FUNCTION: RECALCULATE DRIVER SHIFTS
+CREATE OR REPLACE FUNCTION public.recalculate_driver_shifts(p_driver_id UUID)
+RETURNS JSON AS $$
+BEGIN
+  IF NOT public.is_payroll_admin() THEN
+    RETURN json_build_object(
+      'success', false,
+      'error', 'Unauthorized: Payroll Admin privileges required.'
+    );
+  END IF;
+
+  UPDATE public.shifts
+  SET updated_at = now()
+  WHERE driver_id = p_driver_id;
+
+  RETURN json_build_object(
+    'success', true,
+    'driver_id', p_driver_id
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- 9. SEED ACCOUNTS FOR USER ROLES
+INSERT INTO public.user_roles (email, role)
+VALUES 
+  ('payroll@abtso.co.uk', 'payroll_admin'),
+  ('logistics@abtso.co.uk', 'logistics')
+ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role;

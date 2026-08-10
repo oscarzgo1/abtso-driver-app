@@ -71,7 +71,7 @@ interface Employee {
   phone: string;
   is_active: boolean;
   hourly_rate?: number;
-  rate_profile: string;
+  rate_profile?: string;
   created_at?: string;
 }
 
@@ -135,7 +135,6 @@ export default function App() {
   });
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [loginRole, setLoginRole] = useState<UserRole>('payroll_admin');
   const [loginError, setLoginError] = useState('');
   const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'reports'>('live');
 
@@ -179,10 +178,6 @@ export default function App() {
   const [newEmployeeCode, setNewEmployeeCode] = useState('');
   const [newEmployeePhone, setNewEmployeePhone] = useState('');
   const [newEmployeePin, setNewEmployeePin] = useState('');
-  const [newEmployeeHourlyRate, setNewEmployeeHourlyRate] = useState('');
-  const [newEmployeeRateProfile, setNewEmployeeRateProfile] = useState('LWR');
-
-  const [rateProfiles, setRateProfiles] = useState<{ [employeeId: string]: string }>({});
   const [crudError, setCrudError] = useState('');
 
   // Employee Rates & Agency state
@@ -768,22 +763,28 @@ export default function App() {
     setLoginError('');
 
     if (isMockMode) {
-      if (loginEmail === 'admin@abtso.co.uk' && loginPassword === 'admin123') {
+      if (loginEmail === 'logistics@abtso.co.uk' && loginPassword === 'logistics123') {
         setIsAuthenticated(true);
-        setUserRole(loginRole);
+        setUserRole('logistics');
         localStorage.setItem('admin_session', 'true');
-        localStorage.setItem('admin_role', loginRole);
-        if (loginRole === 'logistics') {
-          setActiveTab('live');
-        }
+        localStorage.setItem('admin_role', 'logistics');
+        setActiveTab('live');
+      } else if (
+        (loginEmail === 'payroll@abtso.co.uk' || loginEmail === 'admin@abtso.co.uk') && 
+        (loginPassword === 'payroll123' || loginPassword === 'admin123')
+      ) {
+        setIsAuthenticated(true);
+        setUserRole('payroll_admin');
+        localStorage.setItem('admin_session', 'true');
+        localStorage.setItem('admin_role', 'payroll_admin');
       } else {
-        setLoginError('Invalid email or password. (Use admin@abtso.co.uk / admin123)');
+        setLoginError('Invalid email or password. Use payroll@abtso.co.uk / payroll123 OR logistics@abtso.co.uk / logistics123');
       }
       return;
     }
 
     try {
-      const { error } = await supabase!.auth.signInWithPassword({
+      const { data: authData, error } = await supabase!.auth.signInWithPassword({
         email: loginEmail,
         password: loginPassword,
       });
@@ -792,10 +793,27 @@ export default function App() {
         setLoginError(error.message);
       } else {
         setIsAuthenticated(true);
-        setUserRole(loginRole);
         localStorage.setItem('admin_session', 'true');
-        localStorage.setItem('admin_role', loginRole);
-        if (loginRole === 'logistics') {
+
+        // Look up role from database
+        let resolvedRole: UserRole = 'logistics';
+        if (authData.user) {
+          const { data: roleRes } = await supabase!
+            .from('user_roles')
+            .select('role')
+            .eq('user_id', authData.user.id)
+            .maybeSingle();
+
+          if (roleRes?.role) {
+            resolvedRole = roleRes.role as UserRole;
+          } else if (loginEmail.includes('payroll') || loginEmail.includes('admin')) {
+            resolvedRole = 'payroll_admin';
+          }
+        }
+
+        setUserRole(resolvedRole);
+        localStorage.setItem('admin_role', resolvedRole);
+        if (resolvedRole === 'logistics') {
           setActiveTab('live');
         }
       }
@@ -881,8 +899,6 @@ export default function App() {
         full_name: newEmployeeName.trim(),
         phone: newEmployeePhone.trim(),
         is_active: true,
-        hourly_rate: newEmployeeHourlyRate ? parseFloat(newEmployeeHourlyRate) : undefined,
-        rate_profile: newEmployeeRateProfile,
       };
       setEmployees(prev => [newEmp, ...prev]);
       setIsAddingEmployee(false);
@@ -890,8 +906,6 @@ export default function App() {
       setNewEmployeeCode('');
       setNewEmployeePhone('');
       setNewEmployeePin('');
-      setNewEmployeeHourlyRate('');
-      setNewEmployeeRateProfile('LWR');
       return;
     }
 
@@ -902,8 +916,6 @@ export default function App() {
           full_name: newEmployeeName.trim(),
           phone: newEmployeePhone.trim(),
           pin: newEmployeePin.trim(),
-          hourly_rate: newEmployeeHourlyRate ? parseFloat(newEmployeeHourlyRate) : null,
-          rate_profile: newEmployeeRateProfile,
         },
       });
 
@@ -929,8 +941,6 @@ export default function App() {
         setNewEmployeeCode('');
         setNewEmployeePhone('');
         setNewEmployeePin('');
-        setNewEmployeeHourlyRate('');
-        setNewEmployeeRateProfile('LWR');
       }
     } catch (e: any) {
       setCrudError(`Connection error: ${e?.message ?? 'Failed to add employee profile.'}`);
@@ -997,42 +1007,6 @@ export default function App() {
     } catch (e: any) {
       console.error(e);
       alert('Connection error: ' + (e?.message ?? 'Failed to remove employee.'));
-    }
-  };
-
-
-
-  const handleUpdateRateProfile = async (employeeId: string, profile: string) => {
-    // Optimistically update local employee state
-    setEmployees(prev =>
-      prev.map(e => (e.id === employeeId ? { ...e, rate_profile: profile } : e))
-    );
-
-    if (isMockMode) {
-      alert('Rate profile updated locally (Sandbox Mode).');
-      return;
-    }
-
-    try {
-      const { error } = await supabase!
-        .from('drivers')
-        .update({ rate_profile: profile })
-        .eq('id', employeeId);
-
-      if (error) {
-        console.warn('Driver rate_profile update notice:', error.message);
-        alert('Rate profile updated locally.');
-      } else {
-        try {
-          // Retroactively recalculate shifts if function exists
-          await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: employeeId });
-        } catch (_) {}
-
-        await loadData();
-        alert('Rate profile updated and synced successfully.');
-      }
-    } catch (e: any) {
-      console.warn('Connection notice:', e?.message);
     }
   };
 
@@ -1162,6 +1136,10 @@ export default function App() {
           : `Rate profile updated locally! (${error.message})`;
         alert(msg);
       } else {
+        try {
+          // Trigger shift financials recalculation for this driver
+          await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: driverId });
+        } catch (_) {}
         await loadData();
         alert('Driver rate profile updated and synced to Supabase successfully.');
       }
@@ -1460,18 +1438,6 @@ export default function App() {
               />
             </div>
 
-            <div className="input-group mb-16">
-              <span className="input-label">SYSTEM ROLE PROFILE</span>
-              <select
-                className="select-field w-full"
-                value={loginRole}
-                onChange={(e) => setLoginRole(e.target.value as UserRole)}
-              >
-                <option value="payroll_admin">Payroll Admin (Full Financial Access)</option>
-                <option value="logistics">Logistics Coordinator (Operations Only)</option>
-              </select>
-            </div>
-
             {loginError && (
               <div className="text-error text-sm font-semibold mb-16 flex align-center gap-8">
                 <ShieldAlert size={15} />
@@ -1487,7 +1453,8 @@ export default function App() {
           {isMockMode && (
             <div className="mt-24 p-12 text-center text-xs text-muted" style={{ border: '1px dashed var(--border-color)', borderRadius: '6px' }}>
               ℹ️ Sandbox Mock Mode Active<br/>
-              Use: <b className="text-secondary">admin@abtso.co.uk</b> and PIN: <b className="text-secondary">admin123</b>
+              <b>Payroll Admin:</b> <span className="text-secondary font-mono">payroll@abtso.co.uk</span> / <span className="text-secondary font-mono">payroll123</span><br/>
+              <b>Logistics:</b> <span className="text-secondary font-mono">logistics@abtso.co.uk</span> / <span className="text-secondary font-mono">logistics123</span>
             </div>
           )}
         </div>
@@ -1874,18 +1841,6 @@ export default function App() {
                         onChange={(e) => setNewEmployeePin(e.target.value)}
                       />
                     </div>
-                    <div className="input-group">
-                      <span className="input-label">RATE PROFILE</span>
-                      <select 
-                        className="select-field" 
-                        style={{ height: '40px', background: 'white', border: '1px solid #BBBBBB', borderRadius: '8px', padding: '0 12px', fontSize: '13px', fontWeight: 'bold', width: '100%' }}
-                        value={newEmployeeRateProfile} 
-                        onChange={(e) => setNewEmployeeRateProfile(e.target.value)}
-                      >
-                        <option value="LWR">LWR (Mon-Fri £16, Sat £17, Sun £18)</option>
-                        <option value="HIR">HIR (Mon-Fri £17, Sat £18, Sun £19)</option>
-                      </select>
-                    </div>
                   </div>
 
                   {crudError && (
@@ -1910,7 +1865,6 @@ export default function App() {
                     <th>Employee ID</th>
                     <th>Full Name</th>
                     <th>Phone Contact</th>
-                    <th>Rate Profile</th>
                     <th>Account Status</th>
                     <th>Current Shift</th>
                     <th>Actions</th>
@@ -1924,27 +1878,6 @@ export default function App() {
                         <td className="font-mono font-bold text-accent">{drv.driver_id}</td>
                         <td className="font-bold text-primary">{drv.full_name}</td>
                         <td className="text-secondary">{drv.phone}</td>
-                        <td>
-                          {userRole === 'payroll_admin' ? (
-                            <div className="flex align-center gap-4">
-                              <select 
-                                className="select-field font-bold" 
-                                style={{ width: '90px', padding: '4px 8px', fontSize: '12px', height: '30px', background: 'white', border: '1px solid #BBBBBB', borderRadius: '6px' }}
-                                value={rateProfiles[drv.id] !== undefined ? rateProfiles[drv.id] : (drv.rate_profile || 'LWR')} 
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setRateProfiles(prev => ({ ...prev, [drv.id]: val }));
-                                  handleUpdateRateProfile(drv.id, val);
-                                }}
-                              >
-                                <option value="LWR">LWR</option>
-                                <option value="HIR">HIR</option>
-                              </select>
-                            </div>
-                          ) : (
-                            <span className="text-muted text-xs font-semibold">— (Restricted)</span>
-                          )}
-                        </td>
                         <td>
                           <span className={`badge ${drv.is_active ? 'badge-success' : 'badge-danger'}`}>
                             {drv.is_active ? 'active' : 'inactive'}
