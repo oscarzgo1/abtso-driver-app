@@ -49,6 +49,39 @@ CREATE POLICY "user_roles_admin_all"
   USING (public.is_payroll_admin())
   WITH CHECK (public.is_payroll_admin());
 
+-- RPC Function: Assign Department Role to an Email
+CREATE OR REPLACE FUNCTION public.assign_user_department(
+  p_email TEXT,
+  p_role TEXT
+)
+RETURNS JSON AS $$
+BEGIN
+  IF NOT public.is_payroll_admin() THEN
+    RETURN json_build_object(
+      'success', false,
+      'error', 'Unauthorized: Only Payroll Admins can assign user departments.'
+    );
+  END IF;
+
+  IF p_role NOT IN ('logistics', 'payroll_admin') THEN
+    RETURN json_build_object(
+      'success', false,
+      'error', 'Invalid role. Must be logistics or payroll_admin.'
+    );
+  END IF;
+
+  INSERT INTO public.user_roles (email, role)
+  VALUES (LOWER(TRIM(p_email)), p_role)
+  ON CONFLICT (email) DO UPDATE SET role = EXCLUDED.role, updated_at = now();
+
+  RETURN json_build_object(
+    'success', true,
+    'email', LOWER(TRIM(p_email)),
+    'role', p_role
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 
 -- 2. EMPLOYEE RATES TABLE
 CREATE TABLE IF NOT EXISTS public.employee_rates (
