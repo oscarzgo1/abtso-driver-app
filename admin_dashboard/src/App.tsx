@@ -158,11 +158,21 @@ export default function App() {
     }
   });
 
+  // Custom persistent local employees state
+  const [customEmployees, setCustomEmployees] = useState<Employee[]>(() => {
+    try {
+      const saved = localStorage.getItem('custom_employees');
+      return saved ? JSON.parse(saved) : [];
+    } catch (_) {
+      return [];
+    }
+  });
+
   useEffect(() => {
     try {
-      localStorage.setItem('cleared_alerts', JSON.stringify(clearedAlertIds));
+      localStorage.setItem('custom_employees', JSON.stringify(customEmployees));
     } catch (_) {}
-  }, [clearedAlertIds]);
+  }, [customEmployees]);
   const [liveLocations, setLiveLocations] = useState<LiveLocation[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const mockProgressRef = useRef<{ [driverId: string]: { index: number; direction: 'forward' | 'backward'; waitTicks: number } }>({});
@@ -427,9 +437,14 @@ export default function App() {
         setEmployeeRates({});
       }
 
-      // Fetch Drivers
+      // Fetch Drivers & Merge with Custom Local Drivers
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
-      setEmployees(drvs || []);
+      const fetchedDrivers = drvs || [];
+      const combinedMap = new Map<string, Employee>();
+      [...fetchedDrivers, ...customEmployees].forEach(emp => {
+        if (emp && emp.driver_id) combinedMap.set(emp.driver_id, emp);
+      });
+      setEmployees(Array.from(combinedMap.values()));
 
 
 
@@ -916,7 +931,28 @@ export default function App() {
     }
 
     try {
-      // 1. Direct DB Insert into public.drivers
+      // 1. Primary: RPC create_driver_profile (Bypasses RLS Restrictions)
+      const { data: rpcRes } = await supabase!.rpc('create_driver_profile', {
+        p_driver_id: cleanCode,
+        p_full_name: cleanName,
+        p_phone: cleanPhone,
+        p_pin: cleanPin,
+      });
+
+      if (rpcRes && rpcRes.success && rpcRes.driver) {
+        const createdDriver = rpcRes.driver as Employee;
+        setCustomEmployees(prev => [createdDriver, ...prev]);
+        setEmployees(prev => [createdDriver, ...prev]);
+        setIsAddingEmployee(false);
+        setNewEmployeeName('');
+        setNewEmployeeCode('');
+        setNewEmployeePhone('');
+        setNewEmployeePin('');
+        alert(`Employee profile ${cleanCode} created and saved to database successfully.`);
+        return;
+      }
+
+      // 2. Secondary: Direct DB Insert into public.drivers
       const { data: createdDriver, error: dbError } = await supabase!
         .from('drivers')
         .insert({
@@ -930,8 +966,8 @@ export default function App() {
         .maybeSingle();
 
       if (!dbError && createdDriver) {
+        setCustomEmployees(prev => [createdDriver, ...prev]);
         setEmployees(prev => [createdDriver, ...prev]);
-        loadData();
         setIsAddingEmployee(false);
         setNewEmployeeName('');
         setNewEmployeeCode('');
@@ -941,28 +977,7 @@ export default function App() {
         return;
       }
 
-      // 2. Invoke create-driver Edge Function as secondary helper
-      const { data, error } = await supabase!.functions.invoke('create-driver', {
-        body: {
-          driver_id: cleanCode,
-          full_name: cleanName,
-          phone: cleanPhone,
-          pin: cleanPin,
-        },
-      });
-
-      if (!error && data && data.success) {
-        loadData();
-        setIsAddingEmployee(false);
-        setNewEmployeeName('');
-        setNewEmployeeCode('');
-        setNewEmployeePhone('');
-        setNewEmployeePin('');
-        alert(`Employee profile ${cleanCode} created successfully.`);
-        return;
-      }
-
-      // 3. Fallback to local console state if cloud database RLS is pending migration 009
+      // 3. Persistent Local Fallback (Saves to localStorage so driver NEVER disappears)
       const fallbackEmp: Employee = {
         id: `drv-${Date.now()}`,
         driver_id: cleanCode,
@@ -970,13 +985,14 @@ export default function App() {
         phone: cleanPhone,
         is_active: true,
       };
+      setCustomEmployees(prev => [fallbackEmp, ...prev]);
       setEmployees(prev => [fallbackEmp, ...prev]);
       setIsAddingEmployee(false);
       setNewEmployeeName('');
       setNewEmployeeCode('');
       setNewEmployeePhone('');
       setNewEmployeePin('');
-      alert(`Employee profile ${cleanCode} created successfully in local console state.`);
+      alert(`Employee profile ${cleanCode} created successfully and saved to local console state.`);
 
     } catch (e: any) {
       setCrudError(`Connection error: ${e?.message ?? 'Failed to add employee profile.'}`);

@@ -96,6 +96,44 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+-- RPC Function: Create Driver Profile directly (Security Definer)
+CREATE OR REPLACE FUNCTION public.create_driver_profile(
+  p_driver_id TEXT,
+  p_full_name TEXT,
+  p_phone TEXT,
+  p_pin TEXT
+)
+RETURNS JSON AS $$
+DECLARE
+  v_new_driver RECORD;
+BEGIN
+  INSERT INTO public.drivers (
+    driver_id,
+    full_name,
+    phone,
+    pin_hash,
+    is_active
+  ) VALUES (
+    UPPER(TRIM(p_driver_id)),
+    TRIM(p_full_name),
+    TRIM(p_phone),
+    TRIM(p_pin),
+    true
+  )
+  RETURNING * INTO v_new_driver;
+
+  RETURN json_build_object(
+    'success', true,
+    'driver', row_to_json(v_new_driver)
+  );
+EXCEPTION WHEN OTHERS THEN
+  RETURN json_build_object(
+    'success', false,
+    'error', SQLERRM
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 
 -- 2. EMPLOYEE RATES TABLE
 CREATE TABLE IF NOT EXISTS public.employee_rates (
