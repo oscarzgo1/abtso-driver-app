@@ -158,21 +158,27 @@ export default function App() {
     }
   });
 
-  // Custom persistent local employees state
-  const [customEmployees, setCustomEmployees] = useState<Employee[]>(() => {
+  // Custom persistent local employees — stored in a ref so loadData closures never go stale
+  const customEmployeesRef = useRef<Employee[]>([]);
+  // Initialise from localStorage (runs once on component mount)
+  if (customEmployeesRef.current.length === 0) {
     try {
       const saved = localStorage.getItem('custom_employees');
-      return saved ? JSON.parse(saved) : [];
-    } catch (_) {
-      return [];
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('custom_employees', JSON.stringify(customEmployees));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          customEmployeesRef.current = parsed;
+        }
+      }
     } catch (_) {}
-  }, [customEmployees]);
+  }
+
+  const saveCustomEmployees = (list: Employee[]) => {
+    customEmployeesRef.current = list;
+    try {
+      localStorage.setItem('custom_employees', JSON.stringify(list));
+    } catch (_) {}
+  };
   const [liveLocations, setLiveLocations] = useState<LiveLocation[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const mockProgressRef = useRef<{ [driverId: string]: { index: number; direction: 'forward' | 'backward'; waitTicks: number } }>({});
@@ -437,13 +443,14 @@ export default function App() {
         setEmployeeRates({});
       }
 
-      // Fetch Drivers & Merge with Custom Local Drivers
+      // Fetch Drivers & Merge with Custom Local Drivers (always use ref — never stale)
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
       const fetchedDrivers = drvs || [];
+      const localExtras = customEmployeesRef.current || [];
       const combinedMap = new Map<string, Employee>();
-      [...fetchedDrivers, ...customEmployees].forEach(emp => {
-        if (emp && emp.driver_id) combinedMap.set(emp.driver_id, emp);
-      });
+      // DB records win over local copies (in case driver was saved to DB)
+      localExtras.forEach(emp => { if (emp && emp.driver_id) combinedMap.set(emp.driver_id, emp); });
+      fetchedDrivers.forEach((emp: Employee) => { if (emp && emp.driver_id) combinedMap.set(emp.driver_id, emp); });
       setEmployees(Array.from(combinedMap.values()));
 
 
@@ -941,8 +948,13 @@ export default function App() {
 
       if (rpcRes && rpcRes.success && rpcRes.driver) {
         const createdDriver = rpcRes.driver as Employee;
-        setCustomEmployees(prev => [createdDriver, ...prev]);
-        setEmployees(prev => [createdDriver, ...prev]);
+        const updated = [createdDriver, ...(customEmployeesRef.current || [])];
+        saveCustomEmployees(updated);
+        setEmployees(prev => {
+          const m = new Map(prev.map(e => [e.driver_id, e]));
+          m.set(createdDriver.driver_id, createdDriver);
+          return Array.from(m.values());
+        });
         setIsAddingEmployee(false);
         setNewEmployeeName('');
         setNewEmployeeCode('');
@@ -966,8 +978,13 @@ export default function App() {
         .maybeSingle();
 
       if (!dbError && createdDriver) {
-        setCustomEmployees(prev => [createdDriver, ...prev]);
-        setEmployees(prev => [createdDriver, ...prev]);
+        const updated = [createdDriver, ...(customEmployeesRef.current || [])];
+        saveCustomEmployees(updated);
+        setEmployees(prev => {
+          const m = new Map(prev.map(e => [e.driver_id, e]));
+          m.set(createdDriver.driver_id, createdDriver);
+          return Array.from(m.values());
+        });
         setIsAddingEmployee(false);
         setNewEmployeeName('');
         setNewEmployeeCode('');
@@ -977,7 +994,7 @@ export default function App() {
         return;
       }
 
-      // 3. Persistent Local Fallback (Saves to localStorage so driver NEVER disappears)
+      // 3. Persistent Local Fallback — saved to ref+localStorage, NEVER wiped by loadData
       const fallbackEmp: Employee = {
         id: `drv-${Date.now()}`,
         driver_id: cleanCode,
@@ -985,14 +1002,19 @@ export default function App() {
         phone: cleanPhone,
         is_active: true,
       };
-      setCustomEmployees(prev => [fallbackEmp, ...prev]);
-      setEmployees(prev => [fallbackEmp, ...prev]);
+      const updated = [fallbackEmp, ...(customEmployeesRef.current || [])];
+      saveCustomEmployees(updated);
+      setEmployees(prev => {
+        const m = new Map(prev.map(e => [e.driver_id, e]));
+        m.set(fallbackEmp.driver_id, fallbackEmp);
+        return Array.from(m.values());
+      });
       setIsAddingEmployee(false);
       setNewEmployeeName('');
       setNewEmployeeCode('');
       setNewEmployeePhone('');
       setNewEmployeePin('');
-      alert(`Employee profile ${cleanCode} created successfully and saved to local console state.`);
+      alert(`Employee profile ${cleanCode} saved locally. Note: Apply migration 009 in Supabase SQL Editor to persist permanently in the database.`);
 
     } catch (e: any) {
       setCrudError(`Connection error: ${e?.message ?? 'Failed to add employee profile.'}`);
