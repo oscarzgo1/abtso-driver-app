@@ -139,6 +139,13 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'reports'>('live');
 
+  // Route Guard: enforce that logistics role cannot access rates or reports tabs
+  useEffect(() => {
+    if (userRole === 'logistics' && (activeTab === 'rates' || activeTab === 'reports')) {
+      setActiveTab('live');
+    }
+  }, [userRole, activeTab]);
+
   // Database States
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
@@ -407,25 +414,23 @@ export default function App() {
       // Trigger idle alerts calculation in database first
       await supabase!.rpc('detect_idle_drivers');
 
-      // Fetch User Role
-      const { data: { user } } = await supabase!.auth.getUser();
-      if (user) {
-        const { data: roleRes } = await supabase!.from('user_roles').select('role').eq('user_id', user.id).maybeSingle();
-        if (roleRes?.role) {
-          setUserRole(roleRes.role as UserRole);
-          localStorage.setItem('admin_role', roleRes.role);
-        }
-      }
+      // Sync session user role
+      const activeRole = (localStorage.getItem('admin_role') as UserRole) || userRole;
+      setUserRole(activeRole);
 
-      // Fetch Employee Rates if authorized
-      try {
-        const { data: ratesRes } = await supabase!.from('employee_rates').select('*');
-        if (ratesRes) {
-          const map: Record<string, EmployeeRate> = {};
-          ratesRes.forEach((r: any) => { map[r.driver_id] = r; });
-          setEmployeeRates(map);
-        }
-      } catch (_) {}
+      // Fetch Employee Rates ONLY if user is payroll_admin
+      if (activeRole === 'payroll_admin') {
+        try {
+          const { data: ratesRes } = await supabase!.from('employee_rates').select('*');
+          if (ratesRes) {
+            const map: Record<string, EmployeeRate> = {};
+            ratesRes.forEach((r: any) => { map[r.driver_id] = r; });
+            setEmployeeRates(map);
+          }
+        } catch (_) {}
+      } else {
+        setEmployeeRates({});
+      }
 
       // Fetch Drivers
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
@@ -765,7 +770,12 @@ export default function App() {
     if (isMockMode) {
       if (loginEmail === 'admin@abtso.co.uk' && loginPassword === 'admin123') {
         setIsAuthenticated(true);
+        setUserRole(loginRole);
         localStorage.setItem('admin_session', 'true');
+        localStorage.setItem('admin_role', loginRole);
+        if (loginRole === 'logistics') {
+          setActiveTab('live');
+        }
       } else {
         setLoginError('Invalid email or password. (Use admin@abtso.co.uk / admin123)');
       }
@@ -782,7 +792,12 @@ export default function App() {
         setLoginError(error.message);
       } else {
         setIsAuthenticated(true);
+        setUserRole(loginRole);
         localStorage.setItem('admin_session', 'true');
+        localStorage.setItem('admin_role', loginRole);
+        if (loginRole === 'logistics') {
+          setActiveTab('live');
+        }
       }
     } catch (_) {
       setLoginError('Authentication connection failure.');
@@ -795,6 +810,8 @@ export default function App() {
     }
     setIsAuthenticated(false);
     localStorage.removeItem('admin_session');
+    localStorage.removeItem('admin_role');
+    setActiveTab('live');
   };
 
   // ── Alert Acknowledgement ───────────────────────────────────
@@ -1584,14 +1601,25 @@ export default function App() {
             <span className="text-xs text-muted">Calculated shifts</span>
           </div>
 
-          <div className="glass-card p-16">
-            <div className="flex align-center justify-between">
-              <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>GROSS PAYROLL</span>
-              <FileSpreadsheet size={16} className="text-warning" />
+          {userRole === 'payroll_admin' ? (
+            <div className="glass-card p-16">
+              <div className="flex align-center justify-between">
+                <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>GROSS PAYROLL</span>
+                <FileSpreadsheet size={16} className="text-warning" />
+              </div>
+              <h2 className="text-2xl font-black mt-8 text-primary">£{totalWeeklyPayout.toFixed(2)}</h2>
+              <span className="text-xs text-muted">Calculated gross pay</span>
             </div>
-            <h2 className="text-2xl font-black mt-8 text-primary">£{totalWeeklyPayout.toFixed(2)}</h2>
-            <span className="text-xs text-muted">Calculated gross pay</span>
-          </div>
+          ) : (
+            <div className="glass-card p-16">
+              <div className="flex align-center justify-between">
+                <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>ACTIVE DEPOTS</span>
+                <Compass size={16} className="text-accent" />
+              </div>
+              <h2 className="text-2xl font-black mt-8 text-primary">2 STATIONS</h2>
+              <span className="text-xs text-muted">Rossington & Wheatley</span>
+            </div>
+          )}
         </div>
 
         {/* ── TAB 1: Live Dispatch Board ───────────────────── */}
@@ -1897,21 +1925,25 @@ export default function App() {
                         <td className="font-bold text-primary">{drv.full_name}</td>
                         <td className="text-secondary">{drv.phone}</td>
                         <td>
-                          <div className="flex align-center gap-4">
-                            <select 
-                              className="select-field font-bold" 
-                              style={{ width: '90px', padding: '4px 8px', fontSize: '12px', height: '30px', background: 'white', border: '1px solid #BBBBBB', borderRadius: '6px' }}
-                              value={rateProfiles[drv.id] !== undefined ? rateProfiles[drv.id] : (drv.rate_profile || 'LWR')} 
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setRateProfiles(prev => ({ ...prev, [drv.id]: val }));
-                                handleUpdateRateProfile(drv.id, val);
-                              }}
-                            >
-                              <option value="LWR">LWR</option>
-                              <option value="HIR">HIR</option>
-                            </select>
-                          </div>
+                          {userRole === 'payroll_admin' ? (
+                            <div className="flex align-center gap-4">
+                              <select 
+                                className="select-field font-bold" 
+                                style={{ width: '90px', padding: '4px 8px', fontSize: '12px', height: '30px', background: 'white', border: '1px solid #BBBBBB', borderRadius: '6px' }}
+                                value={rateProfiles[drv.id] !== undefined ? rateProfiles[drv.id] : (drv.rate_profile || 'LWR')} 
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setRateProfiles(prev => ({ ...prev, [drv.id]: val }));
+                                  handleUpdateRateProfile(drv.id, val);
+                                }}
+                              >
+                                <option value="LWR">LWR</option>
+                                <option value="HIR">HIR</option>
+                              </select>
+                            </div>
+                          ) : (
+                            <span className="text-muted text-xs font-semibold">— (Restricted)</span>
+                          )}
                         </td>
                         <td>
                           <span className={`badge ${drv.is_active ? 'badge-success' : 'badge-danger'}`}>
