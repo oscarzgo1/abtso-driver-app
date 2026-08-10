@@ -40,13 +40,13 @@ const routeWaypoints = [
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-const isMockMode = 
-  !supabaseUrl || 
-  (!supabaseUrl.startsWith('http://') && !supabaseUrl.startsWith('https://')) ||
-  supabaseUrl.includes('YOUR_PROJECT') || 
-  supabaseUrl.includes('lewwfurlewlbgikzunsi');
-let supabase: SupabaseClient | null = null;
+// Mock mode ONLY when env vars are genuinely missing — never block real project URLs
+const isMockMode =
+  !supabaseUrl ||
+  !supabaseUrl.startsWith('http') ||
+  supabaseUrl.includes('YOUR_PROJECT');
 
+let supabase: SupabaseClient | null = null;
 if (!isMockMode) {
   supabase = createClient(supabaseUrl, supabaseAnonKey);
 }
@@ -158,27 +158,8 @@ export default function App() {
     }
   });
 
-  // Custom persistent local employees — stored in a ref so loadData closures never go stale
-  const customEmployeesRef = useRef<Employee[]>([]);
-  // Initialise from localStorage (runs once on component mount)
-  if (customEmployeesRef.current.length === 0) {
-    try {
-      const saved = localStorage.getItem('custom_employees');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          customEmployeesRef.current = parsed;
-        }
-      }
-    } catch (_) {}
-  }
 
-  const saveCustomEmployees = (list: Employee[]) => {
-    customEmployeesRef.current = list;
-    try {
-      localStorage.setItem('custom_employees', JSON.stringify(list));
-    } catch (_) {}
-  };
+
   const [liveLocations, setLiveLocations] = useState<LiveLocation[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const mockProgressRef = useRef<{ [driverId: string]: { index: number; direction: 'forward' | 'backward'; waitTicks: number } }>({});
@@ -443,15 +424,9 @@ export default function App() {
         setEmployeeRates({});
       }
 
-      // Fetch Drivers & Merge with Custom Local Drivers (always use ref — never stale)
+      // Fetch Drivers directly from Supabase — single source of truth
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
-      const fetchedDrivers = drvs || [];
-      const localExtras = customEmployeesRef.current || [];
-      const combinedMap = new Map<string, Employee>();
-      // DB records win over local copies (in case driver was saved to DB)
-      localExtras.forEach(emp => { if (emp && emp.driver_id) combinedMap.set(emp.driver_id, emp); });
-      fetchedDrivers.forEach((emp: Employee) => { if (emp && emp.driver_id) combinedMap.set(emp.driver_id, emp); });
-      setEmployees(Array.from(combinedMap.values()));
+      setEmployees(drvs || []);
 
 
 
@@ -909,8 +884,18 @@ export default function App() {
     e.preventDefault();
     setCrudError('');
 
-    if (!newEmployeeName || !newEmployeeCode || !newEmployeePhone || !newEmployeePin) {
+    if (!newEmployeeName.trim() || !newEmployeeCode.trim() || !newEmployeePhone.trim() || !newEmployeePin.trim()) {
       setCrudError('Please fill in all employee fields.');
+      return;
+    }
+
+    if (newEmployeePin.trim().length < 6) {
+      setCrudError('PIN must be at least 6 characters.');
+      return;
+    }
+
+    if (isMockMode || !supabase) {
+      setCrudError('No Supabase connection. Check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env file.');
       return;
     }
 
@@ -919,67 +904,38 @@ export default function App() {
     const cleanPhone = newEmployeePhone.trim();
     const cleanPin = newEmployeePin.trim();
 
-    if (isMockMode) {
-      const newEmp: Employee = {
-        id: `drv-${Date.now()}`,
-        driver_id: cleanCode,
-        full_name: cleanName,
-        phone: cleanPhone,
-        is_active: true,
-      };
-      setEmployees(prev => [newEmp, ...prev]);
-      setIsAddingEmployee(false);
-      setNewEmployeeName('');
-      setNewEmployeeCode('');
-      setNewEmployeePhone('');
-      setNewEmployeePin('');
-      alert(`Employee profile ${cleanCode} created successfully.`);
-      return;
-    }
-
     try {
-      // 1. Primary: RPC create_driver_profile (Bypasses RLS Restrictions)
-      const { data: rpcRes } = await supabase!.rpc('create_driver_profile', {
-        p_driver_id: cleanCode,
-        p_full_name: cleanName,
-        p_phone: cleanPhone,
-        p_pin: cleanPin,
-      });
-
-      if (rpcRes && rpcRes.success && rpcRes.driver) {
-        const createdDriver = rpcRes.driver as Employee;
-        const updated = [createdDriver, ...(customEmployeesRef.current || [])];
-        saveCustomEmployees(updated);
-        setEmployees(prev => {
-          const m = new Map(prev.map(e => [e.driver_id, e]));
-          m.set(createdDriver.driver_id, createdDriver);
-          return Array.from(m.values());
-        });
-        setIsAddingEmployee(false);
-        setNewEmployeeName('');
-        setNewEmployeeCode('');
-        setNewEmployeePhone('');
-        setNewEmployeePin('');
-        alert(`Employee profile ${cleanCode} created and saved to database successfully.`);
-        return;
-      }
-
-      // 2. Secondary: Direct DB Insert into public.drivers
-      const { data: createdDriver, error: dbError } = await supabase!
-        .from('drivers')
-        .insert({
+      const { data, error } = await supabase.functions.invoke('create-driver', {
+        body: {
           driver_id: cleanCode,
           full_name: cleanName,
           phone: cleanPhone,
-          pin_hash: cleanPin,
-          is_active: true,
-        })
-        .select()
-        .maybeSingle();
+          pin: cleanPin,
+        },
+      });
 
-      if (!dbError && createdDriver) {
-        const updated = [createdDriver, ...(customEmployeesRef.current || [])];
-        saveCustomEmployees(updated);
+      // Parse error body if Supabase wrapped it
+      if (error) {
+        let msg = error.message;
+        try {
+          const ctx = error as any;
+          if (ctx?.context?.json) {
+            const body = await ctx.context.json();
+            if (body?.error) msg = body.error;
+          }
+        } catch (_) {}
+        setCrudError(`Failed to create employee: ${msg}`);
+        return;
+      }
+
+      if (data?.error) {
+        setCrudError(`Failed to create employee: ${data.error}`);
+        return;
+      }
+
+      if (data?.success && data?.driver) {
+        // Successfully persisted in Supabase — update UI from real response
+        const createdDriver = data.driver as Employee;
         setEmployees(prev => {
           const m = new Map(prev.map(e => [e.driver_id, e]));
           m.set(createdDriver.driver_id, createdDriver);
@@ -990,36 +946,19 @@ export default function App() {
         setNewEmployeeCode('');
         setNewEmployeePhone('');
         setNewEmployeePin('');
-        alert(`Employee profile ${cleanCode} created successfully.`);
+        // Refresh from DB to get server-assigned fields
+        loadData();
         return;
       }
 
-      // 3. Persistent Local Fallback — saved to ref+localStorage, NEVER wiped by loadData
-      const fallbackEmp: Employee = {
-        id: `drv-${Date.now()}`,
-        driver_id: cleanCode,
-        full_name: cleanName,
-        phone: cleanPhone,
-        is_active: true,
-      };
-      const updated = [fallbackEmp, ...(customEmployeesRef.current || [])];
-      saveCustomEmployees(updated);
-      setEmployees(prev => {
-        const m = new Map(prev.map(e => [e.driver_id, e]));
-        m.set(fallbackEmp.driver_id, fallbackEmp);
-        return Array.from(m.values());
-      });
-      setIsAddingEmployee(false);
-      setNewEmployeeName('');
-      setNewEmployeeCode('');
-      setNewEmployeePhone('');
-      setNewEmployeePin('');
-      alert(`Employee profile ${cleanCode} saved locally. Note: Apply migration 009 in Supabase SQL Editor to persist permanently in the database.`);
-
+      setCrudError('Unexpected response from server. Please try again.');
     } catch (e: any) {
-      setCrudError(`Connection error: ${e?.message ?? 'Failed to add employee profile.'}`);
+      setCrudError(`Connection error: ${e?.message ?? 'Failed to create employee.'}`);
     }
   };
+
+
+
 
   const toggleEmployeeStatus = async (employeeId: string, currentIsActive: boolean) => {
     const nextActive = !currentIsActive;
