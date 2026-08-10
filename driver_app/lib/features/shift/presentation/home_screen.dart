@@ -130,6 +130,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               _buildSummaryRow(context, 'BASE RATE', '${currencyFormat.format(completedShift.effectiveRate ?? 16.00)}/HR'),
               const Divider(height: 24, thickness: 1),
               _buildSummaryRow(context, 'TOTAL HOURS', '${completedShift.totalHours?.toStringAsFixed(2) ?? '0.00'} HRS'),
+              if (completedShift.nightOutAmount > 0 || completedShift.nightOutStatus == 'approved') ...[
+                const Divider(height: 24, thickness: 1),
+                _buildSummaryRow(
+                  context,
+                  'NIGHT OUT ALLOWANCE',
+                  currencyFormat.format(completedShift.nightOutAmount > 0 ? completedShift.nightOutAmount : 25.00),
+                ),
+              ],
               const Divider(height: 24, thickness: 1),
               _buildSummaryRow(
                 context, 
@@ -611,6 +619,94 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       ),
                     )
                   else
+                    if (isClockedIn) ...[
+                      if (state.activeShift?.nightOutStatus == 'pending') ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF451A03) : const Color(0xFFFEF3C7),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.bedtime_rounded, color: Color(0xFFF59E0B), size: 18),
+                              const SizedBox(width: 8),
+                              Text(
+                                'NIGHT OUT REQUESTED (PENDING)',
+                                style: GoogleFonts.outfit(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 11,
+                                  color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ] else if (state.activeShift?.nightOutStatus == 'approved') ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: isDark ? const Color(0xFF064E3B) : const Color(0xFFDCFCE7),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFF22C55E), width: 1.5),
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.check_circle_rounded, color: Color(0xFF22C55E), size: 18),
+                              const SizedBox(width: 8),
+                              Text(
+                                'NIGHT OUT APPROVED (+£25.00)',
+                                style: GoogleFonts.outfit(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 11,
+                                  color: isDark ? const Color(0xFFA7F3D0) : const Color(0xFF15803D),
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ] else ...[
+                        OutlinedButton.icon(
+                          onPressed: state.isLoading
+                              ? null
+                              : () async {
+                                  final messenger = ScaffoldMessenger.of(context);
+                                  final success = await ref.read(shiftProvider.notifier).requestNightOut();
+                                  if (success) {
+                                    messenger.showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Night Out request submitted successfully!'),
+                                        backgroundColor: Color(0xFFF59E0B),
+                                      ),
+                                    );
+                                  }
+                                },
+                          icon: const Icon(Icons.bedtime_outlined, size: 18, color: Color(0xFFF59E0B)),
+                          label: Text(
+                            'REQUEST NIGHT OUT',
+                            style: GoogleFonts.outfit(
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                              color: isDark ? Colors.white : Colors.black87,
+                              letterSpacing: 0.5,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            side: const BorderSide(color: Color(0xFFF59E0B), width: 1.5),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+                    ],
                     ElevatedButton(
                       onPressed: state.isLoading
                           ? null

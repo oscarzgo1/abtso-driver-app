@@ -13,6 +13,8 @@ class DriverShift {
   final double? totalPay;
   final int? weekNumber;
   final int? weekYear;
+  final String nightOutStatus;
+  final double nightOutAmount;
 
   DriverShift({
     required this.id,
@@ -29,6 +31,8 @@ class DriverShift {
     this.totalPay,
     this.weekNumber,
     this.weekYear,
+    this.nightOutStatus = 'none',
+    this.nightOutAmount = 0.0,
   });
 
   factory DriverShift.fromJson(Map<String, dynamic> json) {
@@ -49,6 +53,8 @@ class DriverShift {
       totalPay: (json['total_pay'] as num?)?.toDouble(),
       weekNumber: (json['week_number'] as num?)?.toInt(),
       weekYear: (json['week_year'] as num?)?.toInt(),
+      nightOutStatus: (json['night_out_status'] as String?) ?? 'none',
+      nightOutAmount: (json['night_out_amount'] as num?)?.toDouble() ?? 0.0,
     );
   }
 
@@ -68,6 +74,8 @@ class DriverShift {
       'total_pay': totalPay,
       'week_number': weekNumber,
       'week_year': weekYear,
+      'night_out_status': nightOutStatus,
+      'night_out_amount': nightOutAmount,
     };
   }
 }

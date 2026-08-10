@@ -17,7 +17,8 @@ import {
   Volume2, 
   VolumeX,
   Compass,
-  RefreshCw
+  RefreshCw,
+  DollarSign
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -50,7 +51,19 @@ if (!isMockMode) {
   supabase = createClient(supabaseUrl, supabaseAnonKey);
 }
 
-// Interfaces
+// Interfaces & Role Types
+export type UserRole = 'logistics' | 'payroll_admin';
+
+export interface EmployeeRate {
+  id?: string;
+  driver_id: string;
+  rate_type: 'Hourly Sat/Sun separate' | 'Fixed weekly';
+  mon_fri_rate: number;
+  sat_rate: number;
+  sun_rate: number;
+  agency_name: string;
+}
+
 interface Employee {
   id: string;
   driver_id: string;
@@ -97,6 +110,8 @@ interface Shift {
   total_pay: number | null;
   week_number: number;
   week_year?: number;
+  night_out_status?: 'none' | 'pending' | 'approved' | 'rejected';
+  night_out_amount?: number;
   created_at?: string;
 }
 
@@ -115,10 +130,14 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     return localStorage.getItem('admin_session') === 'true';
   });
+  const [userRole, setUserRole] = useState<UserRole>(() => {
+    return (localStorage.getItem('admin_role') as UserRole) || 'payroll_admin';
+  });
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [loginRole, setLoginRole] = useState<UserRole>('payroll_admin');
   const [loginError, setLoginError] = useState('');
-  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'reports'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'reports'>('live');
 
   // Database States
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -157,8 +176,23 @@ export default function App() {
   const [newEmployeeRateProfile, setNewEmployeeRateProfile] = useState('LWR');
 
   const [rateProfiles, setRateProfiles] = useState<{ [employeeId: string]: string }>({});
-
   const [crudError, setCrudError] = useState('');
+
+  // Employee Rates & Agency state
+  const [employeeRates, setEmployeeRates] = useState<{ [driverId: string]: EmployeeRate }>({
+    'drv-1': { driver_id: 'drv-1', rate_type: 'Hourly Sat/Sun separate', mon_fri_rate: 16.00, sat_rate: 17.00, sun_rate: 18.00, agency_name: 'LWR' },
+    'drv-2': { driver_id: 'drv-2', rate_type: 'Hourly Sat/Sun separate', mon_fri_rate: 16.50, sat_rate: 17.50, sun_rate: 18.50, agency_name: 'PMP' },
+    'drv-3': { driver_id: 'drv-3', rate_type: 'Fixed weekly', mon_fri_rate: 18.00, sat_rate: 18.00, sun_rate: 18.00, agency_name: 'Direct' },
+  });
+  const [reportAgencyFilter, setReportAgencyFilter] = useState('all');
+
+  // Rate Editing state
+  const [editingRateDriverId, setEditingRateDriverId] = useState<string | null>(null);
+  const [editMonFriRate, setEditMonFriRate] = useState<string>('16.00');
+  const [editSatRate, setEditSatRate] = useState<string>('17.00');
+  const [editSunRate, setEditSunRate] = useState<string>('18.00');
+  const [editRateType, setEditRateType] = useState<'Hourly Sat/Sun separate' | 'Fixed weekly'>('Hourly Sat/Sun separate');
+  const [editAgencyName, setEditAgencyName] = useState<string>('Direct');
 
   // Report Filters
   const [reportEmployeeFilter, setReportEmployeeFilter] = useState('all');
@@ -372,6 +406,26 @@ export default function App() {
     try {
       // Trigger idle alerts calculation in database first
       await supabase!.rpc('detect_idle_drivers');
+
+      // Fetch User Role
+      const { data: { user } } = await supabase!.auth.getUser();
+      if (user) {
+        const { data: roleRes } = await supabase!.from('user_roles').select('role').eq('user_id', user.id).maybeSingle();
+        if (roleRes?.role) {
+          setUserRole(roleRes.role as UserRole);
+          localStorage.setItem('admin_role', roleRes.role);
+        }
+      }
+
+      // Fetch Employee Rates if authorized
+      try {
+        const { data: ratesRes } = await supabase!.from('employee_rates').select('*');
+        if (ratesRes) {
+          const map: Record<string, EmployeeRate> = {};
+          ratesRes.forEach((r: any) => { map[r.driver_id] = r; });
+          setEmployeeRates(map);
+        }
+      } catch (_) {}
 
       // Fetch Drivers
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
@@ -1057,12 +1111,82 @@ export default function App() {
     }
   };
 
+  // ── Rates & Night Out Handlers ────────────────────────────────
+  const handleSaveRate = async (driverId: string) => {
+    const rateData: EmployeeRate = {
+      driver_id: driverId,
+      rate_type: editRateType,
+      mon_fri_rate: parseFloat(editMonFriRate) || 16.00,
+      sat_rate: parseFloat(editSatRate) || 17.00,
+      sun_rate: parseFloat(editSunRate) || 18.00,
+      agency_name: editAgencyName || 'Direct',
+    };
+
+    if (isMockMode) {
+      setEmployeeRates(prev => ({ ...prev, [driverId]: rateData }));
+      setEditingRateDriverId(null);
+      alert('Driver rate profile updated successfully (Mock Mode).');
+      return;
+    }
+
+    try {
+      const { error } = await supabase!
+        .from('employee_rates')
+        .upsert(rateData, { onConflict: 'driver_id' });
+
+      if (error) {
+        alert('Failed to save rate profile: ' + error.message);
+      } else {
+        setEmployeeRates(prev => ({ ...prev, [driverId]: rateData }));
+        setEditingRateDriverId(null);
+        await loadData();
+        alert('Driver rate profile updated successfully.');
+      }
+    } catch (e: any) {
+      alert('Error saving rate profile: ' + (e?.message || 'Unknown error'));
+    }
+  };
+
+  const handleUpdateNightOutStatus = async (shiftId: string, status: 'approved' | 'rejected' | 'none', amount = 25.00) => {
+    if (isMockMode) {
+      setShifts(prev =>
+        prev.map(s => (s.id === shiftId ? { ...s, night_out_status: status, night_out_amount: status === 'approved' ? amount : 0 } : s))
+      );
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase!.rpc('update_night_out_status', {
+        p_shift_id: shiftId,
+        p_status: status,
+        p_amount: amount,
+      });
+
+      if (error) {
+        alert('Failed to update Night Out status: ' + error.message);
+      } else if (data && data.success === false) {
+        alert('Night Out Error: ' + data.error);
+      } else {
+        await loadData();
+      }
+    } catch (e: any) {
+      alert('Connection error: ' + (e?.message || 'Failed to update Night Out status.'));
+    }
+  };
+
   // ── CSV & Excel Export Functions ────────────────────────────
   const getFilteredShifts = () => {
     return shifts.filter(s => {
       // Employee Filter
       if (reportEmployeeFilter !== 'all' && s.driver_id !== reportEmployeeFilter) return false;
       
+      // Agency Filter
+      if (reportAgencyFilter !== 'all') {
+        const drvRate = employeeRates[s.driver_id];
+        const agency = drvRate?.agency_name || 'Direct';
+        if (agency !== reportAgencyFilter) return false;
+      }
+
       // Date Range Filter
       if (reportDateStart) {
         const start = new Date(reportDateStart + 'T00:00:00').getTime();
@@ -1081,24 +1205,30 @@ export default function App() {
 
   const exportCSV = () => {
     const filtered = getFilteredShifts();
-    const exportData = filtered.map(s => ({
-      'Employee Name': s.driver_name,
-      'Employee ID': s.driver_code,
-      'Base': s.depot_name || 'N/A',
-      'Start Time': new Date(s.start_time).toLocaleString(),
-      'End Time': s.end_time ? new Date(s.end_time).toLocaleString() : 'Active',
-      'Hours Worked': s.total_hours?.toFixed(2) || '0.00',
-      'Effective Rate (£/hr)': s.effective_rate.toFixed(2),
-      'Weekend Override': s.override_rate ? 'YES' : 'NO',
-      'Gross Pay (£)': s.total_pay?.toFixed(2) || '0.00',
-    }));
+    const exportData = filtered.map(s => {
+      const drvRate = employeeRates[s.driver_id];
+      const agency = drvRate?.agency_name || 'Direct';
+      return {
+        'Employee Name': s.driver_name,
+        'Employee ID': s.driver_code,
+        'Agency': agency,
+        'Base': s.depot_name || 'N/A',
+        'Start Time': new Date(s.start_time).toLocaleString(),
+        'End Time': s.end_time ? new Date(s.end_time).toLocaleString() : 'Active',
+        'Hours Worked': s.total_hours?.toFixed(2) || '0.00',
+        'Effective Rate (£/hr)': s.effective_rate.toFixed(2),
+        'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
+        'Night Out Allowance (£)': (s.night_out_amount || 0).toFixed(2),
+        'Gross Pay (£)': s.total_pay?.toFixed(2) || '0.00',
+      };
+    });
 
     const csv = Papa.unparse(exportData);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', 'ABTSO_Payroll_Report.csv');
+    link.setAttribute('download', `ABTSO_Payroll_Report_${new Date().toISOString().split('T')[0]}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1106,17 +1236,23 @@ export default function App() {
 
   const exportExcel = () => {
     const filtered = getFilteredShifts();
-    const exportData = filtered.map(s => ({
-      'Driver Name': s.driver_name,
-      'Driver ID': s.driver_code,
-      'Depot Location': s.depot_name || 'N/A',
-      'Shift Start': new Date(s.start_time).toLocaleString(),
-      'Shift End': s.end_time ? new Date(s.end_time).toLocaleString() : 'In Progress',
-      'Hours': s.total_hours || 0,
-      'Rate (£/hr)': s.effective_rate,
-      'Weekend Override': s.override_rate ? 'YES' : 'NO',
-      'Gross Pay (£)': s.total_pay || 0,
-    }));
+    const exportData = filtered.map(s => {
+      const drvRate = employeeRates[s.driver_id];
+      const agency = drvRate?.agency_name || 'Direct';
+      return {
+        'Driver Name': s.driver_name,
+        'Driver ID': s.driver_code,
+        'Agency': agency,
+        'Depot Location': s.depot_name || 'N/A',
+        'Shift Start': new Date(s.start_time).toLocaleString(),
+        'Shift End': s.end_time ? new Date(s.end_time).toLocaleString() : 'In Progress',
+        'Hours': s.total_hours || 0,
+        'Rate (£/hr)': s.effective_rate,
+        'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
+        'Night Out Allowance (£)': s.night_out_amount || 0,
+        'Gross Pay (£)': s.total_pay || 0,
+      };
+    });
 
     const worksheet = XLSX.utils.json_to_sheet(exportData);
     const workbook = XLSX.utils.book_new();
@@ -1301,6 +1437,18 @@ export default function App() {
               />
             </div>
 
+            <div className="input-group mb-16">
+              <span className="input-label">SYSTEM ROLE PROFILE</span>
+              <select
+                className="select-field w-full"
+                value={loginRole}
+                onChange={(e) => setLoginRole(e.target.value as UserRole)}
+              >
+                <option value="payroll_admin">Payroll Admin (Full Financial Access)</option>
+                <option value="logistics">Logistics Coordinator (Operations Only)</option>
+              </select>
+            </div>
+
             {loginError && (
               <div className="text-error text-sm font-semibold mb-16 flex align-center gap-8">
                 <ShieldAlert size={15} />
@@ -1328,6 +1476,7 @@ export default function App() {
   const activeEmployeeCount = liveLocations.length;
   const activeAlertsCount = alerts.filter(a => !a.acknowledged).length;
   const completedShiftsCount = shifts.filter(s => s.status === 'completed').length;
+  const pendingNightOutsCount = shifts.filter(s => s.night_out_status === 'pending').length;
   const totalWeeklyPayout = shifts.reduce((sum, s) => sum + (s.total_pay || 0), 0);
 
   return (
@@ -1340,7 +1489,9 @@ export default function App() {
             <img src={abtsoLogo} alt="ABTSO Logo" style={{ height: '32px', width: 'auto', objectFit: 'contain' }} />
             <div>
               <h2 className="text-md font-black m-0" style={{ color: '#333333', letterSpacing: '0.5px' }}>DISPATCH</h2>
-              <span className="text-xs text-muted">ADMIN CONSOLE</span>
+              <span className="text-xs text-muted">
+                {userRole === 'payroll_admin' ? 'PAYROLL ADMIN' : 'LOGISTICS'} CONSOLE
+              </span>
             </div>
           </div>
 
@@ -1363,18 +1514,31 @@ export default function App() {
               <Users size={18} /> Driver Profiles
             </div>
 
-            <div className={`nav-item ${activeTab === 'reports' ? 'active' : ''}`} onClick={() => setActiveTab('reports')}>
-              <FileSpreadsheet size={18} /> Payroll Reports
-            </div>
+            {userRole === 'payroll_admin' && (
+              <>
+                <div className={`nav-item ${activeTab === 'rates' ? 'active' : ''}`} onClick={() => setActiveTab('rates')}>
+                  <DollarSign size={18} /> Rates & Agencies
+                </div>
+
+                <div className={`nav-item ${activeTab === 'reports' ? 'active' : ''}`} onClick={() => setActiveTab('reports')}>
+                  <FileSpreadsheet size={18} /> Payroll Calculator
+                  {pendingNightOutsCount > 0 && (
+                    <span className="badge badge-warning text-xs px-8 ml-8" style={{ padding: '2px 6px', borderRadius: '8px', backgroundColor: '#F59E0B', color: '#FFFFFF' }}>
+                      {pendingNightOutsCount} N/O
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
         <div>
-          {isMockMode && (
-            <div className="p-12 text-center text-xs text-muted mb-16" style={{ border: '1px dashed rgba(255,255,255,0.08)', borderRadius: '10px' }}>
-              Sandbox Mode Active
-            </div>
-          )}
+          <div className="p-12 text-center text-xs text-muted mb-16" style={{ border: '1px dashed rgba(255,255,255,0.08)', borderRadius: '10px' }}>
+            <span className="font-bold uppercase" style={{ color: userRole === 'payroll_admin' ? '#10B981' : '#3B82F6' }}>
+              {userRole === 'payroll_admin' ? '🛡️ Payroll Admin' : '🚚 Logistics Role'}
+            </span>
+          </div>
 
           <div className="nav-item text-error" onClick={handleLogout}>
             <LogOut size={18} /> Terminate Session
@@ -1802,21 +1966,185 @@ export default function App() {
           </div>
         )}
 
-        {/* ── TAB 4: Payroll & Audit Reports ───────────────── */}
-        {activeTab === 'reports' && (() => {
+        {/* ── TAB 4: Rates & Agencies (Payroll Admin Only) ───── */}
+        {activeTab === 'rates' && userRole === 'payroll_admin' && (
+          <div className="flex-1">
+            <div className="flex align-center justify-between mb-24">
+              <div>
+                <h2 className="text-xl font-black text-primary m-0">DRIVER COMPENSATION PROFILES & AGENCIES</h2>
+                <p className="text-xs text-muted mt-4">Assign rate structures, weekday/weekend pay, and agencies to drivers</p>
+              </div>
+            </div>
+
+            <div className="table-container">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Driver Code & Name</th>
+                    <th>Agency Name</th>
+                    <th>Rate Type</th>
+                    <th>Mon-Fri Rate</th>
+                    <th>Saturday Rate</th>
+                    <th>Sunday Rate</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {employees.map(emp => {
+                    const currentRate = employeeRates[emp.id] || {
+                      driver_id: emp.id,
+                      rate_type: 'Hourly Sat/Sun separate',
+                      mon_fri_rate: emp.hourly_rate || 16.00,
+                      sat_rate: 17.00,
+                      sun_rate: 18.00,
+                      agency_name: 'Direct',
+                    };
+                    const isEditing = editingRateDriverId === emp.id;
+
+                    return (
+                      <tr key={emp.id}>
+                        <td className="font-bold text-primary">
+                          {emp.full_name} ({emp.driver_id})
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              className="input-field"
+                              style={{ padding: '4px 8px', fontSize: '12px', width: '110px' }}
+                              value={editAgencyName}
+                              onChange={(e) => setEditAgencyName(e.target.value)}
+                            />
+                          ) : (
+                            <span className="badge badge-accent">{currentRate.agency_name}</span>
+                          )}
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <select
+                              className="select-field"
+                              style={{ padding: '4px 8px', fontSize: '12px' }}
+                              value={editRateType}
+                              onChange={(e) => setEditRateType(e.target.value as any)}
+                            >
+                              <option value="Hourly Sat/Sun separate">Hourly Sat/Sun separate</option>
+                              <option value="Fixed weekly">Fixed weekly</option>
+                            </select>
+                          ) : (
+                            <span className="text-sm font-semibold">{currentRate.rate_type}</span>
+                          )}
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <input
+                              type="number"
+                              step="0.50"
+                              className="input-field"
+                              style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
+                              value={editMonFriRate}
+                              onChange={(e) => setEditMonFriRate(e.target.value)}
+                            />
+                          ) : (
+                            <span className="font-bold text-primary">£{currentRate.mon_fri_rate.toFixed(2)}/hr</span>
+                          )}
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <input
+                              type="number"
+                              step="0.50"
+                              className="input-field"
+                              style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
+                              value={editSatRate}
+                              onChange={(e) => setEditSatRate(e.target.value)}
+                            />
+                          ) : (
+                            <span className="font-bold text-secondary">£{currentRate.sat_rate.toFixed(2)}/hr</span>
+                          )}
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <input
+                              type="number"
+                              step="0.50"
+                              className="input-field"
+                              style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
+                              value={editSunRate}
+                              onChange={(e) => setEditSunRate(e.target.value)}
+                            />
+                          ) : (
+                            <span className="font-bold text-success">£{currentRate.sun_rate.toFixed(2)}/hr</span>
+                          )}
+                        </td>
+                        <td>
+                          {isEditing ? (
+                            <div className="flex gap-6">
+                              <button className="btn btn-primary" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={() => handleSaveRate(emp.id)}>
+                                Save
+                              </button>
+                              <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '11px' }} onClick={() => setEditingRateDriverId(null)}>
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              className="btn btn-secondary"
+                              style={{ padding: '4px 12px', fontSize: '11px' }}
+                              onClick={() => {
+                                setEditingRateDriverId(emp.id);
+                                setEditMonFriRate(currentRate.mon_fri_rate.toString());
+                                setEditSatRate(currentRate.sat_rate.toString());
+                                setEditSunRate(currentRate.sun_rate.toString());
+                                setEditRateType(currentRate.rate_type);
+                                setEditAgencyName(currentRate.agency_name);
+                              }}
+                            >
+                              Edit Profile
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* ── TAB 5: Automated Payroll Calculator (Payroll Admin Only) ─ */}
+        {activeTab === 'reports' && userRole === 'payroll_admin' && (() => {
           const filteredShifts = getFilteredShifts();
           const totalEarnings = filteredShifts.reduce((sum, s) => sum + (s.total_pay || 0), 0);
           const totalHours = filteredShifts.reduce((sum, s) => sum + (s.total_hours || 0), 0);
+          const totalNightOutPay = filteredShifts.reduce((sum, s) => sum + (s.night_out_status === 'approved' ? (s.night_out_amount || 25.00) : 0), 0);
+          const approvedNightOutsCount = filteredShifts.filter(s => s.night_out_status === 'approved').length;
 
-
+          // Collect unique agencies for filter dropdown
+          const agencies = Array.from(new Set(Object.values(employeeRates).map(r => r.agency_name || 'Direct')));
 
           return (
             <div className="flex-1">
-              <h2 className="text-xl font-black text-primary mb-24">FINANCIAL PAYROLL HOURS & EXPORTS</h2>
+              <h2 className="text-xl font-black text-primary mb-4">AUTOMATED PAYROLL CALCULATOR</h2>
+              <p className="text-xs text-muted mb-24">Aggregating telemetry shifts with employee rate profiles and Night Out allowances</p>
 
               {/* Filter controls panel */}
               <div className="glass-panel p-20 mb-24 flex flex-wrap align-center justify-between gap-16" style={{ borderRadius: '16px' }}>
                 <div className="flex flex-wrap gap-16">
+                  <div className="flex flex-col gap-6">
+                    <span className="input-label">FILTER BY AGENCY</span>
+                    <select 
+                      className="select-field"
+                      value={reportAgencyFilter}
+                      onChange={(e) => setReportAgencyFilter(e.target.value)}
+                    >
+                      <option value="all">All Agencies</option>
+                      {agencies.map(ag => (
+                        <option key={ag} value={ag}>{ag}</option>
+                      ))}
+                    </select>
+                  </div>
+
                   <div className="flex flex-col gap-6">
                     <span className="input-label">FILTER BY EMPLOYEE</span>
                     <select 
@@ -1863,48 +2191,96 @@ export default function App() {
                 </div>
               </div>
 
-
-
               {/* Reports Payroll Data Table */}
               <div className="table-container">
                 <table className="data-table">
                   <thead>
                     <tr>
                       <th>Employee</th>
-                      <th>Base Location</th>
-                      <th>Date</th>
-                      <th>Duration</th>
+                      <th>Agency</th>
+                      <th>Shift Date</th>
+                      <th>Hours</th>
                       <th>Hourly Rate</th>
-                      <th>Override Applied</th>
+                      <th>Night Out Allowance</th>
+                      <th>Flags & Actions</th>
                       <th>Gross Pay</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredShifts.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="text-center text-muted">No completed shifts found matching filters</td>
+                        <td colSpan={8} className="text-center text-muted">No completed shifts found matching active filters</td>
                       </tr>
                     ) : (
                       <>
                         {filteredShifts.map(shift => {
                           const startDate = new Date(shift.start_time);
+                          const drvRate = employeeRates[shift.driver_id];
+                          const agency = drvRate?.agency_name || 'Direct';
+                          const isPendingN_O = shift.night_out_status === 'pending';
+                          const isApprovedN_O = shift.night_out_status === 'approved';
+
                           return (
                             <tr key={shift.id}>
                               <td className="font-bold text-primary">
                                 {shift.driver_name} ({shift.driver_code})
                               </td>
-                              <td>{shift.depot_name || 'N/A'}</td>
+                              <td>
+                                <span className="badge badge-accent">{agency}</span>
+                              </td>
                               <td className="text-secondary">{startDate.toLocaleDateString()}</td>
                               <td>{shift.total_hours?.toFixed(2) ?? '0.00'} hrs</td>
                               <td className="font-semibold">£{shift.effective_rate.toFixed(2)}/hr</td>
                               <td>
-                                {shift.override_rate ? (
-                                  <span className="badge badge-warning flex align-center gap-4" style={{ width: 'fit-content' }}>
-                                    ★ WEEKEND (£18)
+                                {isApprovedN_O ? (
+                                  <span className="badge badge-success font-bold">
+                                    +£{(shift.night_out_amount || 25.00).toFixed(2)} N/O
+                                  </span>
+                                ) : isPendingN_O ? (
+                                  <span className="badge badge-warning font-bold" style={{ backgroundColor: '#F59E0B', color: '#FFFFFF' }}>
+                                    PENDING APPROVAL
                                   </span>
                                 ) : (
-                                  <span className="badge badge-accent" style={{ width: 'fit-content' }}>STANDARD</span>
+                                  <span className="text-muted text-xs">—</span>
                                 )}
+                              </td>
+                              <td>
+                                <div className="flex align-center gap-6">
+                                  {isPendingN_O ? (
+                                    <>
+                                      <button
+                                        className="btn btn-success"
+                                        style={{ padding: '4px 8px', fontSize: '11px' }}
+                                        onClick={() => handleUpdateNightOutStatus(shift.id, 'approved', 25.00)}
+                                      >
+                                        Approve N/O (£25)
+                                      </button>
+                                      <button
+                                        className="btn btn-danger"
+                                        style={{ padding: '4px 8px', fontSize: '11px' }}
+                                        onClick={() => handleUpdateNightOutStatus(shift.id, 'rejected', 0)}
+                                      >
+                                        Reject
+                                      </button>
+                                    </>
+                                  ) : isApprovedN_O ? (
+                                    <button
+                                      className="btn btn-secondary"
+                                      style={{ padding: '4px 8px', fontSize: '11px', color: '#EF4444' }}
+                                      onClick={() => handleUpdateNightOutStatus(shift.id, 'none', 0)}
+                                    >
+                                      Remove N/O
+                                    </button>
+                                  ) : (
+                                    <button
+                                      className="btn btn-secondary"
+                                      style={{ padding: '4px 8px', fontSize: '11px' }}
+                                      onClick={() => handleUpdateNightOutStatus(shift.id, 'approved', 25.00)}
+                                    >
+                                      + Add N/O (£25)
+                                    </button>
+                                  )}
+                                </div>
                               </td>
                               <td className="font-bold text-success">
                                 £{(shift.total_pay || 0).toFixed(2)}
@@ -1912,14 +2288,15 @@ export default function App() {
                             </tr>
                           );
                         })}
-                        {/* Summary Row at the bottom of the table */}
+                        {/* Summary Row */}
                         <tr style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', fontWeight: 'bold', borderTop: '2px solid rgba(16, 185, 129, 0.2)' }}>
                           <td colSpan={3} className="text-primary font-black" style={{ padding: '16px' }}>
-                            TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts)
+                            TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts | {approvedNightOutsCount} Night Outs: £{totalNightOutPay.toFixed(2)})
                           </td>
                           <td className="text-primary font-bold" style={{ padding: '16px' }}>
                             {totalHours.toFixed(2)} hrs
                           </td>
+                          <td></td>
                           <td></td>
                           <td></td>
                           <td className="text-success font-black" style={{ padding: '16px', fontSize: '15px' }}>
