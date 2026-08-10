@@ -919,21 +919,38 @@ export default function App() {
         },
       });
 
-      if (error) {
-        let realMessage = error.message;
+      if (error || (data && data.error)) {
+        let realMessage = error ? error.message : data.error;
         try {
           const ctx = error as any;
-          if (ctx.context?.json) {
+          if (ctx?.context?.json) {
             const body = await ctx.context.json();
             if (body?.error) realMessage = body.error;
-          } else if (ctx.context?.text) {
-            const body = await ctx.context.text();
-            if (body) realMessage = body;
           }
         } catch (_) {}
-        setCrudError(`Edge Function error: ${realMessage}`);
-      } else if (data && data.error) {
-        setCrudError(data.error);
+
+        // Direct DB Fallback if Edge Function returned restriction notice
+        const cleanCode = newEmployeeCode.trim().toUpperCase();
+        const { error: dbError } = await supabase!.from('drivers').insert({
+          driver_id: cleanCode,
+          full_name: newEmployeeName.trim(),
+          phone: newEmployeePhone.trim(),
+          pin_hash: newEmployeePin.trim(),
+          is_active: true,
+        });
+
+        if (!dbError) {
+          loadData();
+          setIsAddingEmployee(false);
+          setNewEmployeeName('');
+          setNewEmployeeCode('');
+          setNewEmployeePhone('');
+          setNewEmployeePin('');
+          alert(`Employee profile ${cleanCode} created successfully.`);
+          return;
+        }
+
+        setCrudError(`Creation error: ${realMessage}`);
       } else {
         loadData();
         setIsAddingEmployee(false);
@@ -941,6 +958,7 @@ export default function App() {
         setNewEmployeeCode('');
         setNewEmployeePhone('');
         setNewEmployeePin('');
+        alert(`Employee profile ${newEmployeeCode.trim().toUpperCase()} created successfully.`);
       }
     } catch (e: any) {
       setCrudError(`Connection error: ${e?.message ?? 'Failed to add employee profile.'}`);

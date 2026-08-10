@@ -53,22 +53,32 @@ serve(async (req: Request) => {
     const callerEmail = user.email.toLowerCase().trim();
     console.log("Verified caller email:", callerEmail);
 
-    // ── 3. Check admin allowlist ─────────────────────────────
-    const ALLOWED_ADMINS = ["malo@co.uk"];
+    // ── 4. Service-role client for DB writes ─────────────────
+    const supabaseAdmin = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
 
-    if (!ALLOWED_ADMINS.includes(callerEmail)) {
+    // ── 3. Check admin authorization ─────────────────────────
+    const { data: roleData } = await supabaseAdmin
+      .from("user_roles")
+      .select("role")
+      .eq("email", callerEmail)
+      .maybeSingle();
+
+    const isAuthorizedAdmin = 
+      roleData?.role === "payroll_admin" ||
+      roleData?.role === "logistics" ||
+      callerEmail.endsWith("@abtso.co.uk") ||
+      callerEmail === "malo@co.uk";
+
+    if (!isAuthorizedAdmin) {
       console.error("Forbidden attempt from:", callerEmail);
       return new Response(
         JSON.stringify({ error: "Forbidden: admin access only" }),
         { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
-
-    // ── 4. Service-role client for DB writes ─────────────────
-    const supabaseAdmin = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
 
     // ── 5. Parse request body ─────────────────────────────────
     const body = await req.json();
