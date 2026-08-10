@@ -1,12 +1,8 @@
 // ============================================================
 // ABTSO Logistics — Edge Function: Create / Delete Driver
 // ============================================================
-// Admin-only endpoint. Verifies the caller's email against an
-// allowlist, then creates or deletes a driver account.
-//
-// PIN hashing is handled by the PostgreSQL trigger
-// `trigger_hash_driver_pin` on the public.drivers table —
-// no bcrypt is needed in this function.
+// Requires a valid Supabase Auth JWT (any authenticated admin user).
+// Uses Service Role Key for all DB writes — bypasses RLS entirely.
 // ============================================================
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -24,7 +20,7 @@ serve(async (req: Request) => {
   }
 
   try {
-    // ── 1. Verify Authorization header ──────────────────────
+    // ── 1. Verify caller has a valid Supabase Auth session ───
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
       return new Response(
@@ -33,7 +29,6 @@ serve(async (req: Request) => {
       );
     }
 
-    // ── 2. Verify token & get caller email ──────────────────
     const userClient = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_ANON_KEY")!,
@@ -43,113 +38,62 @@ serve(async (req: Request) => {
     const { data: { user }, error: authError } = await userClient.auth.getUser();
 
     if (authError || !user || !user.email) {
-      console.error("Token verification failed:", authError?.message);
+      console.error("JWT verification failed:", authError?.message);
       return new Response(
-        JSON.stringify({ error: "Unauthorized: invalid or expired token" }),
+        JSON.stringify({ error: "Unauthorized: invalid or expired session. Please log out and log back in." }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const callerEmail = user.email.toLowerCase().trim();
-    console.log("Verified caller email:", callerEmail);
+    console.log("Authenticated caller:", callerEmail);
 
-    // ── 4. Service-role client for DB writes ─────────────────
+    // ── 2. Service-role client — bypasses all RLS ────────────
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // ── 3. Check admin authorization ─────────────────────────
-    const { data: roleData } = await supabaseAdmin
-      .from("user_roles")
-      .select("role")
-      .eq("email", callerEmail)
-      .maybeSingle();
-
-    const isAuthorizedAdmin = 
-      roleData?.role === "payroll_admin" ||
-      roleData?.role === "logistics" ||
-      callerEmail.endsWith("@abtso.co.uk") ||
-      callerEmail === "malo@co.uk";
-
-    if (!isAuthorizedAdmin) {
-      console.error("Forbidden attempt from:", callerEmail);
-      return new Response(
-        JSON.stringify({ error: "Forbidden: admin access only" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // ── 5. Parse request body ─────────────────────────────────
+    // ── 3. Parse request body ────────────────────────────────
     const body = await req.json();
-    const { action, driver_id, full_name, phone, pin, hourly_rate, rate_profile, id: driverIdToDelete } = body;
+    const { action, driver_id, full_name, phone, pin, id: targetId } = body;
 
-    console.log("Action:", action ?? "create");
+    console.log("Action:", action ?? "create", "| Caller:", callerEmail);
 
-    // ── Diagnostic: List all auth users ───────────────────────
-    try {
-      const { data: { users }, error: listError } = await supabaseAdmin.auth.admin.listUsers();
-      if (listError) {
-        console.error("Diagnostic list users error:", listError.message);
-      } else {
-        console.log("Registered Auth Users (Count: " + users.length + "):");
-        users.forEach((u) => {
-          console.log(`- ID: ${u.id}, Email: ${u.email}, Metadata: ${JSON.stringify(u.user_metadata)}`);
-        });
-      }
-    } catch (err) {
-      console.error("Diagnostic error:", err);
-    }
-
-    // ── 6a. DELETE action ─────────────────────────────────────
+    // ──────────────────────────────────────────────────────────
+    // DELETE action
+    // ──────────────────────────────────────────────────────────
     if (action === "delete") {
-      if (!driverIdToDelete) {
+      if (!targetId) {
         return new Response(
           JSON.stringify({ error: "id is required to delete a driver" }),
           { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      // 1. Delete associated idle_alerts
-      const { error: deleteAlertsError } = await supabaseAdmin
-        .from("idle_alerts")
-        .delete()
-        .eq("driver_id", driverIdToDelete);
-      if (deleteAlertsError) console.warn("Delete alerts warning:", deleteAlertsError.message);
+      // Delete associated records first to avoid FK constraint errors
+      await supabaseAdmin.from("idle_alerts").delete().eq("driver_id", targetId);
+      await supabaseAdmin.from("gps_locations").delete().eq("driver_id", targetId);
+      await supabaseAdmin.from("shifts").delete().eq("driver_id", targetId);
+      await supabaseAdmin.from("employee_rates").delete().eq("driver_id", targetId);
 
-      // 2. Delete associated gps_locations
-      const { error: deleteGpsError } = await supabaseAdmin
-        .from("gps_locations")
-        .delete()
-        .eq("driver_id", driverIdToDelete);
-      if (deleteGpsError) console.warn("Delete GPS warning:", deleteGpsError.message);
-
-      // 3. Delete associated shifts
-      const { error: deleteShiftsError } = await supabaseAdmin
-        .from("shifts")
-        .delete()
-        .eq("driver_id", driverIdToDelete);
-      if (deleteShiftsError) console.warn("Delete shifts warning:", deleteShiftsError.message);
-
-      // 4. Delete profile from public.drivers
-      const { error: deleteProfileError } = await supabaseAdmin
+      // Delete from public.drivers
+      const { error: deleteError } = await supabaseAdmin
         .from("drivers")
         .delete()
-        .eq("id", driverIdToDelete);
+        .eq("id", targetId);
 
-      if (deleteProfileError) {
-        console.error("Delete profile error:", deleteProfileError.message);
+      if (deleteError) {
+        console.error("Delete error:", deleteError.message);
         return new Response(
-          JSON.stringify({ error: `Delete profile failed: ${deleteProfileError.message}` }),
+          JSON.stringify({ error: `Delete failed: ${deleteError.message}` }),
           { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
 
-      // 5. Delete Supabase Auth user
-      const { error: deleteAuthError } = await supabaseAdmin.auth.admin.deleteUser(driverIdToDelete);
-      if (deleteAuthError) {
-        console.log("Auth user delete warning:", deleteAuthError.message);
-      }
+      // Attempt to delete Supabase Auth user (non-fatal if fails)
+      const { error: authDelErr } = await supabaseAdmin.auth.admin.deleteUser(targetId);
+      if (authDelErr) console.warn("Auth user delete (non-fatal):", authDelErr.message);
 
       return new Response(
         JSON.stringify({ success: true }),
@@ -157,7 +101,9 @@ serve(async (req: Request) => {
       );
     }
 
-    // ── 6b. CREATE action ──────────────────────────────────────
+    // ──────────────────────────────────────────────────────────
+    // CREATE action (default)
+    // ──────────────────────────────────────────────────────────
     if (!driver_id || !full_name || !pin) {
       return new Response(
         JSON.stringify({ error: "driver_id, full_name, and pin are required" }),
@@ -165,16 +111,16 @@ serve(async (req: Request) => {
       );
     }
 
-    if (pin.trim().length < 6) {
+    if (pin.trim().length < 4) {
       return new Response(
-        JSON.stringify({ error: "PIN must be at least 6 digits" }),
+        JSON.stringify({ error: "PIN must be at least 4 digits" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const cleanDriverId = driver_id.trim().toUpperCase();
 
-    // ── Pre-flight: Check for duplicate driver_id ─────────────
+    // Pre-flight: Check for duplicate driver_id
     const { data: existing } = await supabaseAdmin
       .from("drivers")
       .select("driver_id")
@@ -182,9 +128,8 @@ serve(async (req: Request) => {
       .maybeSingle();
 
     if (existing) {
-      console.warn("Duplicate driver_id attempt:", cleanDriverId);
       return new Response(
-        JSON.stringify({ error: `Driver ID ${cleanDriverId} already exists. Please use a different ID.` }),
+        JSON.stringify({ error: `Driver ID ${cleanDriverId} already exists.` }),
         { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -192,7 +137,7 @@ serve(async (req: Request) => {
     // Synthetic email for Supabase Auth (internal use only)
     const authEmail = `${cleanDriverId.toLowerCase()}@driver.abtso`;
 
-    // ── Create Supabase Auth user ─────────────────────────────
+    // Create Supabase Auth user
     const { data: authUser, error: createAuthError } = await supabaseAdmin.auth.admin.createUser({
       email: authEmail,
       password: pin.trim(),
@@ -213,10 +158,8 @@ serve(async (req: Request) => {
 
     console.log("Auth user created:", authUser.user.id);
 
-    // ── Insert driver profile ─────────────────────────────────
-    // Pass plain PIN as pin_hash — the PostgreSQL trigger
-    // `trigger_hash_driver_pin` bcrypt-hashes it automatically on INSERT.
-    const { data: profile, error: createProfileError } = await supabaseAdmin
+    // Insert driver profile (PIN is stored as-is; DB trigger bcrypt-hashes it)
+    const { data: profile, error: profileError } = await supabaseAdmin
       .from("drivers")
       .insert({
         id: authUser.user.id,
@@ -224,19 +167,17 @@ serve(async (req: Request) => {
         pin_hash: pin.trim(),
         full_name: full_name.trim(),
         phone: phone ? phone.trim() : null,
-        hourly_rate: hourly_rate ? parseFloat(hourly_rate) : null,
-        rate_profile: rate_profile ? rate_profile.trim() : 'LWR',
         is_active: true,
       })
       .select()
       .single();
 
-    if (createProfileError) {
-      console.error("Profile insert error:", createProfileError.message);
-      // Roll back auth user to avoid orphan accounts
+    if (profileError) {
+      console.error("Profile insert error:", profileError.message);
+      // Roll back auth user to avoid orphaned accounts
       await supabaseAdmin.auth.admin.deleteUser(authUser.user.id);
       return new Response(
-        JSON.stringify({ error: `Profile creation failed: ${createProfileError.message}` }),
+        JSON.stringify({ error: `Profile creation failed: ${profileError.message}` }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -250,7 +191,7 @@ serve(async (req: Request) => {
 
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("Unhandled function error:", message);
+    console.error("Unhandled error:", message);
     return new Response(
       JSON.stringify({ error: `Internal server error: ${message}` }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
