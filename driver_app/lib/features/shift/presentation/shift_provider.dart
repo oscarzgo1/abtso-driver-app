@@ -7,7 +7,7 @@ import 'package:latlong2/latlong.dart' as latlong;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/network/supabase_service.dart';
 import '../../../core/services/location_service.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:tracelet/tracelet.dart' as tl;
 import '../../../core/utils/geofence_helper.dart';
 import '../data/depot_model.dart';
 import '../data/shift_model.dart';
@@ -103,7 +103,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   }
 
   StreamSubscription<Position>? _positionSubscription;
-  StreamSubscription? _backgroundSubscription;
+  StreamSubscription<tl.Location>? _traceletSubscription;
   DateTime? _lastUploadTime;
   
   // Track if clock-out action was initiated by driver client
@@ -158,53 +158,54 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
     if (kIsWeb) return;
 
-    final service = FlutterBackgroundService();
-    final isRunning = await service.isRunning();
-    if (!isRunning) {
-      await service.startService();
-      // Allow background isolate to fully initialize before passing parameters
-      await Future.delayed(const Duration(seconds: 2));
-    }
+    await tl.Tracelet.ready(const tl.Config(
+      app: tl.AppConfig(
+        stopOnTerminate: false,
+        startOnBoot: true,
+      ),
+      geo: tl.GeoConfig(
+        desiredAccuracy: tl.DesiredAccuracy.high,
+        distanceFilter: kDebugMode ? 0.0 : 5.0,
+        filter: tl.LocationFilter(
+          rejectMockLocations: kDebugMode ? false : true,
+        ),
+      ),
+      android: tl.AndroidConfig(
+        foregroundService: tl.ForegroundServiceConfig(
+          notificationTitle: 'ABTSO Logistics',
+          notificationText: 'Shift active. Tracking location in background.',
+        ),
+      ),
+    ));
 
-    service.invoke('setAsForeground');
-
-    service.invoke('startService', {
-      'driverId': driverId,
-      'shiftId': shiftId,
+    _traceletSubscription?.cancel();
+    _traceletSubscription = tl.Tracelet.onLocation((tl.Location location) {
+      final position = Position(
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        timestamp: DateTime.tryParse(location.timestamp) ?? DateTime.now(),
+        accuracy: location.coords.accuracy,
+        altitude: location.coords.altitude,
+        altitudeAccuracy: location.coords.altitudeAccuracy,
+        heading: location.coords.heading,
+        headingAccuracy: location.coords.headingAccuracy,
+        speed: location.coords.speed,
+        speedAccuracy: location.coords.speedAccuracy,
+        isMocked: location.isMock,
+      );
+      _handleNewPosition(position);
     });
 
-    _backgroundSubscription?.cancel();
-    _backgroundSubscription = service.on('locationUpdated').listen((event) {
-      if (event != null) {
-        final position = Position(
-          latitude: event['latitude'],
-          longitude: event['longitude'],
-          timestamp: DateTime.parse(event['timestamp']),
-          accuracy: event['accuracy'],
-          altitude: event['altitude'] ?? 0.0,
-          altitudeAccuracy: 0.0,
-          heading: event['heading'] ?? 0.0,
-          headingAccuracy: 0.0,
-          speed: event['speed'] ?? 0.0,
-          speedAccuracy: 0.0,
-          isMocked: event['isMocked'] ?? false,
-        );
-        _handleNewPosition(position);
-      }
-    });
+    await tl.Tracelet.start();
   }
 
   Future<void> _stopBackgroundTrackingService() async {
-    _backgroundSubscription?.cancel();
-    _backgroundSubscription = null;
+    _traceletSubscription?.cancel();
+    _traceletSubscription = null;
 
-    if (kIsWeb) {
-      await startRealtimeLocationListener();
-      return;
+    if (!kIsWeb) {
+      await tl.Tracelet.stop();
     }
-
-    final service = FlutterBackgroundService();
-    service.invoke('stopService');
 
     await startRealtimeLocationListener();
   }
@@ -212,8 +213,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   /// Listen to GPS changes in real-time. Updates the map and proximity instantly.
   Future<void> startRealtimeLocationListener() async {
     _positionSubscription?.cancel();
-    _backgroundSubscription?.cancel();
-    _backgroundSubscription = null;
+    _traceletSubscription?.cancel();
+    _traceletSubscription = null;
 
     final hasPermission = await LocationService.handlePermission();
     if (!hasPermission) {
@@ -619,10 +620,10 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     // Cancel live GPS stream and background service so they don't overwrite our mock coordinate
     _positionSubscription?.cancel();
     _positionSubscription = null;
-    _backgroundSubscription?.cancel();
-    _backgroundSubscription = null;
+    _traceletSubscription?.cancel();
+    _traceletSubscription = null;
     if (!kIsWeb) {
-      FlutterBackgroundService().invoke('stopService');
+      tl.Tracelet.stop();
     }
 
     final mockPos = Position(
@@ -650,10 +651,10 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     // Cancel live subscription so it doesn't interfere
     _positionSubscription?.cancel();
     _positionSubscription = null;
-    _backgroundSubscription?.cancel();
-    _backgroundSubscription = null;
+    _traceletSubscription?.cancel();
+    _traceletSubscription = null;
     if (!kIsWeb) {
-      FlutterBackgroundService().invoke('stopService');
+      tl.Tracelet.stop();
     }
 
     _playbackTimer?.cancel();
@@ -826,10 +827,10 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _shiftRealtimeSubscription = null;
     _positionSubscription?.cancel();
     _positionSubscription = null;
-    _backgroundSubscription?.cancel();
-    _backgroundSubscription = null;
+    _traceletSubscription?.cancel();
+    _traceletSubscription = null;
     if (!kIsWeb) {
-      FlutterBackgroundService().invoke('stopService');
+      tl.Tracelet.stop();
     }
     _playbackTimer?.cancel();
     _playbackTimer = null;
@@ -844,7 +845,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   void dispose() {
     _shiftRealtimeSubscription?.cancel();
     _positionSubscription?.cancel();
-    _backgroundSubscription?.cancel();
+    _traceletSubscription?.cancel();
     _playbackTimer?.cancel();
     super.dispose();
   }

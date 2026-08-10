@@ -1,9 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import '../../main.dart';
+import 'package:tracelet/tracelet.dart' as tl;
 
 class LocationService {
   LocationService._();
@@ -67,11 +65,6 @@ class LocationService {
         accuracy: LocationAccuracy.high,
         distanceFilter: distanceFilterMeters,
         intervalDuration: Duration(seconds: intervalSeconds),
-        foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationText: 'ABTSO Employee App is tracking your shift location.',
-          notificationTitle: 'Shift Tracking Active',
-          enableWakeLock: true,
-        ),
       );
     } else if (defaultTargetPlatform == TargetPlatform.iOS) {
       locationSettings = AppleSettings(
@@ -101,43 +94,28 @@ class LocationService {
     _positionStreamSubscription = null;
   }
 
-  /// Initialize the background service configuration (called in main.dart)
+  /// Initialize Tracelet SDK at app startup
   static Future<void> initializeService() async {
     if (kIsWeb) return;
-    final service = FlutterBackgroundService();
 
-    // 1. CREATE NOTIFICATION CHANNEL FIRST
-    const AndroidNotificationChannel channel = AndroidNotificationChannel(
-      'abtso_location_service',
-      'ABTSO Shift Tracking',
-      description: 'Maintains GPS tracking in the background.',
-      importance: Importance.high,
-    );
-
-    final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-        FlutterLocalNotificationsPlugin();
-
-    await flutterLocalNotificationsPlugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(channel);
-
-    // 2. CONFIGURE BACKGROUND SERVICE
-    await service.configure(
-      androidConfiguration: AndroidConfiguration(
-        onStart: onStart,
-        autoStart: false,
-        isForegroundMode: true,
-        notificationChannelId: 'abtso_location_service', // Now this channel exists
-        initialNotificationTitle: 'ABTSO Logistics',
-        initialNotificationContent: 'Shift active. Tracking location in background.',
-        foregroundServiceNotificationId: 888, // Force a persistent ID
+    await tl.Tracelet.ready(const tl.Config(
+      app: tl.AppConfig(
+        stopOnTerminate: false,
+        startOnBoot: true,
       ),
-      iosConfiguration: IosConfiguration(
-        autoStart: false,
-        onForeground: onStart,
-        onBackground: onIosBackground,
+      geo: tl.GeoConfig(
+        desiredAccuracy: tl.DesiredAccuracy.high,
+        distanceFilter: kDebugMode ? 0.0 : 5.0,
+        filter: tl.LocationFilter(
+          rejectMockLocations: kDebugMode ? false : true,
+        ),
       ),
-    );
+      android: tl.AndroidConfig(
+        foregroundService: tl.ForegroundServiceConfig(
+          notificationTitle: 'ABTSO Logistics',
+          notificationText: 'Shift active. Tracking location in background.',
+        ),
+      ),
+    ));
   }
 }
