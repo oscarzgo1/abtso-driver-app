@@ -483,49 +483,73 @@ export default function App() {
       );
       setAlerts(combinedAlerts);
 
-      // Fetch Live Locations from shifts + telemetry joins
+      // 1. Fetch Live Locations from live_driver_locations view
+      const { data: viewLocs } = await supabase!
+        .from('live_driver_locations')
+        .select('*');
+
+      // 2. Fetch Active Shifts for fallback (drivers who haven't emitted telemetry pings yet)
       const { data: activeShifts } = await supabase!
         .from('shifts')
         .select('*, drivers(full_name, driver_id)')
         .eq('status', 'active');
 
-      const locs: LiveLocation[] = [];
-      for (const shift of activeShifts || []) {
-        // Grab latest GPS location
-        const { data: lastLoc } = await supabase!
-          .from('gps_locations')
-          .select('*')
-          .eq('shift_id', shift.id)
-          .order('recorded_at', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        
-        if (lastLoc) {
-          locs.push({
-            driver_id: shift.driver_id,
-            driver_name: shift.drivers?.full_name || 'Driver',
-            driver_code: shift.drivers?.driver_id || 'DRV',
-            latitude: lastLoc.latitude,
-            longitude: lastLoc.longitude,
-            speed_mph: lastLoc.speed * 2.23694, // Convert m/s to mph
-            last_ping: lastLoc.recorded_at,
-            status: lastLoc.speed < 0.5 ? 'stationary' : 'moving',
-          });
-        } else if (shift.start_lat !== null && shift.start_lng !== null) {
-          // Fallback to start location if no pings have been recorded yet
-          locs.push({
-            driver_id: shift.driver_id,
-            driver_name: shift.drivers?.full_name || 'Driver',
-            driver_code: shift.drivers?.driver_id || 'DRV',
-            latitude: shift.start_lat,
-            longitude: shift.start_lng,
-            speed_mph: 0,
-            last_ping: shift.start_time,
-            status: 'stationary',
+      const locsMap = new Map<string, LiveLocation>();
+
+      // Populate from live_driver_locations view
+      if (viewLocs && viewLocs.length > 0) {
+        for (const item of viewLocs) {
+          locsMap.set(item.driver_id, {
+            driver_id: item.driver_id,
+            driver_name: item.full_name || 'Driver',
+            driver_code: item.emp_code || 'DRV',
+            latitude: item.latitude,
+            longitude: item.longitude,
+            speed_mph: (item.speed || 0) * 2.23694, // Convert m/s to mph
+            last_ping: item.recorded_at,
+            status: (item.speed || 0) < 0.5 ? 'stationary' : 'moving',
           });
         }
       }
-      setLiveLocations(locs);
+
+      // Fallback for any active drivers not captured by the view (e.g. initial clock-in prior to first ping)
+      for (const shift of activeShifts || []) {
+        if (!locsMap.has(shift.driver_id)) {
+          const { data: lastLoc } = await supabase!
+            .from('gps_locations')
+            .select('*')
+            .eq('shift_id', shift.id)
+            .order('recorded_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (lastLoc) {
+            locsMap.set(shift.driver_id, {
+              driver_id: shift.driver_id,
+              driver_name: shift.drivers?.full_name || 'Driver',
+              driver_code: shift.drivers?.driver_id || 'DRV',
+              latitude: lastLoc.latitude,
+              longitude: lastLoc.longitude,
+              speed_mph: (lastLoc.speed || 0) * 2.23694,
+              last_ping: lastLoc.recorded_at,
+              status: (lastLoc.speed || 0) < 0.5 ? 'stationary' : 'moving',
+            });
+          } else if (shift.start_lat !== null && shift.start_lng !== null) {
+            locsMap.set(shift.driver_id, {
+              driver_id: shift.driver_id,
+              driver_name: shift.drivers?.full_name || 'Driver',
+              driver_code: shift.drivers?.driver_id || 'DRV',
+              latitude: shift.start_lat,
+              longitude: shift.start_lng,
+              speed_mph: 0,
+              last_ping: shift.start_time,
+              status: 'stationary',
+            });
+          }
+        }
+      }
+
+      setLiveLocations(Array.from(locsMap.values()));
     } catch (e) {
       console.error(e);
     }
