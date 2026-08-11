@@ -106,7 +106,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                     // Official ABTSO Image Logo
                     Center(
                       child: Image.asset(
-                        'assets/images/abtso_logo.jpg',
+                        'assets/images/abtso_logo_transparent.png',
                         height: 54,
                         fit: BoxFit.contain,
                       ),

@@ -220,7 +220,7 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Image.asset('assets/images/abtso_logo.jpg', height: 26, fit: BoxFit.contain),
+            Image.asset('assets/images/abtso_logo_transparent.png', height: 26, fit: BoxFit.contain),
           ],
         ),
         bottom: PreferredSize(
@@ -506,7 +506,7 @@ class SettingsTab extends ConsumerWidget {
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Image.asset('assets/images/abtso_logo.jpg', height: 26, fit: BoxFit.contain),
+            Image.asset('assets/images/abtso_logo_transparent.png', height: 26, fit: BoxFit.contain),
           ],
         ),
         bottom: PreferredSize(

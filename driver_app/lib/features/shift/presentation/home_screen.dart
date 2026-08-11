@@ -332,7 +332,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         backgroundColor: Colors.white,
         elevation: 0,
         centerTitle: true,
-        title: Image.asset('assets/images/abtso_logo.jpg', height: 28, fit: BoxFit.contain),
+        title: Image.asset('assets/images/abtso_logo_transparent.png', height: 28, fit: BoxFit.contain),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
           child: Container(height: 1, color: const Color(0xFFE0E0E0)),
