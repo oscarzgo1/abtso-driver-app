@@ -1138,22 +1138,35 @@ export default function App() {
     }
 
     try {
-      const { error } = await supabase!
+      // 1. Always update public.drivers hourly_rate first (so rate update succeeds in DB)
+      const { error: driverErr } = await supabase!
+        .from('drivers')
+        .update({ hourly_rate: rateData.mon_fri_rate })
+        .eq('id', driverId);
+
+      if (driverErr) {
+        console.warn('drivers.hourly_rate update notice:', driverErr.message);
+      }
+
+      // 2. Attempt to upsert to employee_rates table for full Mon-Fri/Sat/Sun breakdown
+      const { error: ratesErr } = await supabase!
         .from('employee_rates')
         .upsert(rateData, { onConflict: 'driver_id' });
 
-      if (error) {
-        console.warn('employee_rates upsert error:', error.message);
-        alert(`Rate save failed: ${error.message}`);
-      } else {
-        // ── Sync drivers.hourly_rate so mobile app reflects the new rate ──
-        // The mobile app reads drivers.hourly_rate directly; employee_rates
-        // stores the full day-of-week breakdown. Keep both in sync.
-        await supabase!
-          .from('drivers')
-          .update({ hourly_rate: rateData.mon_fri_rate })
-          .eq('id', driverId);
+      if (ratesErr) {
+        console.warn('employee_rates upsert notice:', ratesErr.message);
+        if (driverErr) {
+          alert(`Rate save failed: ${ratesErr.message}`);
+        } else {
+          // driver.hourly_rate update succeeded even though employee_rates table is missing/restricted
+          try {
+            await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: driverId });
+          } catch (_) {}
 
+          await loadData();
+          alert(`Rate updated to £${rateData.mon_fri_rate}/hr in database! (Note: Run migration 009 in Supabase SQL Editor if you want to enable separate Sat/Sun rates).`);
+        }
+      } else {
         try {
           // Recalculate shift financials for this driver using updated rate
           await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: driverId });
