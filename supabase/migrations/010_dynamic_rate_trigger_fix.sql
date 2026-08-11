@@ -1,8 +1,13 @@
 -- ============================================================
--- ABTSO Logistics — Migration 010: Dynamic Rate Trigger Fix (Safely Handles Unassigned Records)
+-- ABTSO Logistics — Migration 010: Dynamic Rate Trigger & Missing Columns Fix
 -- ============================================================
 
--- 1. Helper function for ISO week number
+-- 1. Ensure night_out_status and night_out_amount columns exist on public.shifts
+ALTER TABLE public.shifts
+  ADD COLUMN IF NOT EXISTS night_out_status TEXT NOT NULL DEFAULT 'none',
+  ADD COLUMN IF NOT EXISTS night_out_amount NUMERIC(10,2) DEFAULT 0.00;
+
+-- 2. Helper function for ISO week number
 CREATE OR REPLACE FUNCTION public.get_iso_week_number(p_date DATE)
 RETURNS INTEGER AS $$
 BEGIN
@@ -10,7 +15,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 2. Helper function for ISO week year
+-- 3. Helper function for ISO week year
 CREATE OR REPLACE FUNCTION public.get_iso_week_year(p_date DATE)
 RETURNS INTEGER AS $$
 BEGIN
@@ -18,7 +23,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 3. Trigger Function calculate_shift_financials
+-- 4. Trigger Function calculate_shift_financials
 CREATE OR REPLACE FUNCTION public.calculate_shift_financials()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -37,12 +42,12 @@ BEGIN
   v_week_year := EXTRACT(ISOYEAR FROM NEW.start_time)::INTEGER;
   v_current_dow := EXTRACT(ISODOW FROM NEW.start_time);
 
-  -- 1. Default fallback rates
+  -- Default fallback rates
   v_mon_fri_rate := 16.00;
   v_sat_rate := 17.00;
   v_sun_rate := 18.00;
 
-  -- 2. Safely attempt to fetch custom rates using IF FOUND
+  -- Safely attempt to fetch custom rates using IF FOUND
   BEGIN
     SELECT * INTO v_rate_rec
     FROM public.employee_rates
@@ -106,16 +111,20 @@ BEGIN
 
     NEW.effective_rate := NEW.base_hourly_rate;
 
-    -- Add Night Out allowance if approved
-    IF NEW.night_out_status = 'approved' THEN
-      v_night_out_pay := COALESCE(NEW.night_out_amount, 25.00);
-      IF v_night_out_pay = 0.00 THEN
-        v_night_out_pay := 25.00;
-        NEW.night_out_amount := 25.00;
+    -- Safely add Night Out allowance if approved
+    BEGIN
+      IF NEW.night_out_status = 'approved' THEN
+        v_night_out_pay := COALESCE(NEW.night_out_amount, 25.00);
+        IF v_night_out_pay = 0.00 THEN
+          v_night_out_pay := 25.00;
+          NEW.night_out_amount := 25.00;
+        END IF;
+      ELSE
+        v_night_out_pay := 0.00;
       END IF;
-    ELSE
+    EXCEPTION WHEN OTHERS THEN
       v_night_out_pay := 0.00;
-    END IF;
+    END;
 
     NEW.total_pay := ROUND((NEW.total_hours * NEW.base_hourly_rate) + v_night_out_pay, 2);
   END IF;
@@ -123,3 +132,6 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 5. Force PostgREST schema cache reload
+NOTIFY pgrst, 'reload schema';
