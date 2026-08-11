@@ -1,16 +1,16 @@
 -- ============================================================
--- ABTSO Logistics — Migration 010: Dynamic Rate Trigger Fix & Self-Healing Helper Functions
+-- ABTSO Logistics — Migration 010: Dynamic Rate Trigger Fix (PostgreSQL Syntax Corrected)
 -- ============================================================
 
--- 1. Helper function for ISO week number (built-in PostgreSQL fallback)
+-- 1. Helper function for ISO week number (uses EXTRACT(WEEK FROM ...))
 CREATE OR REPLACE FUNCTION public.get_iso_week_number(p_date DATE)
 RETURNS INTEGER AS $$
 BEGIN
-  RETURN EXTRACT(ISOWEEK FROM p_date)::INTEGER;
+  RETURN EXTRACT(WEEK FROM p_date)::INTEGER;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 2. Helper function for ISO week year
+-- 2. Helper function for ISO week year (uses EXTRACT(ISOYEAR FROM ...))
 CREATE OR REPLACE FUNCTION public.get_iso_week_year(p_date DATE)
 RETURNS INTEGER AS $$
 BEGIN
@@ -18,7 +18,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 3. Self-healing Trigger Function calculate_shift_financials
+-- 3. Trigger Function calculate_shift_financials
 CREATE OR REPLACE FUNCTION public.calculate_shift_financials()
 RETURNS TRIGGER AS $$
 DECLARE
@@ -32,8 +32,8 @@ DECLARE
   v_driver_hourly_rate NUMERIC(10,2);
   v_night_out_pay NUMERIC(10,2) := 0.00;
 BEGIN
-  -- Built-in PostgreSQL EXTRACT (no dependency on custom functions)
-  v_week_number := EXTRACT(ISOWEEK FROM NEW.start_time)::INTEGER;
+  -- Standard PostgreSQL EXTRACT (WEEK = ISO 8601 week number 1-53)
+  v_week_number := EXTRACT(WEEK FROM NEW.start_time)::INTEGER;
   v_week_year := EXTRACT(ISOYEAR FROM NEW.start_time)::INTEGER;
   v_current_dow := EXTRACT(ISODOW FROM NEW.start_time);
 
