@@ -1,8 +1,8 @@
 -- ============================================================
--- ABTSO Logistics — Migration 010: Dynamic Rate Trigger Fix (PostgreSQL Syntax Corrected)
+-- ABTSO Logistics — Migration 010: Dynamic Rate Trigger Fix (Safely Handles Unassigned Records)
 -- ============================================================
 
--- 1. Helper function for ISO week number (uses EXTRACT(WEEK FROM ...))
+-- 1. Helper function for ISO week number
 CREATE OR REPLACE FUNCTION public.get_iso_week_number(p_date DATE)
 RETURNS INTEGER AS $$
 BEGIN
@@ -10,7 +10,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- 2. Helper function for ISO week year (uses EXTRACT(ISOYEAR FROM ...))
+-- 2. Helper function for ISO week year
 CREATE OR REPLACE FUNCTION public.get_iso_week_year(p_date DATE)
 RETURNS INTEGER AS $$
 BEGIN
@@ -32,34 +32,46 @@ DECLARE
   v_driver_hourly_rate NUMERIC(10,2);
   v_night_out_pay NUMERIC(10,2) := 0.00;
 BEGIN
-  -- Standard PostgreSQL EXTRACT (WEEK = ISO 8601 week number 1-53)
+  -- Standard PostgreSQL EXTRACT
   v_week_number := EXTRACT(WEEK FROM NEW.start_time)::INTEGER;
   v_week_year := EXTRACT(ISOYEAR FROM NEW.start_time)::INTEGER;
   v_current_dow := EXTRACT(ISODOW FROM NEW.start_time);
 
-  -- Safely fetch rates if employee_rates table exists
+  -- 1. Default fallback rates
+  v_mon_fri_rate := 16.00;
+  v_sat_rate := 17.00;
+  v_sun_rate := 18.00;
+
+  -- 2. Safely attempt to fetch custom rates using IF FOUND
   BEGIN
-    SELECT mon_fri_rate, sat_rate, sun_rate INTO v_rate_rec
+    SELECT * INTO v_rate_rec
     FROM public.employee_rates
     WHERE driver_id = NEW.driver_id;
 
-    IF v_rate_rec IS NOT NULL AND v_rate_rec.mon_fri_rate IS NOT NULL THEN
-      v_mon_fri_rate := v_rate_rec.mon_fri_rate;
+    IF FOUND THEN
+      v_mon_fri_rate := COALESCE(v_rate_rec.mon_fri_rate, 16.00);
       v_sat_rate := COALESCE(v_rate_rec.sat_rate, v_mon_fri_rate + 1.00);
       v_sun_rate := COALESCE(v_rate_rec.sun_rate, v_mon_fri_rate + 2.00);
+    ELSE
+      -- Fallback: check hourly_rate on drivers table
+      SELECT hourly_rate INTO v_driver_hourly_rate
+      FROM public.drivers
+      WHERE id = NEW.driver_id;
+
+      IF FOUND AND v_driver_hourly_rate IS NOT NULL THEN
+        v_mon_fri_rate := v_driver_hourly_rate;
+        v_sat_rate := v_driver_hourly_rate + 1.00;
+        v_sun_rate := v_driver_hourly_rate + 2.00;
+      END IF;
     END IF;
   EXCEPTION WHEN OTHERS THEN
-    -- Table employee_rates may not exist yet, catch silently
-  END;
-
-  IF v_rate_rec IS NULL OR v_rate_rec.mon_fri_rate IS NULL THEN
-    -- Fallback: check hourly_rate on public.drivers table
+    -- Table employee_rates may not exist yet, fallback safely
     BEGIN
       SELECT hourly_rate INTO v_driver_hourly_rate
       FROM public.drivers
       WHERE id = NEW.driver_id;
 
-      IF v_driver_hourly_rate IS NOT NULL THEN
+      IF FOUND AND v_driver_hourly_rate IS NOT NULL THEN
         v_mon_fri_rate := v_driver_hourly_rate;
         v_sat_rate := v_driver_hourly_rate + 1.00;
         v_sun_rate := v_driver_hourly_rate + 2.00;
@@ -67,7 +79,7 @@ BEGIN
     EXCEPTION WHEN OTHERS THEN
       NULL;
     END;
-  END IF;
+  END;
 
   NEW.week_number := v_week_number;
   NEW.week_year := v_week_year;
