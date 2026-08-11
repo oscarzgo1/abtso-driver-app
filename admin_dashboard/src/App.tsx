@@ -1200,29 +1200,27 @@ export default function App() {
     if (isMockMode) return;
 
     try {
-      // 1. Direct DB update on shifts table
-      const { error: dbErr } = await supabase!
-        .from('shifts')
-        .update({
-          night_out_status: status,
-          night_out_amount: newNightOutAmount,
-          total_pay: newTotalPay
-        })
-        .eq('id', shiftId);
+      // 1. Explicit RPC call to update_night_out_status as primary
+      const { data, error } = await supabase!.rpc('update_night_out_status', {
+        p_shift_id: shiftId,
+        p_status: status,
+        p_amount: amount,
+      });
 
-      if (dbErr) {
-        console.warn('Direct DB update notice for night_out_status:', dbErr.message);
+      if (error || (data && data.success === false)) {
+        console.warn('RPC update_night_out_status notice:', error?.message || data?.error);
+        // Direct DB update fallback if RPC function is missing/pending
+        await supabase!
+          .from('shifts')
+          .update({
+            night_out_status: status,
+            night_out_amount: newNightOutAmount,
+            total_pay: newTotalPay
+          })
+          .eq('id', shiftId);
       }
 
-      // 2. Also call RPC if available
-      try {
-        await supabase!.rpc('update_night_out_status', {
-          p_shift_id: shiftId,
-          p_status: status,
-          p_amount: amount,
-        });
-      } catch (_) {}
-
+      // 2. Fetch fresh data after RPC call / DB update succeeds
       await loadData();
     } catch (e: any) {
       console.warn('Connection error during Night Out update:', e?.message);
@@ -2271,39 +2269,45 @@ export default function App() {
                               </td>
                               <td>
                                 <div className="flex align-center gap-6">
-                                  {isPendingN_O ? (
-                                    <>
+                                  {userRole === 'payroll_admin' ? (
+                                    isPendingN_O ? (
+                                      <>
+                                        <button
+                                          className="btn btn-success"
+                                          style={{ padding: '4px 8px', fontSize: '11px' }}
+                                          onClick={() => handleUpdateNightOutStatus(shift.id, 'approved', 25.00)}
+                                        >
+                                          Approve N/O (£25)
+                                        </button>
+                                        <button
+                                          className="btn btn-danger"
+                                          style={{ padding: '4px 8px', fontSize: '11px' }}
+                                          onClick={() => handleUpdateNightOutStatus(shift.id, 'rejected', 0)}
+                                        >
+                                          Reject
+                                        </button>
+                                      </>
+                                    ) : isApprovedN_O ? (
                                       <button
-                                        className="btn btn-success"
+                                        className="btn btn-secondary"
+                                        style={{ padding: '4px 8px', fontSize: '11px', color: '#EF4444' }}
+                                        onClick={() => handleUpdateNightOutStatus(shift.id, 'none', 0)}
+                                      >
+                                        Remove N/O
+                                      </button>
+                                    ) : (
+                                      <button
+                                        className="btn btn-secondary"
                                         style={{ padding: '4px 8px', fontSize: '11px' }}
                                         onClick={() => handleUpdateNightOutStatus(shift.id, 'approved', 25.00)}
                                       >
-                                        Approve N/O (£25)
+                                        + Add N/O (£25)
                                       </button>
-                                      <button
-                                        className="btn btn-danger"
-                                        style={{ padding: '4px 8px', fontSize: '11px' }}
-                                        onClick={() => handleUpdateNightOutStatus(shift.id, 'rejected', 0)}
-                                      >
-                                        Reject
-                                      </button>
-                                    </>
-                                  ) : isApprovedN_O ? (
-                                    <button
-                                      className="btn btn-secondary"
-                                      style={{ padding: '4px 8px', fontSize: '11px', color: '#EF4444' }}
-                                      onClick={() => handleUpdateNightOutStatus(shift.id, 'none', 0)}
-                                    >
-                                      Remove N/O
-                                    </button>
+                                    )
                                   ) : (
-                                    <button
-                                      className="btn btn-secondary"
-                                      style={{ padding: '4px 8px', fontSize: '11px' }}
-                                      onClick={() => handleUpdateNightOutStatus(shift.id, 'approved', 25.00)}
-                                    >
-                                      + Add N/O (£25)
-                                    </button>
+                                    <span className="text-xs text-muted font-semibold">
+                                      {isPendingN_O ? 'Pending Approval' : (isApprovedN_O ? 'Approved (+£25)' : 'Standard')}
+                                    </span>
                                   )}
                                 </div>
                               </td>

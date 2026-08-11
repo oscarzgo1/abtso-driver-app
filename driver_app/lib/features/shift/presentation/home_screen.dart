@@ -596,130 +596,167 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   
                   const SizedBox(height: 10),
 
-                  if (!state.isNearDepot)
-                    Container(
-                      height: 44,
-                      decoration: BoxDecoration(
-                        color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                          width: 1.5,
+                  if (isClockedIn) ...[
+                    // ── Active Shift Controls (Night Out + Clock Out) ──
+                    // Always active regardless of geofence location
+                    if (state.activeShift?.nightOutStatus == 'pending') ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF451A03) : const Color(0xFFFEF3C7),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
                         ),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        'OUTSIDE DEPOT RANGE',
-                        style: GoogleFonts.outfit(
-                          color: isDark ? Colors.white30 : Colors.black38,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 12,
-                          letterSpacing: 1.0,
-                        ),
-                      ),
-                    )
-                  else
-                    if (isClockedIn) ...[
-                      if (state.activeShift?.nightOutStatus == 'pending') ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: isDark ? const Color(0xFF451A03) : const Color(0xFFFEF3C7),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(Icons.bedtime_rounded, color: Color(0xFFF59E0B), size: 18),
-                              const SizedBox(width: 8),
-                              Text(
-                                'NIGHT OUT REQUESTED (PENDING)',
-                                style: GoogleFonts.outfit(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 11,
-                                  color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
-                                  letterSpacing: 0.5,
-                                ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.bedtime_rounded, color: Color(0xFFF59E0B), size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'NIGHT OUT REQUESTED (PENDING)',
+                              style: GoogleFonts.outfit(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 11,
+                                color: isDark ? const Color(0xFFFDE68A) : const Color(0xFF92400E),
+                                letterSpacing: 0.5,
                               ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                      ] else if (state.activeShift?.nightOutStatus == 'approved') ...[
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          decoration: BoxDecoration(
-                            color: isDark ? const Color(0xFF064E3B) : const Color(0xFFDCFCE7),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: const Color(0xFF22C55E), width: 1.5),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(Icons.check_circle_rounded, color: Color(0xFF22C55E), size: 18),
-                              const SizedBox(width: 8),
-                              Text(
-                                'NIGHT OUT APPROVED (+£25.00)',
-                                style: GoogleFonts.outfit(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 11,
-                                  color: isDark ? const Color(0xFFA7F3D0) : const Color(0xFF15803D),
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                      ] else ...[
-                        OutlinedButton.icon(
-                          onPressed: state.isLoading
-                              ? null
-                              : () async {
-                                  final messenger = ScaffoldMessenger.of(context);
-                                  final success = await ref.read(shiftProvider.notifier).requestNightOut();
-                                  if (success) {
-                                    messenger.showSnackBar(
-                                      const SnackBar(
-                                        content: Text('Night Out request submitted successfully!'),
-                                        backgroundColor: Color(0xFFF59E0B),
-                                      ),
-                                    );
-                                  }
-                                },
-                          icon: const Icon(Icons.bedtime_outlined, size: 18, color: Color(0xFFF59E0B)),
-                          label: Text(
-                            'REQUEST NIGHT OUT',
-                            style: GoogleFonts.outfit(
-                              fontWeight: FontWeight.w800,
-                              fontSize: 12,
-                              color: isDark ? Colors.white : Colors.black87,
-                              letterSpacing: 0.5,
                             ),
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(vertical: 12),
-                            side: const BorderSide(color: Color(0xFFF59E0B), width: 1.5),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ] else if (state.activeShift?.nightOutStatus == 'approved') ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF064E3B) : const Color(0xFFDCFCE7),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF22C55E), width: 1.5),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.check_circle_rounded, color: Color(0xFF22C55E), size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'NIGHT OUT APPROVED (+£25.00)',
+                              style: GoogleFonts.outfit(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 11,
+                                color: isDark ? const Color(0xFFA7F3D0) : const Color(0xFF15803D),
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ] else ...[
+                      OutlinedButton.icon(
+                        onPressed: state.isLoading
+                            ? null
+                            : () async {
+                                final messenger = ScaffoldMessenger.of(context);
+                                final success = await ref.read(shiftProvider.notifier).requestNightOut();
+                                if (success) {
+                                  messenger.showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Night Out request submitted successfully!'),
+                                      backgroundColor: Color(0xFFF59E0B),
+                                    ),
+                                  );
+                                }
+                              },
+                        icon: const Icon(Icons.bedtime_outlined, size: 18, color: Color(0xFFF59E0B)),
+                        label: Text(
+                          'REQUEST NIGHT OUT',
+                          style: GoogleFonts.outfit(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 12,
+                            color: isDark ? Colors.white : Colors.black87,
+                            letterSpacing: 0.5,
                           ),
                         ),
-                        const SizedBox(height: 12),
-                      ],
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          side: const BorderSide(color: Color(0xFFF59E0B), width: 1.5),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    // Clock Out Button (Always enabled when clocked in)
+                    // Clock Out Button (Always enabled when clocked in)
+                    ElevatedButton(
+                      onPressed: state.isLoading ? null : () => ref.read(shiftProvider.notifier).clockOut(),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFCC0000),  // Brand red for clock-out
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 46),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        elevation: 0,
+                      ),
+                      child: state.isLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.stop_rounded, size: 22),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'CLOCK OUT OF SHIFT',
+                                  style: GoogleFonts.outfit(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 14,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                  ] else ...[
+                    // ── Inactive Shift Controls (Clock In Only) ──
+                    if (!state.isNearDepot) ...[
+                      Container(
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                            width: 1.5,
+                          ),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          'OUTSIDE DEPOT RANGE',
+                          style: GoogleFonts.outfit(
+                            color: isDark ? Colors.white30 : Colors.black38,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 12,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
                     ],
                     ElevatedButton(
-                      onPressed: state.isLoading
+                      onPressed: (state.isLoading || !state.isNearDepot)
                           ? null
-                          : (isClockedIn
-                              ? () => ref.read(shiftProvider.notifier).clockOut()
-                              : (state.isNearDepot ? () => ref.read(shiftProvider.notifier).clockIn() : null)),
+                          : () => ref.read(shiftProvider.notifier).clockIn(),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: isClockedIn
-                            ? const Color(0xFFCC0000)  // Brand red for clock-out
-                            : (state.isNearDepot ? const Color(0xFF2E7D32) : const Color(0xFF9CA3AF)), // Green if near depot, grey if outside
-                        disabledBackgroundColor: isClockedIn
-                            ? const Color(0xFFCC0000).withOpacity(0.5)
-                            : const Color(0xFFE5E7EB),
+                        backgroundColor: state.isNearDepot ? const Color(0xFF2E7D32) : const Color(0xFF9CA3AF),
+                        disabledBackgroundColor: const Color(0xFFE5E7EB),
                         disabledForegroundColor: const Color(0xFF9CA3AF),
                         foregroundColor: Colors.white,
                         minimumSize: const Size(double.infinity, 46),
@@ -740,44 +777,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                           : Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                AnimatedBuilder(
-                                  animation: _iconAnimationController,
-                                  builder: (context, child) {
-                                    final progress = _iconAnimationController.value;
-                                    return SizedBox(
-                                      width: 22,
-                                      height: 22,
-                                      child: Stack(
-                                        alignment: Alignment.center,
-                                        children: [
-                                          Transform.rotate(
-                                            angle: progress * 1.5 * 3.14159, // ~270 degree rotation
-                                            child: Transform.scale(
-                                              scale: 1.0 - progress,
-                                              child: Opacity(
-                                                opacity: 1.0 - progress,
-                                                child: const Icon(Icons.play_arrow_rounded, size: 18),
-                                              ),
-                                            ),
-                                          ),
-                                          Transform.rotate(
-                                            angle: (progress - 1.0) * 1.5 * 3.14159,
-                                            child: Transform.scale(
-                                              scale: progress,
-                                              child: Opacity(
-                                                opacity: progress,
-                                                child: const Icon(Icons.stop_rounded, size: 18),
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
-                                ),
+                                const Icon(Icons.play_arrow_rounded, size: 22),
                                 const SizedBox(width: 8),
                                 Text(
-                                  isClockedIn ? 'CLOCK OUT OF SHIFT' : 'CLOCK IN TO SHIFT',
+                                  'CLOCK IN TO SHIFT',
                                   style: GoogleFonts.outfit(
                                     fontWeight: FontWeight.w900,
                                     fontSize: 14,
@@ -787,6 +790,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               ],
                             ),
                     ),
+                  ],
 
                   // Dev Location controller presets drawer (sandbox debug mode only)
                   if (kDebugMode) ...[
