@@ -712,11 +712,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                           ? null
                           : (isClockedIn
                               ? () => ref.read(shiftProvider.notifier).clockOut()
-                              : () => ref.read(shiftProvider.notifier).clockIn()),
+                              : (state.isNearDepot ? () => ref.read(shiftProvider.notifier).clockIn() : null)),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: isClockedIn
                             ? const Color(0xFFCC0000)  // Brand red for clock-out
-                            : const Color(0xFF2E7D32), // Brand green for clock-in
+                            : (state.isNearDepot ? const Color(0xFF2E7D32) : const Color(0xFF9CA3AF)), // Green if near depot, grey if outside
+                        disabledBackgroundColor: isClockedIn
+                            ? const Color(0xFFCC0000).withOpacity(0.5)
+                            : const Color(0xFFE5E7EB),
+                        disabledForegroundColor: const Color(0xFF9CA3AF),
                         foregroundColor: Colors.white,
                         minimumSize: const Size(double.infinity, 46),
                         shape: RoundedRectangleBorder(

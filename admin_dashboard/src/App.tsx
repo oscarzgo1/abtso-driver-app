@@ -1181,27 +1181,49 @@ export default function App() {
   };
 
   const handleUpdateNightOutStatus = async (shiftId: string, status: 'approved' | 'rejected' | 'none', amount = 25.00) => {
+    const targetShift = shifts.find(s => s.id === shiftId);
+    const baseHours = targetShift?.total_hours || 0;
+    const baseRate = targetShift?.effective_rate || 0;
+    const newNightOutAmount = status === 'approved' ? amount : 0;
+    const newTotalPay = Number(((baseHours * baseRate) + newNightOutAmount).toFixed(2));
+
     // Optimistically update local shift state immediately
     setShifts(prev =>
-      prev.map(s => (s.id === shiftId ? { ...s, night_out_status: status, night_out_amount: status === 'approved' ? amount : 0 } : s))
+      prev.map(s => (s.id === shiftId ? {
+        ...s,
+        night_out_status: status,
+        night_out_amount: newNightOutAmount,
+        total_pay: newTotalPay
+      } : s))
     );
 
     if (isMockMode) return;
 
     try {
-      const { data, error } = await supabase!.rpc('update_night_out_status', {
-        p_shift_id: shiftId,
-        p_status: status,
-        p_amount: amount,
-      });
+      // 1. Direct DB update on shifts table
+      const { error: dbErr } = await supabase!
+        .from('shifts')
+        .update({
+          night_out_status: status,
+          night_out_amount: newNightOutAmount,
+          total_pay: newTotalPay
+        })
+        .eq('id', shiftId);
 
-      if (error) {
-        console.warn('Night Out RPC notice:', error.message);
-      } else if (data && data.success === false) {
-        console.warn('Night Out RPC error:', data.error);
-      } else {
-        await loadData();
+      if (dbErr) {
+        console.warn('Direct DB update notice for night_out_status:', dbErr.message);
       }
+
+      // 2. Also call RPC if available
+      try {
+        await supabase!.rpc('update_night_out_status', {
+          p_shift_id: shiftId,
+          p_status: status,
+          p_amount: amount,
+        });
+      } catch (_) {}
+
+      await loadData();
     } catch (e: any) {
       console.warn('Connection error during Night Out update:', e?.message);
     }

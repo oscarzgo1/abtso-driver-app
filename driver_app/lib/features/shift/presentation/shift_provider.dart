@@ -636,38 +636,42 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         return true;
       }
 
-      final response = await SupabaseService.client.rpc(
-        'request_night_out',
-        params: {'p_shift_id': activeShift.id},
-      );
-      final result = response as Map<String, dynamic>;
+      // 1. Direct table update on shifts row
+      await SupabaseService.client
+          .from('shifts')
+          .update({'night_out_status': 'pending'})
+          .eq('id', activeShift.id);
 
-      if (result['success'] == true) {
-        final updatedShift = DriverShift(
-          id: activeShift.id,
-          driverId: activeShift.driverId,
-          depotId: activeShift.depotId,
-          startTime: activeShift.startTime,
-          endTime: activeShift.endTime,
-          status: activeShift.status,
-          dayType: activeShift.dayType,
-          baseHourlyRate: activeShift.baseHourlyRate,
-          overrideRate: activeShift.overrideRate,
-          effectiveRate: activeShift.effectiveRate,
-          totalHours: activeShift.totalHours,
-          totalPay: activeShift.totalPay,
-          weekNumber: activeShift.weekNumber,
-          weekYear: activeShift.weekYear,
-          nightOutStatus: 'pending',
-          nightOutAmount: activeShift.nightOutAmount,
+      // 2. RPC call (optional)
+      try {
+        await SupabaseService.client.rpc(
+          'request_night_out',
+          params: {'p_shift_id': activeShift.id},
         );
-        state = state.copyWith(activeShift: updatedShift);
-        return true;
-      } else {
-        state = state.copyWith(errorMessage: result['error'] ?? 'Failed to request Night Out.');
-        return false;
-      }
+      } catch (_) {}
+
+      final updatedShift = DriverShift(
+        id: activeShift.id,
+        driverId: activeShift.driverId,
+        depotId: activeShift.depotId,
+        startTime: activeShift.startTime,
+        endTime: activeShift.endTime,
+        status: activeShift.status,
+        dayType: activeShift.dayType,
+        baseHourlyRate: activeShift.baseHourlyRate,
+        overrideRate: activeShift.overrideRate,
+        effectiveRate: activeShift.effectiveRate,
+        totalHours: activeShift.totalHours,
+        totalPay: activeShift.totalPay,
+        weekNumber: activeShift.weekNumber,
+        weekYear: activeShift.weekYear,
+        nightOutStatus: 'pending',
+        nightOutAmount: activeShift.nightOutAmount,
+      );
+      state = state.copyWith(activeShift: updatedShift);
+      return true;
     } catch (e) {
+      debugPrint('Error requesting Night Out: $e');
       state = state.copyWith(errorMessage: 'Connection error while requesting Night Out.');
       return false;
     } finally {
