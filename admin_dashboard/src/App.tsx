@@ -1268,11 +1268,11 @@ export default function App() {
         'Base': s.depot_name || 'N/A',
         'Start Time': new Date(s.start_time).toLocaleString(),
         'End Time': s.end_time ? new Date(s.end_time).toLocaleString() : 'Active',
-        'Hours Worked': s.total_hours?.toFixed(2) || '0.00',
-        'Effective Rate (£/hr)': s.effective_rate.toFixed(2),
+        'Hours Worked': (s.total_hours || 0).toFixed(2),
+        'Effective Rate (£/hr)': (s.effective_rate || s.base_hourly_rate || 16.00).toFixed(2),
         'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
         'Night Out Allowance (£)': (s.night_out_amount || 0).toFixed(2),
-        'Gross Pay (£)': s.total_pay?.toFixed(2) || '0.00',
+        'Gross Pay (£)': (s.total_pay || 0).toFixed(2),
       };
     });
 
@@ -1626,7 +1626,7 @@ export default function App() {
                 <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>GROSS PAYROLL</span>
                 <FileSpreadsheet size={16} className="text-warning" />
               </div>
-              <h2 className="text-2xl font-black mt-8 text-primary">£{totalWeeklyPayout.toFixed(2)}</h2>
+              <h2 className="text-2xl font-black mt-8 text-primary">£{(totalWeeklyPayout || 0).toFixed(2)}</h2>
               <span className="text-xs text-muted">Calculated gross pay</span>
             </div>
           ) : (
@@ -1706,7 +1706,7 @@ export default function App() {
                           <td className="font-bold text-primary">{loc.driver_name} ({loc.driver_code})</td>
                            <td className="font-mono text-secondary text-sm">
                             <div className="flex align-center gap-8">
-                              <span>{loc.latitude.toFixed(6)}, {loc.longitude.toFixed(6)}</span>
+                              <span>{(loc.latitude || 0).toFixed(6)}, {(loc.longitude || 0).toFixed(6)}</span>
                               <a
                                 href={`https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}`}
                                 target="_blank"
@@ -1803,7 +1803,7 @@ export default function App() {
                       </p>
                       
                       <p className="text-xs text-muted font-mono mt-8 mb-0 flex align-center gap-12">
-                        <span>GPS Coordinate: {alert.latitude.toFixed(6)}, {alert.longitude.toFixed(6)}</span>
+                        <span>GPS Coordinate: {(alert.latitude || 0).toFixed(6)}, {(alert.longitude || 0).toFixed(6)}</span>
                         <a
                           href={`https://www.google.com/maps/search/?api=1&query=${alert.latitude},${alert.longitude}`}
                           target="_blank"
@@ -2068,7 +2068,7 @@ export default function App() {
                               onChange={(e) => setEditMonFriRate(e.target.value)}
                             />
                           ) : (
-                            <span className="font-bold text-primary">£{currentRate.mon_fri_rate.toFixed(2)}/hr</span>
+                            <span className="font-bold text-primary">£{(currentRate?.mon_fri_rate || 16.00).toFixed(2)}/hr</span>
                           )}
                         </td>
                         <td>
@@ -2082,7 +2082,7 @@ export default function App() {
                               onChange={(e) => setEditSatRate(e.target.value)}
                             />
                           ) : (
-                            <span className="font-bold text-secondary">£{currentRate.sat_rate.toFixed(2)}/hr</span>
+                            <span className="font-bold text-secondary">£{(currentRate?.sat_rate || 17.00).toFixed(2)}/hr</span>
                           )}
                         </td>
                         <td>
@@ -2096,7 +2096,7 @@ export default function App() {
                               onChange={(e) => setEditSunRate(e.target.value)}
                             />
                           ) : (
-                            <span className="font-bold text-success">£{currentRate.sun_rate.toFixed(2)}/hr</span>
+                            <span className="font-bold text-success">£{(currentRate?.sun_rate || 18.00).toFixed(2)}/hr</span>
                           )}
                         </td>
                         <td>
@@ -2252,8 +2252,8 @@ export default function App() {
                                 <span className="badge badge-accent">{agency}</span>
                               </td>
                               <td className="text-secondary">{startDate.toLocaleDateString()}</td>
-                              <td>{shift.total_hours?.toFixed(2) ?? '0.00'} hrs</td>
-                              <td className="font-semibold">£{shift.effective_rate.toFixed(2)}/hr</td>
+                              <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
+                              <td className="font-semibold">£{(shift.effective_rate || shift.base_hourly_rate || 16.00).toFixed(2)}/hr</td>
                               <td>
                                 {isApprovedN_O ? (
                                   <span className="badge badge-success font-bold">
@@ -2320,10 +2320,10 @@ export default function App() {
                         {/* Summary Row */}
                         <tr style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', fontWeight: 'bold', borderTop: '2px solid rgba(16, 185, 129, 0.2)' }}>
                           <td colSpan={3} className="text-primary font-black" style={{ padding: '16px' }}>
-                            TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts | {approvedNightOutsCount} Night Outs: £{totalNightOutPay.toFixed(2)})
+                            TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts | {approvedNightOutsCount} Night Outs: £{(totalNightOutPay || 0).toFixed(2)})
                           </td>
                           <td className="text-primary font-bold" style={{ padding: '16px' }}>
-                            {totalHours.toFixed(2)} hrs
+                            {(totalHours || 0).toFixed(2)} hrs
                           </td>
                           <td></td>
                           <td></td>
