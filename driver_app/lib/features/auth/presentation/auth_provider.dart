@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../core/network/supabase_service.dart';
 
 // ── Auth State ──────────────────────────────────────────────
@@ -31,8 +33,51 @@ class AuthState {
 
 // ── Auth Notifier ───────────────────────────────────────────
 class AuthNotifier extends StateNotifier<AuthState> {
+  StreamSubscription? _authSubscription;
+
   AuthNotifier() : super(const AuthState()) {
+    _initAuthListener();
     checkSession(); // Check local session auto-login on startup
+  }
+
+  /// Listens to cross-tab & real-time Supabase Auth state changes.
+  /// Prevents "Ghost UI" bugs where Tab B login overwrites session for Tab A.
+  void _initAuthListener() {
+    if (SupabaseService.isMockMode) return;
+
+    try {
+      _authSubscription = SupabaseService.client.auth.onAuthStateChange.listen((data) {
+        final AuthChangeEvent event = data.event;
+        final Session? session = data.session;
+
+        if (event == AuthChangeEvent.signedOut || session == null) {
+          // Underlying session was signed out or cleared (e.g. from another tab)
+          if (state.status == AuthStatus.authenticated) {
+            logout();
+          }
+        } else if (event == AuthChangeEvent.signedIn ||
+                   event == AuthChangeEvent.tokenRefreshed ||
+                   event == AuthChangeEvent.userUpdated) {
+          // Re-verify if session user ID matches the currently loaded Driver Profile
+          final sessionUserId = session.user.id;
+          final loadedDriverUuid = state.driver?['id'];
+
+          if (state.status == AuthStatus.authenticated &&
+              loadedDriverUuid != null &&
+              loadedDriverUuid != sessionUserId) {
+            // Identity mismatch detected (cross-tab session overwrite)!
+            // Instantly force logout to prevent Ghost UI
+            logout();
+          }
+        }
+      });
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
   }
 
   /// Verifies if there is a cached login session under 14 days old
