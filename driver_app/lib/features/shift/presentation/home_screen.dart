@@ -325,30 +325,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       }
     });
 
-    // Real-time Night Out decision notification (Approved / Rejected)
-    ref.listen<ShiftState>(shiftProvider, (previous, next) {
-      final prevStatus = previous?.activeShift?.nightOutStatus;
-      final nextStatus = next.activeShift?.nightOutStatus;
-
-      if (prevStatus == 'pending' && nextStatus == 'approved') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('🎉 Your Night Out request has been APPROVED by Payroll (+£25.00)'),
-            backgroundColor: Color(0xFF22C55E),
-            duration: Duration(seconds: 4),
-          ),
-        );
-      } else if (prevStatus == 'pending' && nextStatus == 'rejected') {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Notice: Your Night Out request was declined by Payroll Administration.'),
-            backgroundColor: Color(0xFFEF4444),
-            duration: Duration(seconds: 4),
-          ),
-        );
-      }
-    });
-
 
 
 
@@ -665,7 +641,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                             const Icon(Icons.check_circle_rounded, color: Color(0xFF22C55E), size: 18),
                             const SizedBox(width: 8),
                             Text(
-                              'NIGHT OUT APPROVED (+£25.00)',
+                              'NIGHT OUT APPROVED',
                               style: GoogleFonts.outfit(
                                 fontWeight: FontWeight.w800,
                                 fontSize: 11,
