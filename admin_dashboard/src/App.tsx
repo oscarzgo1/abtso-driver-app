@@ -163,11 +163,114 @@ export default function App() {
   const [liveLocations, setLiveLocations] = useState<LiveLocation[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const mockProgressRef = useRef<{ [driverId: string]: { index: number; direction: 'forward' | 'backward'; waitTicks: number } }>({});
-
   // Audio Control
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const audioIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const lastSirenPlayRef = useRef<number>(0);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  const getAudioContext = useCallback(() => {
+    if (!audioCtxRef.current) {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        audioCtxRef.current = new AudioCtx();
+      }
+    }
+    if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+      audioCtxRef.current.resume().catch(() => {});
+    }
+    return audioCtxRef.current;
+  }, []);
+
+  // Global listener to unlock audio on first user click/keydown/tap anywhere on screen
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+        audioCtxRef.current.resume().catch(() => {});
+      }
+    };
+    window.addEventListener('click', unlockAudio);
+    window.addEventListener('keydown', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
+    return () => {
+      window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+    };
+  }, []);
+
+  // ── Audio Alert Synthesizer ─────────────────────────────────
+  const playAlertSiren = useCallback(() => {
+    if (isAudioMuted) return;
+    
+    // Cooldown check: prevent duplicate overlapping beep loops
+    const now = Date.now();
+    if (now - lastSirenPlayRef.current < 1200) {
+      return;
+    }
+    lastSirenPlayRef.current = now;
+
+    try {
+      const ctx = getAudioContext();
+      if (ctx) {
+        if (ctx.state === 'suspended') {
+          ctx.resume().catch(() => {});
+        }
+        
+        // Siren Osc 1 (High Tone 880Hz)
+        const osc1 = ctx.createOscillator();
+        const gain1 = ctx.createGain();
+        osc1.type = 'sawtooth';
+        osc1.frequency.setValueAtTime(880, ctx.currentTime);
+        gain1.gain.setValueAtTime(0.4, ctx.currentTime);
+        gain1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        osc1.connect(gain1);
+        gain1.connect(ctx.destination);
+        osc1.start(ctx.currentTime);
+        osc1.stop(ctx.currentTime + 0.3);
+        
+        // Siren Osc 2 (Low Tone 660Hz after 150ms)
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.type = 'sawtooth';
+        osc2.frequency.setValueAtTime(660, ctx.currentTime + 0.15);
+        gain2.gain.setValueAtTime(0.4, ctx.currentTime + 0.15);
+        gain2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.45);
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.start(ctx.currentTime + 0.15);
+        osc2.stop(ctx.currentTime + 0.45);
+      }
+    } catch (e) {
+      console.warn('Audio siren error:', e);
+    }
+  }, [isAudioMuted, getAudioContext]);
+
+  // Trigger looping sirens when unacknowledged alerts exist
+  useEffect(() => {
+    const unacknowledged = alerts.filter(a => !a.acknowledged);
+    
+    if (unacknowledged.length > 0 && !isAudioMuted) {
+      if (!audioIntervalRef.current) {
+        playAlertSiren();
+        audioIntervalRef.current = setInterval(() => {
+          playAlertSiren();
+        }, 2200);
+      }
+    } else {
+      if (audioIntervalRef.current) {
+        clearInterval(audioIntervalRef.current);
+        audioIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (audioIntervalRef.current) {
+        clearInterval(audioIntervalRef.current);
+        audioIntervalRef.current = null;
+      }
+    };
+  }, [alerts, isAudioMuted, playAlertSiren]);
 
   // Driver CRUD Forms State
   const [isAddingEmployee, setIsAddingEmployee] = useState(false);
@@ -300,84 +403,6 @@ export default function App() {
       status: 'moving',
     },
   ];
-
-  // ── Audio Alert Synthesizer ─────────────────────────────────
-  const playAlertSiren = () => {
-    if (isAudioMuted) return;
-    
-    // Cooldown check: prevent duplicate overlapping beep loops
-    const now = Date.now();
-    if (now - lastSirenPlayRef.current < 1500) {
-      return;
-    }
-    lastSirenPlayRef.current = now;
-
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (AudioCtx) {
-        const ctx = new AudioCtx();
-        
-        // Siren Osc 1 (Low Beep)
-        const osc1 = ctx.createOscillator();
-        const gain1 = ctx.createGain();
-        osc1.type = 'sawtooth';
-        osc1.frequency.setValueAtTime(680, ctx.currentTime);
-        gain1.gain.setValueAtTime(0.3, ctx.currentTime);
-        gain1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
-        osc1.connect(gain1);
-        gain1.connect(ctx.destination);
-        
-        // Siren Osc 2 (High Beep after 150ms)
-        setTimeout(() => {
-          if (ctx.state === 'closed') return;
-          const osc2 = ctx.createOscillator();
-          const gain2 = ctx.createGain();
-          osc2.type = 'sawtooth';
-          osc2.frequency.setValueAtTime(880, ctx.currentTime);
-          gain2.gain.setValueAtTime(0.3, ctx.currentTime);
-          gain2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
-          osc2.connect(gain2);
-          gain2.connect(ctx.destination);
-          osc2.start();
-          osc2.stop(ctx.currentTime + 0.35);
-        }, 150);
-
-        osc1.start();
-        osc1.stop(ctx.currentTime + 0.35);
-      }
-    } catch (_) {}
-
-    try {
-      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-      audio.play().catch(e => console.log('Audio autoplay blocked:', e));
-    } catch (_) {}
-  };
-
-  // Trigger looping sirens when unacknowledged alerts exist
-  useEffect(() => {
-    const unacknowledged = alerts.filter(a => !a.acknowledged);
-    
-    if (unacknowledged.length > 0) {
-      if (!audioIntervalRef.current) {
-        playAlertSiren();
-        audioIntervalRef.current = setInterval(() => {
-          playAlertSiren();
-        }, 2500);
-      }
-    } else {
-      if (audioIntervalRef.current) {
-        clearInterval(audioIntervalRef.current);
-        audioIntervalRef.current = null;
-      }
-    }
-
-    return () => {
-      if (audioIntervalRef.current) {
-        clearInterval(audioIntervalRef.current);
-        audioIntervalRef.current = null;
-      }
-    };
-  }, [alerts, isAudioMuted]);
 
   // ── Database / API Loading ──────────────────────────────────
   const loadData = useCallback(async (overrideClearedIds?: string[]) => {
@@ -1826,6 +1851,19 @@ export default function App() {
                 <button className="btn btn-secondary" onClick={() => setIsAudioMuted(!isAudioMuted)}>
                   {isAudioMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
                   {isAudioMuted ? 'UNMUTE ALARM' : 'MUTE ALARM'}
+                </button>
+
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={() => {
+                    if (isAudioMuted) setIsAudioMuted(false);
+                    getAudioContext()?.resume();
+                    playAlertSiren();
+                  }}
+                  style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#EF4444', borderColor: '#FCA5A5' }}
+                  title="Click to test siren audio output and unlock browser sound"
+                >
+                  🔊 TEST SIREN SOUND
                 </button>
 
                 {/* Clear all alerts button */}
