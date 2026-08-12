@@ -226,8 +226,10 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
     final driverId = SupabaseService.currentDriverId;
     if (state.activeShift != null && driverId != null) {
-      await _startBackgroundTrackingService(driverId, state.activeShift!.id);
-      return;
+      if (!kIsWeb) {
+        await _startBackgroundTrackingService(driverId, state.activeShift!.id);
+        return; // Only return early on mobile where Tracelet handles it.
+      }
     }
 
     // Set up real-time updates
@@ -270,7 +272,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   }
 
   /// Processes new location updates (calculates distance, updates UI, and manages upload)
-  void _handleNewPosition(Position position) {
+  void _handleNewPosition(Position position, {bool forceUpload = false}) {
     // Anti-Spoofing: Block mock coordinates from third-party spoofing apps (Android)
     if (position.isMocked) {
       state = state.copyWith(
@@ -326,7 +328,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
     // If clocked in, check if we need to upload the ping to Supabase (limit to every 2 minutes)
     if (state.activeShift != null) {
-      _maybeUploadPing(position);
+      _maybeUploadPing(position, forceUpload: forceUpload);
     }
   }
 
@@ -381,13 +383,13 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   }
 
   /// Handles upload of background coordinates every 2 minutes
-  Future<void> _maybeUploadPing(Position position) async {
+  Future<void> _maybeUploadPing(Position position, {bool forceUpload = false}) async {
     try {
       final now = DateTime.now();
       final isPlayback = state.isPlaybackRunning;
 
       final bool shouldUpload;
-      if (kDebugMode || isPlayback) {
+      if (forceUpload || kDebugMode || isPlayback) {
         shouldUpload = true;
       } else {
         shouldUpload = _lastUploadTime == null || now.difference(_lastUploadTime!) >= const Duration(minutes: 2);
@@ -738,7 +740,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       speedAccuracy: 0.0,
     );
 
-    _handleNewPosition(mockPos);
+    _handleNewPosition(mockPos, forceUpload: true);
   }
 
   /// Start automatic route playback simulation
@@ -805,7 +807,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       speed: 18.78, // ~42 mph (makes the driver status appear "moving" in admin dashboard)
       speedAccuracy: 0.0,
     );
-    _handleNewPosition(mockPos);
+    _handleNewPosition(mockPos, forceUpload: true);
   }
 
   StreamSubscription<List<Map<String, dynamic>>>? _shiftRealtimeSubscription;

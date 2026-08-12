@@ -1853,19 +1853,6 @@ export default function App() {
                   {isAudioMuted ? 'UNMUTE ALARM' : 'MUTE ALARM'}
                 </button>
 
-                <button 
-                  className="btn btn-secondary" 
-                  onClick={() => {
-                    if (isAudioMuted) setIsAudioMuted(false);
-                    getAudioContext()?.resume();
-                    playAlertSiren();
-                  }}
-                  style={{ backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#EF4444', borderColor: '#FCA5A5' }}
-                  title="Click to test siren audio output and unlock browser sound"
-                >
-                  🔊 TEST SIREN SOUND
-                </button>
-
                 {/* Clear all alerts button */}
                 <button 
                   className="btn btn-primary" 
@@ -1887,39 +1874,52 @@ export default function App() {
                   ✅ No active idle alerts found. All staff members are moving or on authorized short breaks.
                 </div>
               ) : (
-                alerts.map(alert => (
-                  <div 
-                    key={alert.id} 
-                    className={`glass-card p-24 flex align-center justify-between ${!alert.acknowledged ? 'alert-pulse-card' : ''}`}
-                    style={{ borderLeft: alert.is_sos ? '6px solid #FF3333' : undefined }}
-                  >
-                    <div>
-                      <div className="flex align-center gap-12">
-                        {alert.is_sos ? (
-                          <span className="badge badge-danger alert-pulse-card" style={{ backgroundColor: '#FF3333' }}>
-                            🚨 EMERGENCY SOS
+                alerts.map(alert => {
+                  const startedTimeMs = alert.started_at ? (
+                    alert.started_at.toString().endsWith('Z') || alert.started_at.toString().includes('+')
+                      ? new Date(alert.started_at).getTime()
+                      : new Date(`${alert.started_at.toString().replace(' ', 'T')}Z`).getTime()
+                  ) : Date.now();
+                  const diffMins = Math.max(1, Math.round((Date.now() - startedTimeMs) / 60000));
+
+                  const displayTime = (() => {
+                    const rawTs = alert.is_sos ? alert.created_at : alert.started_at;
+                    if (!rawTs) return '--:--:--';
+                    const str = rawTs.toString().trim();
+                    const cleanStr = str.endsWith('Z') || str.includes('+') ? str : `${str.replace(' ', 'T')}Z`;
+                    return new Date(cleanStr).toLocaleTimeString();
+                  })();
+
+                  return (
+                    <div 
+                      key={alert.id} 
+                      className={`glass-card p-24 flex align-center justify-between ${!alert.acknowledged ? 'alert-pulse-card' : ''}`}
+                      style={{ borderLeft: alert.is_sos ? '6px solid #FF3333' : undefined }}
+                    >
+                      <div>
+                        <div className="flex align-center gap-12">
+                          {alert.is_sos ? (
+                            <span className="badge badge-danger alert-pulse-card" style={{ backgroundColor: '#FF3333' }}>
+                              🚨 EMERGENCY SOS
+                            </span>
+                          ) : (
+                            <span className="badge badge-danger">
+                              ⚠️ IDLE ALERT ({diffMins} MINS)
+                            </span>
+                          )}
+                          <span className="text-xs text-muted">
+                            {alert.is_sos ? 'Vehicle breakdown or employee emergency reported' : 'Stationary stop duration threshold exceeded'}
                           </span>
-                        ) : (
-                          <span className="badge badge-danger">
-                            ⚠️ IDLE ALERT ({Math.max(1, Math.round((Date.now() - new Date(alert.started_at as string).getTime()) / 60000))} MINS)
-                          </span>
-                        )}
-                        <span className="text-xs text-muted">
-                          {alert.is_sos ? 'Vehicle breakdown or employee emergency reported' : 'Stationary stop duration threshold exceeded'}
-                        </span>
-                      </div>
-                      
-                      <h3 className="text-lg font-bold text-primary mt-8 mb-4">
-                        Employee: {alert.driver_name} ({alert.driver_code})
-                      </h3>
-                      
-                      <p className="text-sm text-secondary m-0">
-                        {alert.is_sos ? 'Reported at: ' : 'Stationary since: '}
-                        <b>{alert.is_sos 
-                              ? new Date(alert.created_at as string).toLocaleTimeString()
-                              : new Date(alert.started_at as string).toLocaleTimeString()
-                            }</b> ({Math.round((Date.now() - new Date(alert.started_at as string).getTime()) / 60000)} minutes ago)
-                      </p>
+                        </div>
+                        
+                        <h3 className="text-lg font-bold text-primary mt-8 mb-4">
+                          Employee: {alert.driver_name} ({alert.driver_code})
+                        </h3>
+                        
+                        <p className="text-sm text-secondary m-0">
+                          {alert.is_sos ? 'Reported at: ' : 'Stationary since: '}
+                          <b>{displayTime}</b> ({diffMins} minutes ago)
+                        </p>
                       
                       <p className="text-xs text-muted font-mono mt-8 mb-0 flex align-center gap-12">
                         <span>GPS Coordinate: {(alert.latitude || 0).toFixed(6)}, {(alert.longitude || 0).toFixed(6)}</span>
@@ -1955,8 +1955,9 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                ))
-              )}
+                );
+              })
+            )}
             </div>
           </div>
         )}
