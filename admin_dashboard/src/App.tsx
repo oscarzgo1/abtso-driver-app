@@ -1157,26 +1157,48 @@ export default function App() {
     const depot = depotsList[selectedIdx];
 
     try {
-      const { error } = await supabase!
+      const startTime = new Date().toISOString();
+      const { data: shiftData, error } = await supabase!
         .from('shifts')
         .insert({
           driver_id: driverId,
           depot_id: depot.id,
-          start_time: new Date().toISOString(),
+          start_time: startTime,
           status: 'active',
           start_lat: depot.latitude,
           start_lng: depot.longitude
-        });
+        })
+        .select('id')
+        .single();
 
       if (error) {
         alert("Failed to manual clock in: " + error.message);
       } else {
+        // Insert an initial GPS ping so the driver appears on the live map
+        // and the idle detection pipeline has a baseline ping to measure from.
+        if (shiftData?.id) {
+          const { error: gpsError } = await supabase!
+            .from('gps_locations')
+            .insert({
+              driver_id: driverId,
+              shift_id: shiftData.id,
+              latitude: depot.latitude,
+              longitude: depot.longitude,
+              speed: 0,
+              accuracy: 5.0,
+              recorded_at: startTime,
+            });
+          if (gpsError) {
+            console.warn('Manual clock-in GPS ping failed (non-fatal):', gpsError.message);
+          }
+        }
         loadData();
       }
     } catch (e: any) {
       alert("Failed to manual clock in: " + e.message);
     }
   };
+
 
   const handleManualClockOut = async (_driverId: string, shiftId: string) => {
     if (isMockMode) {
