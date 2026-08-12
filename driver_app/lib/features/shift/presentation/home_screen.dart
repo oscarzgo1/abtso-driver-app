@@ -686,31 +686,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       const SizedBox(height: 12),
                     ],
 
-                    if (!state.isNearDepot) ...[
-                      Container(
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                            width: 1.5,
-                          ),
-                        ),
-                        alignment: Alignment.center,
-                        child: Text(
-                          'OUTSIDE DEPOT RANGE',
-                          style: GoogleFonts.outfit(
-                            color: isDark ? Colors.white30 : Colors.black38,
-                            fontWeight: FontWeight.w900,
-                            fontSize: 12,
-                            letterSpacing: 1.0,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-
                     // Clock Out Button (Disabled if outside depot range)
                     ElevatedButton(
                       onPressed: (state.isLoading || !state.isNearDepot)
