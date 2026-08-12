@@ -40,9 +40,9 @@ class DriverShift {
       id: json['id'] as String,
       driverId: json['driver_id'] as String,
       depotId: json['depot_id'] as String?,
-      startTime: DateTime.parse(json['start_time'] as String).toLocal(),
+      startTime: DateTime.parse(json['start_time'] as String).toUtc(),
       endTime: json['end_time'] != null
-          ? DateTime.parse(json['end_time'] as String).toLocal()
+          ? DateTime.parse(json['end_time'] as String).toUtc()
           : null,
       status: json['status'] as String,
       dayType: json['day_type'] as String?,
