@@ -323,6 +323,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       }
     });
 
+    // Real-time Night Out decision notification (Approved / Rejected)
+    ref.listen<ShiftState>(shiftProvider, (previous, next) {
+      final prevStatus = previous?.activeShift?.nightOutStatus;
+      final nextStatus = next.activeShift?.nightOutStatus;
+
+      if (prevStatus == 'pending' && nextStatus == 'approved') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('🎉 Your Night Out request has been APPROVED by Payroll (+£25.00)'),
+            backgroundColor: Color(0xFF22C55E),
+            duration: Duration(seconds: 4),
+          ),
+        );
+      } else if (prevStatus == 'pending' && nextStatus == 'rejected') {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Notice: Your Night Out request was declined by Payroll Administration.'),
+            backgroundColor: Color(0xFFEF4444),
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+    });
+
 
 
 
@@ -644,6 +668,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                                 fontWeight: FontWeight.w800,
                                 fontSize: 11,
                                 color: isDark ? const Color(0xFFA7F3D0) : const Color(0xFF15803D),
+                                letterSpacing: 0.5,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ] else if (state.activeShift?.nightOutStatus == 'rejected') ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF451212) : const Color(0xFFFEE2E2),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFEF4444), width: 1.5),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.cancel_rounded, color: Color(0xFFEF4444), size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'NIGHT OUT DECLINED BY PAYROLL',
+                              style: GoogleFonts.outfit(
+                                fontWeight: FontWeight.w800,
+                                fontSize: 11,
+                                color: isDark ? const Color(0xFFFCA5A5) : const Color(0xFFB91C1C),
                                 letterSpacing: 0.5,
                               ),
                             ),

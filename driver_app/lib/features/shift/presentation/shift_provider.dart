@@ -855,7 +855,10 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
               return;
             }
 
-            if (state.activeShift?.id != activeShift.id) {
+            if (state.activeShift?.id != activeShift.id ||
+                state.activeShift?.nightOutStatus != activeShift.nightOutStatus ||
+                state.activeShift?.nightOutAmount != activeShift.nightOutAmount) {
+              debugPrint('Active shift or Night Out status updated: ${activeShift.nightOutStatus}');
               state = state.copyWith(activeShift: activeShift);
             }
           }
