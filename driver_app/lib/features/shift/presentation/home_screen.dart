@@ -54,8 +54,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       if (!mounted) return;
       final activeShift = ref.read(shiftProvider).activeShift;
       if (activeShift != null) {
+        final diff = DateTime.now().difference(activeShift.startTime);
         setState(() {
-          _elapsedTime = DateTime.now().difference(activeShift.startTime);
+          _elapsedTime = diff.isNegative ? Duration.zero : diff;
         });
       } else if (_elapsedTime != Duration.zero) {
         // Ensure timer display resets after clock-out
@@ -75,10 +76,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   }
 
   String _formatDuration(Duration duration) {
+    final cleanDuration = duration.isNegative ? Duration.zero : duration;
     String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final hours = twoDigits(duration.inHours);
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final seconds = twoDigits(duration.inSeconds.remainder(60));
+    final hours = twoDigits(cleanDuration.inHours);
+    final minutes = twoDigits(cleanDuration.inMinutes.remainder(60));
+    final seconds = twoDigits(cleanDuration.inSeconds.remainder(60));
     return '$hours:$minutes:$seconds';
   }
 
@@ -572,7 +574,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     _buildShiftStat(
                       context,
                       'ACCRUED PAY',
-                      '£${((_elapsedTime.inSeconds / 3600.0) * (state.activeShift?.baseHourlyRate ?? 16.00)).toStringAsFixed(2)}',
+                      '£${(_elapsedTime.inSeconds <= 0 ? 0.0 : ((_elapsedTime.inSeconds / 3600.0) * (state.activeShift?.baseHourlyRate ?? 16.00))).toStringAsFixed(2)}',
                     ),
                   ],
                 ),
