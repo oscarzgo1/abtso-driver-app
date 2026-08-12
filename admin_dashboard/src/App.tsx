@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
-import abtsoLogo from './assets/logo.jpg';
+import abtsoLogo from './assets/logo_transparent.png';
 
 // Waypoints list representing the HGV route between Rossington Depot and Wheatley Depot
 const routeWaypoints = [
@@ -1483,7 +1483,7 @@ export default function App() {
           <div className="text-center mb-24">
             {/* ABTSO Brand Logo Mark */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '20px' }}>
-              <img src={abtsoLogo} alt="ABTSO Logo" style={{ height: '54px', width: 'auto', objectFit: 'contain' }} />
+              <img src={abtsoLogo} onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }} alt="ABTSO Logo" style={{ height: '54px', width: 'auto', objectFit: 'contain' }} />
             </div>
             <h1 className="text-2xl font-black m-0" style={{ color: '#333333', letterSpacing: '0.5px' }}>Dispatch Console</h1>
             <p className="text-sm mt-4" style={{ color: '#888888' }}>Administrator Access Only</p>
@@ -1552,7 +1552,7 @@ export default function App() {
         <div>
           {/* ABTSO Brand Logo in sidebar */}
           <div className="flex align-center gap-12 mb-32">
-            <img src={abtsoLogo} alt="ABTSO Logo" style={{ height: '32px', width: 'auto', objectFit: 'contain' }} />
+            <img src={abtsoLogo} onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }} alt="ABTSO Logo" style={{ height: '32px', width: 'auto', objectFit: 'contain' }} />
             <div>
               <h2 className="text-md font-black m-0" style={{ color: '#333333', letterSpacing: '0.5px' }}>DISPATCH</h2>
               <span className="text-xs text-muted">
@@ -2018,7 +2018,7 @@ export default function App() {
           <div className="flex-1">
             <div className="flex align-center justify-between mb-24">
               <div>
-                <h2 className="text-xl font-black text-primary m-0">DRIVER COMPENSATION PROFILES & AGENCIES</h2>
+                <h2 className="text-xl font-black text-primary m-0">EMPLOYEES COMPENSATION PROFILES & AGENCIES</h2>
                 <p className="text-xs text-muted mt-4">Assign rate structures, weekday/weekend pay, and agencies to drivers</p>
               </div>
             </div>

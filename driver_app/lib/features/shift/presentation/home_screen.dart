@@ -686,12 +686,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       const SizedBox(height: 12),
                     ],
 
-                    // Clock Out Button (Always enabled when clocked in)
-                    // Clock Out Button (Always enabled when clocked in)
+                    if (!state.isNearDepot) ...[
+                      Container(
+                        height: 44,
+                        decoration: BoxDecoration(
+                          color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
+                            width: 1.5,
+                          ),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          'OUTSIDE DEPOT RANGE',
+                          style: GoogleFonts.outfit(
+                            color: isDark ? Colors.white30 : Colors.black38,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 12,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+
+                    // Clock Out Button (Disabled if outside depot range)
                     ElevatedButton(
-                      onPressed: state.isLoading ? null : () => ref.read(shiftProvider.notifier).clockOut(),
+                      onPressed: (state.isLoading || !state.isNearDepot)
+                          ? null
+                          : () => ref.read(shiftProvider.notifier).clockOut(),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFCC0000),  // Brand red for clock-out
+                        backgroundColor: state.isNearDepot ? const Color(0xFFCC0000) : const Color(0xFF9CA3AF),
+                        disabledBackgroundColor: const Color(0xFFE5E7EB),
+                        disabledForegroundColor: const Color(0xFF9CA3AF),
                         foregroundColor: Colors.white,
                         minimumSize: const Size(double.infinity, 46),
                         shape: RoundedRectangleBorder(
