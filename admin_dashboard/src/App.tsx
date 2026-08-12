@@ -873,7 +873,7 @@ export default function App() {
     setActiveTab('live');
   };
 
-  // ── Alert Acknowledgement ───────────────────────────────────
+  // ── Alert Acknowledgement & Clearing ───────────────────────
   const acknowledgeAlert = async (alertId: string, isSos?: boolean) => {
     if (isMockMode) {
       setAlerts(prev =>
@@ -891,6 +891,27 @@ export default function App() {
       loadData();
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const clearAlert = async (alertId: string, isSos?: boolean) => {
+    if (isMockMode) {
+      setAlerts(prev => prev.filter(a => a.id !== alertId));
+      return;
+    }
+
+    try {
+      const table = isSos ? 'sos_alerts' : 'idle_alerts';
+      await supabase!
+        .from(table)
+        .update({ acknowledged: true, cleared: true })
+        .eq('id', alertId);
+
+      const nextClearedIds = [...clearedAlertIds, alertId];
+      setClearedAlertIds(nextClearedIds);
+      loadData(nextClearedIds);
+    } catch (e) {
+      console.error('Failed to clear alert:', e);
     }
   };
 
@@ -1830,10 +1851,12 @@ export default function App() {
                             🚨 EMERGENCY SOS
                           </span>
                         ) : (
-                          <span className="badge badge-danger">IDLE WARNING (50+ MINS)</span>
+                          <span className="badge badge-danger">
+                            ⚠️ IDLE ALERT ({Math.max(1, Math.round((Date.now() - new Date(alert.started_at as string).getTime()) / 60000))} MINS)
+                          </span>
                         )}
                         <span className="text-xs text-muted">
-                          {alert.is_sos ? 'Vehicle breakdown or employee emergency reported' : 'Geofenced Depot Base Coordinate'}
+                          {alert.is_sos ? 'Vehicle breakdown or employee emergency reported' : 'Stationary stop duration threshold exceeded'}
                         </span>
                       </div>
                       
@@ -1864,16 +1887,23 @@ export default function App() {
                       </p>
                     </div>
 
-                    <div>
-                      {alert.acknowledged ? (
-                        <span className="text-success font-semibold flex align-center gap-8">
-                          <Check size={18} /> ACKNOWLEDGED BY DISPATCH
-                        </span>
-                      ) : (
+                    <div className="flex align-center gap-12">
+                      {!alert.acknowledged ? (
                         <button className="btn btn-primary" onClick={() => acknowledgeAlert(alert.id, alert.is_sos)}>
-                          ACKNOWLEDGE ALERT
+                          ACKNOWLEDGE
                         </button>
+                      ) : (
+                        <span className="text-success font-semibold flex align-center gap-4 text-xs">
+                          <Check size={16} /> ACKNOWLEDGED
+                        </span>
                       )}
+                      <button 
+                        className="btn btn-secondary" 
+                        onClick={() => clearAlert(alert.id, alert.is_sos)}
+                        style={{ color: '#CC0000', borderColor: '#FECDD3', padding: '6px 12px', fontSize: '11px', fontWeight: 800 }}
+                      >
+                        DISMISS / CLEAR
+                      </button>
                     </div>
                   </div>
                 ))
