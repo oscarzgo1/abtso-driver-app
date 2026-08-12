@@ -381,11 +381,6 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
    
         if (driverId == null || shiftId == null) return;
    
-        if (SupabaseService.isMockMode) {
-          debugPrint('Mock Ping Upload: (${position.latitude}, ${position.longitude}) Speed: ${position.speed} m/s');
-          return;
-        }
-   
         final payload = {
           'driver_id': driverId,
           'shift_id': shiftId,
@@ -393,18 +388,19 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
           'longitude': position.longitude,
           'speed': position.speed,
           'accuracy': position.accuracy,
-          'recorded_at': position.timestamp.toUtc().toIso8601String(),
+          'recorded_at': DateTime.now().toUtc().toIso8601String(),
         };
 
         try {
           await SupabaseService.client.from('gps_locations').insert(payload);
-          debugPrint('GPS telemetry uploaded successfully.');
+          debugPrint('GPS telemetry uploaded successfully: (${position.latitude}, ${position.longitude})');
           
           // Attempt to sync offline queue if we have cached pings
           if (_offlineQueue.isNotEmpty) {
             _syncOfflineQueue();
           }
         } catch (e) {
+          debugPrint('GPS UPLOAD ERROR: $e');
           debugPrint('GPS Upload failed: $e. Caching coordinate offline.');
           _offlineQueue.add(payload);
           _saveOfflineQueue();

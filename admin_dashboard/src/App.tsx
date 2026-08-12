@@ -314,39 +314,43 @@ export default function App() {
 
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      
-      // Siren Osc 1 (Low Beep)
-      const osc1 = ctx.createOscillator();
-      const gain1 = ctx.createGain();
-      osc1.type = 'sawtooth';
-      osc1.frequency.setValueAtTime(680, ctx.currentTime);
-      gain1.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-      osc1.connect(gain1);
-      gain1.connect(ctx.destination);
-      
-      // Siren Osc 2 (High Beep after 150ms)
-      setTimeout(() => {
-        if (ctx.state === 'closed') return;
-        const osc2 = ctx.createOscillator();
-        const gain2 = ctx.createGain();
-        osc2.type = 'sawtooth';
-        osc2.frequency.setValueAtTime(880, ctx.currentTime);
-        gain2.gain.setValueAtTime(0.2, ctx.currentTime);
-        gain2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-        osc2.connect(gain2);
-        gain2.connect(ctx.destination);
-        osc2.start();
-        osc2.stop(ctx.currentTime + 0.3);
-      }, 150);
+      if (AudioCtx) {
+        const ctx = new AudioCtx();
+        
+        // Siren Osc 1 (Low Beep)
+        const osc1 = ctx.createOscillator();
+        const gain1 = ctx.createGain();
+        osc1.type = 'sawtooth';
+        osc1.frequency.setValueAtTime(680, ctx.currentTime);
+        gain1.gain.setValueAtTime(0.3, ctx.currentTime);
+        gain1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+        osc1.connect(gain1);
+        gain1.connect(ctx.destination);
+        
+        // Siren Osc 2 (High Beep after 150ms)
+        setTimeout(() => {
+          if (ctx.state === 'closed') return;
+          const osc2 = ctx.createOscillator();
+          const gain2 = ctx.createGain();
+          osc2.type = 'sawtooth';
+          osc2.frequency.setValueAtTime(880, ctx.currentTime);
+          gain2.gain.setValueAtTime(0.3, ctx.currentTime);
+          gain2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+          osc2.connect(gain2);
+          gain2.connect(ctx.destination);
+          osc2.start();
+          osc2.stop(ctx.currentTime + 0.35);
+        }, 150);
 
-      osc1.start();
-      osc1.stop(ctx.currentTime + 0.3);
-    } catch (_) {
-      // Audio autoplay restrictions might block
-    }
+        osc1.start();
+        osc1.stop(ctx.currentTime + 0.35);
+      }
+    } catch (_) {}
+
+    try {
+      const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+      audio.play().catch(e => console.log('Audio autoplay blocked:', e));
+    } catch (_) {}
   };
 
   // Trigger looping sirens when unacknowledged alerts exist
