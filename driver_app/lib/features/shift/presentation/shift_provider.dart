@@ -284,8 +284,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       );
       return;
     }
-    // GPS Accuracy Guard: Discard low-accuracy readings (error margin > 15m) to prevent coordinate drift bypasses
-    if (position.accuracy > 15.0) {
+    // GPS Accuracy Guard: Discard very low-accuracy readings (error margin > 50m) to prevent extreme drift
+    // Note: 50m threshold allows indoor use while still blocking GPS noise
+    if (position.accuracy > 50.0) {
       state = state.copyWith(
         currentPosition: position,
         isNearDepot: false,
@@ -522,19 +523,38 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       }
 
       if (result['success'] == true) {
-        _lastCompletedShiftId = null; // Clear completed shift filter on new clock-in
-        _isInternalClockOut = false; // Reset internal clock-out flag on new clock-in
+        _lastCompletedShiftId = null;
+        _isInternalClockOut = false;
         await loadActiveShift();
-        
+
+        // Capture IDs immediately after loadActiveShift — do NOT rely on state later
         final driverId = SupabaseService.currentDriverId;
-        final shiftId = state.activeShift?.id;
+        final shiftId = state.activeShift?.id ?? result['shift_id'] as String?;
+
         if (driverId != null && shiftId != null) {
+          // FIX SP-6: Direct insert at clock-in bypasses all state race conditions.
+          // This guarantees at least one GPS record exists the moment the shift starts.
+          if (!SupabaseService.isMockMode) {
+            try {
+              await SupabaseService.client.from('gps_locations').insert({
+                'driver_id': driverId,
+                'shift_id': shiftId,
+                'latitude': pos.latitude,
+                'longitude': pos.longitude,
+                'speed': pos.speed < 0 ? 0.0 : pos.speed,
+                'accuracy': pos.accuracy,
+                'recorded_at': DateTime.now().toUtc().toIso8601String(),
+              });
+              debugPrint('✅ Clock-in GPS ping inserted directly: ($shiftId)');
+            } catch (gpsErr) {
+              debugPrint('⚠️ Clock-in GPS direct insert failed (will retry via ping timer): $gpsErr');
+            }
+          }
+
           await _startBackgroundTrackingService(driverId, shiftId);
         }
 
-        _lastUploadTime = null; // Clear timer to force immediate GPS upload
-        await _maybeUploadPing(pos);
-        _lastUploadTime = DateTime.now(); // Reset upload delay timer for subsequent pings
+        _lastUploadTime = null;
         _startGpsPingTimer();
       } else {
         state = state.copyWith(errorMessage: result['error'] ?? 'Clock in failed');
