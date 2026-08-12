@@ -251,10 +251,26 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _handleNewPosition(initialPos);
   }
 
+  Timer? _gpsPingTimer;
+
+  void _startGpsPingTimer() {
+    _gpsPingTimer?.cancel();
+    _gpsPingTimer = Timer.periodic(const Duration(minutes: 2), (_) async {
+      final pos = state.currentPosition;
+      if (pos != null && state.activeShift != null) {
+        debugPrint('Periodic 2-minute GPS Upload tick executing...');
+        await _maybeUploadPing(pos);
+      }
+    });
+  }
+
+  void _stopGpsPingTimer() {
+    _gpsPingTimer?.cancel();
+    _gpsPingTimer = null;
+  }
+
   /// Processes new location updates (calculates distance, updates UI, and manages upload)
   void _handleNewPosition(Position position) {
-    if (state.depots.isEmpty) return;
-
     // Anti-Spoofing: Block mock coordinates from third-party spoofing apps (Android)
     if (position.isMocked) {
       state = state.copyWith(
@@ -277,28 +293,33 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       );
       return;
     }
-    Depot? nearest;
-    double minDistance = double.infinity;
 
-    for (final depot in state.depots) {
-      final dist = GeofenceHelper.calculateDistance(
-        position.latitude,
-        position.longitude,
-        depot.latitude,
-        depot.longitude,
-      );
-      if (dist < minDistance) {
-        minDistance = dist;
-        nearest = depot;
+    Depot? nearest;
+    double? minDistance;
+
+    if (state.depots.isNotEmpty) {
+      double min = double.infinity;
+      for (final depot in state.depots) {
+        final dist = GeofenceHelper.calculateDistance(
+          position.latitude,
+          position.longitude,
+          depot.latitude,
+          depot.longitude,
+        );
+        if (dist < min) {
+          min = dist;
+          nearest = depot;
+        }
       }
+      minDistance = min;
     }
 
-    final isNear = nearest != null && minDistance <= nearest.geofenceRadiusM;
+    final isNear = nearest != null && minDistance != null && minDistance <= nearest.geofenceRadiusM;
 
     state = state.copyWith(
       currentPosition: position,
       nearestDepot: nearest,
-      distanceToNearestDepot: nearest != null ? minDistance : null,
+      distanceToNearestDepot: minDistance,
       isNearDepot: isNear,
       clearErrorMessage: true,
     );
@@ -512,6 +533,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         _lastUploadTime = null; // Clear timer to force immediate GPS upload
         await _maybeUploadPing(pos);
         _lastUploadTime = DateTime.now(); // Reset upload delay timer for subsequent pings
+        _startGpsPingTimer();
       } else {
         state = state.copyWith(errorMessage: result['error'] ?? 'Clock in failed');
       }
@@ -589,6 +611,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
           lastCompletedShift: completedShift,
         );
         await _stopBackgroundTrackingService();
+        _stopGpsPingTimer();
       } else {
         _isInternalClockOut = false;
         state = state.copyWith(errorMessage: result['error'] ?? 'Clock out failed');
