@@ -495,9 +495,16 @@ export default function App() {
       const locsMap = new Map<string, LiveLocation>();
 
       // Populate from live_driver_locations view
+      const parseUtcTimestamp = (ts: string | null | undefined): number => {
+        if (!ts) return 0;
+        const str = ts.toString().trim();
+        const cleanStr = str.endsWith('Z') || str.includes('+') ? str : `${str.replace(' ', 'T')}Z`;
+        return new Date(cleanStr).getTime();
+      };
+
       if (viewLocs && viewLocs.length > 0) {
         for (const item of viewLocs) {
-          const pingTime = item.recorded_at ? new Date(item.recorded_at).getTime() : 0;
+          const pingTime = parseUtcTimestamp(item.recorded_at);
           const now = Date.now();
           const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
 
@@ -531,7 +538,7 @@ export default function App() {
             .maybeSingle();
 
           if (lastLoc) {
-            const pingTime = lastLoc.recorded_at ? new Date(lastLoc.recorded_at).getTime() : 0;
+            const pingTime = parseUtcTimestamp(lastLoc.recorded_at);
             const now = Date.now();
             const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
 
@@ -551,7 +558,7 @@ export default function App() {
               status: currentStatus,
             });
           } else if (shift.start_lat !== null && shift.start_lng !== null) {
-            const pingTime = shift.start_time ? new Date(shift.start_time).getTime() : 0;
+            const pingTime = parseUtcTimestamp(shift.start_time);
             const now = Date.now();
             const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
 

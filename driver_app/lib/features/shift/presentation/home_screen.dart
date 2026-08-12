@@ -51,23 +51,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
     // Tick active shift elapsed timer — also resets to zero when clocked out
     _shiftDurationTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
-      final activeShift = ref.read(shiftProvider).activeShift;
-      if (activeShift != null) {
-        final nowUtc = DateTime.now().toUtc();
-        final startUtc = activeShift.startTime.toUtc();
-        final elapsed = nowUtc.difference(startUtc);
-        final safeElapsed = elapsed.isNegative ? Duration.zero : elapsed;
-        setState(() {
-          _elapsedTime = safeElapsed;
-        });
-      } else if (_elapsedTime != Duration.zero) {
-        // Ensure timer display resets after clock-out
+      _updateTimerTick();
+    });
+  }
+
+  DateTime? _localClockInTime;
+
+  void _updateTimerTick() {
+    if (!mounted) return;
+    final activeShift = ref.read(shiftProvider).activeShift;
+    if (activeShift != null) {
+      _localClockInTime ??= DateTime.now();
+      final nowUtc = DateTime.now().toUtc();
+      final startUtc = activeShift.startTime.toUtc();
+      Duration elapsed = nowUtc.difference(startUtc);
+
+      if (elapsed.isNegative || elapsed == Duration.zero) {
+        final localDiff = DateTime.now().difference(_localClockInTime!);
+        if (!localDiff.isNegative) {
+          elapsed = localDiff;
+        }
+      }
+
+      setState(() {
+        _elapsedTime = elapsed.isNegative ? Duration.zero : elapsed;
+      });
+    } else {
+      _localClockInTime = null;
+      if (_elapsedTime != Duration.zero) {
         setState(() {
           _elapsedTime = Duration.zero;
         });
       }
-    });
+    }
   }
 
   @override
@@ -310,9 +326,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       final isNowClockedIn = next.activeShift != null;
       if (wasClockedIn != isNowClockedIn) {
         if (isNowClockedIn) {
+          _localClockInTime = DateTime.now();
+          _updateTimerTick();
           _iconAnimationController.forward();
         } else {
-          // Reset elapsed time immediately when driver clocks out
+          _localClockInTime = null;
+          _updateTimerTick();
           _iconAnimationController.reverse();
           setState(() {
             _elapsedTime = Duration.zero;
