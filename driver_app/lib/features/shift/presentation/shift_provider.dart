@@ -257,11 +257,21 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
   void _startGpsPingTimer() {
     _gpsPingTimer?.cancel();
+    debugPrint('📡 Starting periodic 2-minute GPS Upload timer...');
     _gpsPingTimer = Timer.periodic(const Duration(minutes: 2), (_) async {
-      final pos = state.currentPosition;
+      Position? pos = state.currentPosition;
+      if (pos == null) {
+        try {
+          final p = await Geolocator.getCurrentPosition();
+          pos = p;
+          state = state.copyWith(currentPosition: p);
+        } catch (_) {}
+      }
       if (pos != null && state.activeShift != null) {
-        debugPrint('Periodic 2-minute GPS Upload tick executing...');
-        await _maybeUploadPing(pos);
+        debugPrint('⏰ Periodic 2-minute GPS Upload tick executing...');
+        await _maybeUploadPing(pos, forceUpload: true);
+      } else {
+        debugPrint('⏰ GPS Ping tick skipped: pos=${pos != null}, activeShift=${state.activeShift?.id}');
       }
     });
   }
@@ -273,8 +283,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
   /// Processes new location updates (calculates distance, updates UI, and manages upload)
   void _handleNewPosition(Position position, {bool forceUpload = false}) {
-    // Anti-Spoofing: Block mock coordinates from third-party spoofing apps (Android)
-    if (position.isMocked) {
+    // Anti-Spoofing: Block mock coordinates from third-party spoofing apps on mobile release builds only.
+    // Allow mock locations in Web, Debug mode, or simulation route playback.
+    if (position.isMocked && !kDebugMode && !kIsWeb && !state.isPlaybackRunning) {
       state = state.copyWith(
         currentPosition: position,
         isNearDepot: false,
@@ -403,28 +414,32 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         final driverId = SupabaseService.currentDriverId;
         final shiftId = state.activeShift?.id;
    
-        if (driverId == null || shiftId == null) return;
+        if (driverId == null || shiftId == null) {
+          debugPrint('⚠️ GPS upload skipped: driverId=$driverId, shiftId=$shiftId');
+          return;
+        }
    
         final payload = {
           'driver_id': driverId,
           'shift_id': shiftId,
           'latitude': position.latitude,
           'longitude': position.longitude,
-          'speed': position.speed,
+          'speed': position.speed < 0 ? 0.0 : position.speed,
           'accuracy': position.accuracy,
           'recorded_at': DateTime.now().toUtc().toIso8601String(),
         };
 
+        debugPrint('🚀 Sending GPS payload to Supabase: $payload');
         try {
           await SupabaseService.client.from('gps_locations').insert(payload);
-          debugPrint('GPS telemetry uploaded successfully: (${position.latitude}, ${position.longitude})');
+          debugPrint('✅ GPS telemetry uploaded successfully: (${position.latitude}, ${position.longitude}) for shift $shiftId');
           
           // Attempt to sync offline queue if we have cached pings
           if (_offlineQueue.isNotEmpty) {
             _syncOfflineQueue();
           }
         } catch (e) {
-          debugPrint('GPS UPLOAD ERROR: $e');
+          debugPrint('❌ GPS UPLOAD ERROR: $e');
           debugPrint('GPS Upload failed: $e. Caching coordinate offline.');
           _offlineQueue.add(payload);
           _saveOfflineQueue();
@@ -477,8 +492,21 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         final activeShift = DriverShift.fromJson(response);
         state = state.copyWith(activeShift: activeShift);
         await _startBackgroundTrackingService(driverId, activeShift.id);
+        _startGpsPingTimer();
+
+        // Also trigger immediate GPS upload for loaded active shift
+        final pos = state.currentPosition;
+        if (pos != null) {
+          _maybeUploadPing(pos, forceUpload: true);
+        } else {
+          Geolocator.getCurrentPosition().then((p) {
+            state = state.copyWith(currentPosition: p);
+            _maybeUploadPing(p, forceUpload: true);
+          }).catchError((_) {});
+        }
       } else {
         state = state.copyWith(clearActiveShift: true);
+        _stopGpsPingTimer();
       }
     } catch (e) {
       state = state.copyWith(errorMessage: 'Could not load active shift state');
@@ -903,6 +931,12 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
                 state.activeShift?.nightOutAmount != activeShift.nightOutAmount) {
               debugPrint('Active shift or Night Out status updated: ${activeShift.nightOutStatus}');
               state = state.copyWith(activeShift: activeShift);
+              _startGpsPingTimer();
+              
+              final pos = state.currentPosition;
+              if (pos != null) {
+                _maybeUploadPing(pos, forceUpload: true);
+              }
             }
           }
         }, onError: (error, stackTrace) {
