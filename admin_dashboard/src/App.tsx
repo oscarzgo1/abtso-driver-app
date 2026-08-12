@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -376,7 +376,7 @@ export default function App() {
   }, [alerts, isAudioMuted]);
 
   // ── Database / API Loading ──────────────────────────────────
-  const loadData = async (overrideClearedIds?: string[]) => {
+  const loadData = useCallback(async (overrideClearedIds?: string[]) => {
     const activeClearedIds = overrideClearedIds || clearedAlertIds;
     if (isMockMode) {
       // Mock data loader
@@ -428,8 +428,6 @@ export default function App() {
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
       setEmployees(drvs || []);
 
-
-
       // Fetch Shifts
       const { data: sfts } = await supabase!
         .from('shifts')
@@ -449,7 +447,7 @@ export default function App() {
         .from('idle_alerts')
         .select('*, drivers(full_name, driver_id)')
         .order('started_at', { ascending: false });
- 
+
       const mappedIdle = (alrts || [])
         .filter((a: any) => !activeClearedIds.includes(a.id))
         .map((a: any) => ({
@@ -459,7 +457,7 @@ export default function App() {
           is_sos: false,
           timestamp: a.started_at,
         }));
- 
+
       // Fetch Active SOS Alerts
       const { data: sosAlrts } = await supabase!
         .from('sos_alerts')
@@ -553,7 +551,7 @@ export default function App() {
     } catch (e) {
       console.error(e);
     }
-  };
+  }, [isMockMode, userRole, clearedAlertIds]);
 
   const handleMapRefresh = async () => {
     setIsRefreshing(true);
@@ -570,7 +568,7 @@ export default function App() {
     if (isAuthenticated) {
       loadData();
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, loadData]);
 
   // Periodic background refresh for idle checks & offline sync
   useEffect(() => {
@@ -593,7 +591,7 @@ export default function App() {
     }, 15000);
 
     return () => clearInterval(interval);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isMockMode, loadData]);
 
   // ── Supabase Auth State Change Listener ──────────────────────────
   useEffect(() => {
@@ -690,7 +688,7 @@ export default function App() {
       supabase!.removeChannel(shiftChannel);
       supabase!.removeChannel(gpsChannel);
     };
-  }, [isAuthenticated]);
+  }, [isAuthenticated, isMockMode, loadData]);
 
   // ── Simulation Engine (Mock Mode Movement along HGV Route) ───
   useEffect(() => {
@@ -1404,14 +1402,17 @@ export default function App() {
 
     // Plot and update live driver markers dynamically
     liveLocations.forEach(loc => {
+      // MAP MARKER OVERLAP FIX (JITTER): Apply microscopic random offset ONLY to map marker position
+      const displayLat = loc.latitude + (Math.random() - 0.5) * 0.0002;
+      const displayLng = loc.longitude + (Math.random() - 0.5) * 0.0002;
       const markerHtml = `<div class="${loc.status === 'idle' ? 'driver-idle-dot' : 'driver-live-dot'}"></div>`;
 
       if (markersRef.current[loc.driver_id]) {
         // Update position if marker already exists
-        markersRef.current[loc.driver_id].setLatLng([loc.latitude, loc.longitude]);
+        markersRef.current[loc.driver_id].setLatLng([displayLat, displayLng]);
       } else {
         // Create new marker
-        const marker = L.marker([loc.latitude, loc.longitude], {
+        const marker = L.marker([displayLat, displayLng], {
           icon: L.divIcon({
             className: '',
             html: markerHtml,
