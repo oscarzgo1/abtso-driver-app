@@ -497,6 +497,15 @@ export default function App() {
       // Populate from live_driver_locations view
       if (viewLocs && viewLocs.length > 0) {
         for (const item of viewLocs) {
+          const pingTime = item.recorded_at ? new Date(item.recorded_at).getTime() : 0;
+          const now = Date.now();
+          const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
+
+          let currentStatus: 'moving' | 'stationary' | 'idle' = (item.speed || 0) < 0.5 ? 'stationary' : 'moving';
+          if (diffMinutes >= 2) {
+            currentStatus = 'idle';
+          }
+
           locsMap.set(item.driver_id, {
             driver_id: item.driver_id,
             driver_name: item.full_name || 'Driver',
@@ -505,7 +514,7 @@ export default function App() {
             longitude: item.longitude,
             speed_mph: (item.speed || 0) * 2.23694, // Convert m/s to mph
             last_ping: item.recorded_at,
-            status: (item.speed || 0) < 0.5 ? 'stationary' : 'moving',
+            status: currentStatus,
           });
         }
       }
@@ -522,6 +531,15 @@ export default function App() {
             .maybeSingle();
 
           if (lastLoc) {
+            const pingTime = lastLoc.recorded_at ? new Date(lastLoc.recorded_at).getTime() : 0;
+            const now = Date.now();
+            const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
+
+            let currentStatus: 'moving' | 'stationary' | 'idle' = (lastLoc.speed || 0) < 0.5 ? 'stationary' : 'moving';
+            if (diffMinutes >= 2) {
+              currentStatus = 'idle';
+            }
+
             locsMap.set(shift.driver_id, {
               driver_id: shift.driver_id,
               driver_name: shift.drivers?.full_name || 'Driver',
@@ -530,9 +548,13 @@ export default function App() {
               longitude: lastLoc.longitude,
               speed_mph: (lastLoc.speed || 0) * 2.23694,
               last_ping: lastLoc.recorded_at,
-              status: (lastLoc.speed || 0) < 0.5 ? 'stationary' : 'moving',
+              status: currentStatus,
             });
           } else if (shift.start_lat !== null && shift.start_lng !== null) {
+            const pingTime = shift.start_time ? new Date(shift.start_time).getTime() : 0;
+            const now = Date.now();
+            const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
+
             locsMap.set(shift.driver_id, {
               driver_id: shift.driver_id,
               driver_name: shift.drivers?.full_name || 'Driver',
@@ -541,7 +563,7 @@ export default function App() {
               longitude: shift.start_lng,
               speed_mph: 0,
               last_ping: shift.start_time,
-              status: 'stationary',
+              status: diffMinutes >= 2 ? 'idle' : 'stationary',
             });
           }
         }

@@ -361,55 +361,57 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
   /// Handles upload of background coordinates every 2 minutes
   Future<void> _maybeUploadPing(Position position) async {
-    final now = DateTime.now();
-    final isPlayback = state.isPlaybackRunning;
+    try {
+      final now = DateTime.now();
+      final isPlayback = state.isPlaybackRunning;
 
-    // FIX: Remove strict mock environment gate to let standard telemetry pings pass through
-    // kDebugMode from package:flutter/foundation.dart bypasses the throttle.
-    final bool shouldUpload;
-    if (kDebugMode || isPlayback) {
-      shouldUpload = true;
-    } else {
-      shouldUpload = _lastUploadTime == null || now.difference(_lastUploadTime!) >= const Duration(minutes: 2);
-    }
-
-    if (shouldUpload) {
-      if (!isPlayback) {
-        _lastUploadTime = now;
+      final bool shouldUpload;
+      if (kDebugMode || isPlayback) {
+        shouldUpload = true;
+      } else {
+        shouldUpload = _lastUploadTime == null || now.difference(_lastUploadTime!) >= const Duration(minutes: 2);
       }
-      final driverId = SupabaseService.currentDriverId;
-      final shiftId = state.activeShift?.id;
- 
-      if (driverId == null || shiftId == null) return;
- 
-      if (SupabaseService.isMockMode) {
-        debugPrint('Mock Ping Upload: (${position.latitude}, ${position.longitude}) Speed: ${position.speed} m/s');
-        return;
-      }
- 
-      final payload = {
-        'driver_id': driverId,
-        'shift_id': shiftId,
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'speed': position.speed,
-        'accuracy': position.accuracy,
-        'recorded_at': position.timestamp.toUtc().toIso8601String(),
-      };
 
-      try {
-        await SupabaseService.client.from('gps_locations').insert(payload);
-        debugPrint('GPS telemetry uploaded successfully.');
-        
-        // Attempt to sync offline queue if we have cached pings
-        if (_offlineQueue.isNotEmpty) {
-          _syncOfflineQueue();
+      if (shouldUpload) {
+        if (!isPlayback) {
+          _lastUploadTime = now;
         }
-      } catch (e) {
-        debugPrint('GPS Upload failed: $e. Caching coordinate offline.');
-        _offlineQueue.add(payload);
-        _saveOfflineQueue();
+        final driverId = SupabaseService.currentDriverId;
+        final shiftId = state.activeShift?.id;
+   
+        if (driverId == null || shiftId == null) return;
+   
+        if (SupabaseService.isMockMode) {
+          debugPrint('Mock Ping Upload: (${position.latitude}, ${position.longitude}) Speed: ${position.speed} m/s');
+          return;
+        }
+   
+        final payload = {
+          'driver_id': driverId,
+          'shift_id': shiftId,
+          'latitude': position.latitude,
+          'longitude': position.longitude,
+          'speed': position.speed,
+          'accuracy': position.accuracy,
+          'recorded_at': position.timestamp.toUtc().toIso8601String(),
+        };
+
+        try {
+          await SupabaseService.client.from('gps_locations').insert(payload);
+          debugPrint('GPS telemetry uploaded successfully.');
+          
+          // Attempt to sync offline queue if we have cached pings
+          if (_offlineQueue.isNotEmpty) {
+            _syncOfflineQueue();
+          }
+        } catch (e) {
+          debugPrint('GPS Upload failed: $e. Caching coordinate offline.');
+          _offlineQueue.add(payload);
+          _saveOfflineQueue();
+        }
       }
+    } catch (outerErr) {
+      debugPrint('Safety guard caught exception in _maybeUploadPing: $outerErr');
     }
   }
 

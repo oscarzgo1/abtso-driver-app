@@ -54,9 +54,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       if (!mounted) return;
       final activeShift = ref.read(shiftProvider).activeShift;
       if (activeShift != null) {
-        final diff = DateTime.now().difference(activeShift.startTime);
+        final startTime = activeShift.startTime.toLocal();
+        final elapsed = DateTime.now().difference(startTime);
+        final safeElapsed = elapsed.isNegative ? Duration.zero : elapsed;
         setState(() {
-          _elapsedTime = diff.isNegative ? Duration.zero : diff;
+          _elapsedTime = safeElapsed;
         });
       } else if (_elapsedTime != Duration.zero) {
         // Ensure timer display resets after clock-out
