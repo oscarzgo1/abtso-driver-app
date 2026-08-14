@@ -538,7 +538,7 @@ export default function App() {
           const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
 
           let currentStatus: 'moving' | 'stationary' | 'idle' = (item.speed || 0) < 0.5 ? 'stationary' : 'moving';
-          if (diffMinutes >= 2) {
+          if (diffMinutes >= 50) {
             currentStatus = 'idle';
           }
 
@@ -572,7 +572,7 @@ export default function App() {
             const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
 
             let currentStatus: 'moving' | 'stationary' | 'idle' = (lastLoc.speed || 0) < 0.5 ? 'stationary' : 'moving';
-            if (diffMinutes >= 2) {
+            if (diffMinutes >= 50) {
               currentStatus = 'idle';
             }
 
@@ -599,7 +599,7 @@ export default function App() {
               longitude: shift.start_lng,
               speed_mph: 0,
               last_ping: shift.start_time,
-              status: diffMinutes >= 2 ? 'idle' : 'stationary',
+              status: diffMinutes >= 50 ? 'idle' : 'stationary',
             });
           }
         }
