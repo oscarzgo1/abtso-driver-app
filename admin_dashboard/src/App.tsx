@@ -2094,29 +2094,23 @@ export default function App() {
                           </span>
                         </td>
                         <td>
-                          {activeShift ? (
-                            <div className="flex flex-col gap-2">
-                              <span className="badge badge-success flex align-center gap-4" style={{ width: 'fit-content' }}>
-                                🟢 Active ({activeShift.depot_name || 'In Progress'})
-                              </span>
-                              <span className="text-xs text-secondary font-mono">
-                                Start: {formatDate(activeShift.start_time)} {formatTime(activeShift.start_time)}
-                              </span>
-                            </div>
-                          ) : latestShift?.end_time ? (
-                            <div className="flex flex-col gap-2">
-                              <span className="badge badge-secondary flex align-center gap-4" style={{ width: 'fit-content' }}>
-                                ⚪ Completed
-                              </span>
-                              <span className="text-xs text-secondary font-mono">
-                                Start: {formatDate(latestShift.start_time)} {formatTime(latestShift.start_time)}
-                              </span>
-                              <span className="text-xs text-muted font-mono">
-                                End: {formatDate(latestShift.end_time)} {formatTime(latestShift.end_time)}
+                          {latestShift ? (
+                            <div className="flex flex-col gap-4">
+                              {activeShift ? (
+                                <span className="badge badge-success flex align-center gap-4" style={{ width: 'fit-content' }}>
+                                  🟢 Active ({activeShift.depot_name || 'In Progress'})
+                                </span>
+                              ) : (
+                                <span className="badge badge-secondary flex align-center gap-4" style={{ width: 'fit-content', backgroundColor: '#F1F5F9', color: '#475569', border: '1px solid #E2E8F0' }}>
+                                  ⚪ Offline (Last Shift)
+                                </span>
+                              )}
+                              <span className="text-xs text-secondary font-mono" style={{ fontWeight: 600 }}>
+                                {formatDate(latestShift.start_time)} | {formatTime(latestShift.start_time)} - {latestShift.end_time ? formatTime(latestShift.end_time) : 'PRESENT'}
                               </span>
                             </div>
                           ) : (
-                            <span className="text-muted text-sm">Offline</span>
+                            <span className="text-muted text-sm">No shift history</span>
                           )}
                         </td>
                         <td>
