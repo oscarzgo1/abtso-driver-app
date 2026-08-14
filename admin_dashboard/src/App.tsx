@@ -2070,13 +2070,19 @@ export default function App() {
                     <th>Full Name</th>
                     <th>Phone Contact</th>
                     <th>Account Status</th>
-                    <th>Current Shift</th>
+                    <th>Shift & Time Tracker</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {employees.map(drv => {
-                    const activeShift = shifts.find(s => s.driver_id === drv.id && s.status === 'active');
+                    const driverShifts = shifts.filter(s => s.driver_id === drv.id);
+                    const latestShift = driverShifts.length > 0 ? driverShifts[0] : null;
+                    const activeShift = latestShift?.status === 'active' ? latestShift : null;
+
+                    const formatTime = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    const formatDate = (ts: string) => new Date(ts).toLocaleDateString([], { day: '2-digit', month: '2-digit' });
+
                     return (
                       <tr key={drv.id}>
                         <td className="font-mono font-bold text-accent">{drv.driver_id}</td>
@@ -2089,9 +2095,26 @@ export default function App() {
                         </td>
                         <td>
                           {activeShift ? (
-                            <span className="badge badge-success flex align-center gap-4" style={{ width: 'fit-content' }}>
-                              🟢 Active ({activeShift.depot_name || 'In Progress'})
-                            </span>
+                            <div className="flex flex-col gap-2">
+                              <span className="badge badge-success flex align-center gap-4" style={{ width: 'fit-content' }}>
+                                🟢 Active ({activeShift.depot_name || 'In Progress'})
+                              </span>
+                              <span className="text-xs text-secondary font-mono">
+                                Start: {formatDate(activeShift.start_time)} {formatTime(activeShift.start_time)}
+                              </span>
+                            </div>
+                          ) : latestShift?.end_time ? (
+                            <div className="flex flex-col gap-2">
+                              <span className="badge badge-secondary flex align-center gap-4" style={{ width: 'fit-content' }}>
+                                ⚪ Completed
+                              </span>
+                              <span className="text-xs text-secondary font-mono">
+                                Start: {formatDate(latestShift.start_time)} {formatTime(latestShift.start_time)}
+                              </span>
+                              <span className="text-xs text-muted font-mono">
+                                End: {formatDate(latestShift.end_time)} {formatTime(latestShift.end_time)}
+                              </span>
+                            </div>
                           ) : (
                             <span className="text-muted text-sm">Offline</span>
                           )}
