@@ -2391,7 +2391,7 @@ export default function App() {
                     <tr>
                       <th>Employee</th>
                       <th>Agency</th>
-                      <th>Shift Date</th>
+                      <th>Shift Schedule</th>
                       <th>Hours</th>
                       <th>Hourly Rate</th>
                       <th>Night Out Allowance</th>
@@ -2421,7 +2421,12 @@ export default function App() {
                               <td>
                                 <span className="badge badge-accent">{agency}</span>
                               </td>
-                              <td className="text-secondary">{startDate.toLocaleDateString()}</td>
+                              <td>
+                                <div className="font-semibold text-primary">{startDate.toLocaleDateString()}</div>
+                                <div className="text-xs text-secondary font-mono mt-4">
+                                  {new Date(shift.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {shift.end_time ? new Date(shift.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'In Progress'}
+                                </div>
+                              </td>
                               <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
                               <td className="font-semibold">£{(shift.effective_rate || shift.base_hourly_rate || 16.00).toFixed(2)}/hr</td>
                               <td>
