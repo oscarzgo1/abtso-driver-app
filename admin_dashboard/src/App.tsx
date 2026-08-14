@@ -634,9 +634,12 @@ export default function App() {
 
     const runIdleDetection = async () => {
       try {
-        await supabase!.rpc('detect_idle_drivers');
+        const { error } = await supabase!.rpc('detect_idle_drivers');
+        if (error) {
+          console.error('CRITICAL RPC ERROR (detect_idle_drivers):', error.message, error.details);
+        }
       } catch (err) {
-        console.error('Failed to trigger idle detection RPC:', err);
+        console.error('Failed to trigger idle detection RPC request:', err);
       }
     };
 
