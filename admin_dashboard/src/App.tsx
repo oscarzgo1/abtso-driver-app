@@ -2076,6 +2076,7 @@ export default function App() {
                 </thead>
                 <tbody>
                   {employees.map(drv => {
+                    // Find latest shift for time tracking
                     const driverShifts = shifts.filter(s => s.driver_id === drv.id);
                     const latestShift = driverShifts.length > 0 ? driverShifts[0] : null;
                     const activeShift = latestShift?.status === 'active' ? latestShift : null;
