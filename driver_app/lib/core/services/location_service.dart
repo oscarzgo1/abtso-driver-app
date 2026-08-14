@@ -105,7 +105,7 @@ class LocationService {
       ),
       geo: tl.GeoConfig(
         desiredAccuracy: tl.DesiredAccuracy.high,
-        distanceFilter: kDebugMode ? 0.0 : 5.0,
+        distanceFilter: 0.0, // Force 0.0 distance filter so stationary background heartbeats fire continuously
         filter: tl.LocationFilter(
           rejectMockLocations: kDebugMode ? false : true,
         ),

@@ -165,7 +165,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       ),
       geo: tl.GeoConfig(
         desiredAccuracy: tl.DesiredAccuracy.high,
-        distanceFilter: kDebugMode ? 0.0 : 5.0,
+        distanceFilter: 0.0, // Force 0.0 distance filter so OS delivers location updates continuously when stationary
         filter: tl.LocationFilter(
           rejectMockLocations: kDebugMode ? false : true,
         ),
@@ -236,7 +236,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: kDebugMode ? 0 : 2, // If debug mode, bypass the 2-meter filter
+        distanceFilter: 0, // Force 0-meter filter to ensure continuous stationary updates
       ),
     ).listen(
       (Position position) {
