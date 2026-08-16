@@ -2550,18 +2550,6 @@ export default function App() {
                   return durationHours > 18;
                 });
 
-                // Pending Night Out Requests Notification Data
-                const pendingNightOutRequests = shifts.filter(shift => 
-                  shift.night_out_requested === true || 
-                  (shift as any).has_requested_night_out === true || 
-                  shift.night_out_status === 'pending'
-                );
-
-                const pendingRequestsData = pendingNightOutRequests.map(shift => {
-                  const driverName = shift.driver_name || (shift as any).drivers?.full_name || (shift as any).employee?.name || (shift as any).driver?.name || 'Unknown Driver'; 
-                  return { id: shift.id, name: driverName, date: new Date(shift.start_time).toLocaleDateString() };
-                });
-
                 // Night Out Detection Logic (8 to 15 hours gap)
                 interface NightOutSuggestion {
                   driverName: string;
@@ -2605,30 +2593,6 @@ export default function App() {
 
                 return (
                   <>
-                    {/* Night Out Request Notification Banner */}
-                    {pendingRequestsData.length > 0 && (
-                      <div className="alert-box alert-info" style={{ marginBottom: '24px', backgroundColor: '#EFF6FF', border: '1px solid #93C5FD', color: '#1E3A8A', padding: '16px', borderRadius: '8px' }}>
-                        <div className="flex align-center justify-between mb-8" style={{ flexWrap: 'wrap', gap: '12px' }}>
-                          <h3 style={{ margin: '0', fontSize: '16px', fontWeight: 'bold' }}>🛎️ New Night Out Requests Pending ({pendingRequestsData.length})</h3>
-                          <button 
-                            className="btn btn-sm" 
-                            style={{ backgroundColor: '#2563EB', color: '#FFFFFF', padding: '4px 12px', fontSize: '12px', fontWeight: 'bold', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
-                            onClick={() => setShowOnlyNightOutRequested(!showOnlyNightOutRequested)}
-                          >
-                            {showOnlyNightOutRequested ? 'Show All Shifts' : '🔍 Filter Table to Pending Requests'}
-                          </button>
-                        </div>
-                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
-                          {pendingRequestsData.map(req => (
-                            <li key={req.id} style={{ marginBottom: '4px' }}>
-                              <strong>{req.name}</strong> has requested a Night Out allowance for their shift on {req.date}. 
-                              <em> (Use the N/O button in the table below to review and add the allowance).</em>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
                     {flaggedShifts.length > 0 && (
                       <div className="alert-box alert-danger" style={{ marginBottom: '24px', backgroundColor: '#FEF2F2', border: '1px solid #F87171', color: '#B91C1C', padding: '16px', borderRadius: '8px' }}>
                         <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>⚠️ Flags to review (Shifts &gt; 18 hours)</h3>
