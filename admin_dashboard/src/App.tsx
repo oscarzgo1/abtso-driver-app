@@ -1243,6 +1243,29 @@ export default function App() {
     }
   };
 
+  const handleFixShiftTime = async (shiftId: string, currentStartTime: string) => {
+    const newEndTimeRaw = window.prompt("Enter correct end date and time (Format: YYYY-MM-DD HH:mm):", new Date().toISOString().slice(0, 16).replace('T', ' '));
+    if (!newEndTimeRaw) return;
+    
+    const newEndTime = new Date(newEndTimeRaw).toISOString();
+    if (new Date(newEndTime) <= new Date(currentStartTime)) {
+      alert("End time must be after start time!");
+      return;
+    }
+
+    const { error } = await supabase!
+      .from('shifts')
+      .update({ end_time: newEndTime, status: 'completed' })
+      .eq('id', shiftId);
+
+    if (error) {
+      alert("Failed to update shift: " + error.message);
+    } else {
+      alert("Shift time corrected and recalculated successfully.");
+      loadData(); // Refresh UI and recalculate payroll
+    }
+  };
+
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
     const rateData: EmployeeRate = {
@@ -2384,6 +2407,31 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Flagged Shifts >18h Alert Banner */}
+              {(() => {
+                const flaggedShifts = filteredShifts.filter(shift => {
+                  const end = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
+                  const start = new Date(shift.start_time).getTime();
+                  const durationHours = (end - start) / (1000 * 60 * 60);
+                  return durationHours > 18;
+                });
+
+                if (flaggedShifts.length === 0) return null;
+
+                return (
+                  <div className="alert-box alert-danger" style={{ marginBottom: '24px', backgroundColor: '#FEF2F2', border: '1px solid #F87171', color: '#B91C1C', padding: '16px', borderRadius: '8px' }}>
+                    <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>⚠️ Flags to review (Shifts &gt; 18 hours)</h3>
+                    <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
+                      {flaggedShifts.map(fs => (
+                        <li key={fs.id} style={{ marginBottom: '4px' }}>
+                          <strong>{fs.driver_name}</strong> - Shift started: {new Date(fs.start_time).toLocaleString()} - <em>Check clock-out time!</em>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })()}
+
               {/* Reports Payroll Data Table */}
               <div className="table-container">
                 <table className="data-table">
@@ -2412,6 +2460,10 @@ export default function App() {
                           const agency = drvRate?.agency_name || 'Direct';
                           const isPendingN_O = shift.night_out_status === 'pending';
                           const isApprovedN_O = shift.night_out_status === 'approved';
+
+                          const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
+                          const shiftStartMs = new Date(shift.start_time).getTime();
+                          const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
 
                           return (
                             <tr key={shift.id}>
@@ -2443,8 +2495,25 @@ export default function App() {
                                 )}
                               </td>
                               <td>
-                                <div className="flex align-center gap-6">
-                                  {userRole === 'payroll_admin' ? (
+                                <div className="flex align-center gap-6" style={{ flexWrap: 'wrap' }}>
+                                  {isFlagged ? (
+                                    <div className="flex gap-4 align-center">
+                                      <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>
+                                        ⚠️ &gt;18h
+                                      </span>
+                                      <button 
+                                        className="btn btn-secondary" 
+                                        style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#FEF2F2', color: '#DC2626', borderColor: '#FCA5A5' }}
+                                        onClick={() => handleFixShiftTime(shift.id, shift.start_time)}
+                                      >
+                                        FIX TIME
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    !userRole || userRole !== 'payroll_admin' ? <span className="text-muted text-xs">OK</span> : null
+                                  )}
+
+                                  {userRole === 'payroll_admin' && (
                                     isPendingN_O ? (
                                       <>
                                         <button
@@ -2479,10 +2548,6 @@ export default function App() {
                                         + Add N/O (£25)
                                       </button>
                                     )
-                                  ) : (
-                                    <span className="text-xs text-muted font-semibold">
-                                      {isPendingN_O ? 'Pending Approval' : (isApprovedN_O ? 'Approved (+£25)' : 'Standard')}
-                                    </span>
                                   )}
                                 </div>
                               </td>
