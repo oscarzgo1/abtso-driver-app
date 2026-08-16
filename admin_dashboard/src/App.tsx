@@ -1497,16 +1497,24 @@ export default function App() {
   };
 
   const getShiftFinancials = (s: Shift) => {
-    const drvRate = employeeRates[s.driver_id] || (s as any).employee;
+    const drvRate = employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver;
     const shiftDate = new Date(s.start_time);
     const dayOfWeek = shiftDate.getDay(); // 0 = Sun, 6 = Sat
-    const baseRate = Number((s as any).employee?.rate) || Number((s as any).rate) || Number(s.effective_rate) || Number(s.base_hourly_rate) || 16.00;
-    let rate = baseRate;
+    
+    let rate = 0;
     if (drvRate) {
-      if (dayOfWeek === 0) rate = Number(drvRate.sun_rate ?? drvRate.sunday_rate) || baseRate;
-      else if (dayOfWeek === 6) rate = Number(drvRate.sat_rate ?? drvRate.saturday_rate) || baseRate;
-      else rate = Number(drvRate.mon_fri_rate) || baseRate;
+      if (dayOfWeek === 0) {
+        rate = Number(drvRate.sun_rate ?? drvRate.sunday_rate) || Number(drvRate.mon_fri_rate) || 18.00;
+      } else if (dayOfWeek === 6) {
+        rate = Number(drvRate.sat_rate ?? drvRate.saturday_rate) || Number(drvRate.mon_fri_rate) || 17.00;
+      } else {
+        rate = Number(drvRate.mon_fri_rate) || 16.00;
+      }
+    } else {
+      // Clean default rate structure by day — NEVER use hardcoded shift table rates
+      rate = dayOfWeek === 0 ? 18.00 : dayOfWeek === 6 ? 17.00 : 16.00;
     }
+
     const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
     const grossPay = Number(((s.total_hours || 0) * rate + noAmt).toFixed(2));
     return { rate, noAmt, grossPay, agency: drvRate?.agency_name || 'Direct' };
@@ -2437,18 +2445,8 @@ export default function App() {
         {activeTab === 'reports' && userRole === 'payroll_admin' && (() => {
           const filteredShifts = getFilteredShifts();
           const totalEarnings = filteredShifts.reduce((sum, shift) => {
-            const shiftDate = new Date(shift.start_time);
-            const dayOfWeek = shiftDate.getDay();
-            const drvRate = employeeRates[shift.driver_id] || (shift as any).employee;
-            const baseRate = Number((shift as any).employee?.rate) || Number((shift as any).rate) || Number(shift.effective_rate) || Number(shift.base_hourly_rate) || 16.00;
-            let rate = baseRate;
-            if (drvRate) {
-              if (dayOfWeek === 0) rate = Number(drvRate.sun_rate ?? drvRate.sunday_rate) || baseRate;
-              else if (dayOfWeek === 6) rate = Number(drvRate.sat_rate ?? drvRate.saturday_rate) || baseRate;
-              else rate = Number(drvRate.mon_fri_rate) || baseRate;
-            }
-            const noAmt = Number(shift.night_out_allowance ?? shift.night_out_amount) || 0;
-            return sum + Number(((shift.total_hours || 0) * rate + noAmt).toFixed(2));
+            const { grossPay } = getShiftFinancials(shift);
+            return sum + grossPay;
           }, 0);
           const totalHours = filteredShifts.reduce((sum, s) => sum + (s.total_hours || 0), 0);
           const totalNightOutAmount = filteredShifts.reduce((sum, shift) => sum + (Number(shift.night_out_allowance ?? shift.night_out_amount) || 0), 0);
@@ -2630,36 +2628,11 @@ export default function App() {
                     ) : (
                       <>
                         {filteredShifts.map(shift => {
-                          const drvRate = employeeRates[shift.driver_id] || (shift as any).employee;
-                          const agency = drvRate?.agency_name || 'Direct';
-                          const noAmount = Number(shift.night_out_allowance ?? shift.night_out_amount) || 0;
-
-                          // Strict Day-Aware Rate Fetching
-                          const shiftDate = new Date(shift.start_time);
-                          const dayOfWeek = shiftDate.getDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
-
-                          let hourlyRate = 0;
-                          const baseRate = Number((shift as any).employee?.rate) || Number((shift as any).rate) || Number(shift.effective_rate) || Number(shift.base_hourly_rate) || 16.00;
-
-                          if (drvRate) {
-                            if (dayOfWeek === 0) {
-                              // Sunday
-                              hourlyRate = Number(drvRate.sun_rate ?? drvRate.sunday_rate) || baseRate;
-                            } else if (dayOfWeek === 6) {
-                              // Saturday
-                              hourlyRate = Number(drvRate.sat_rate ?? drvRate.saturday_rate) || baseRate;
-                            } else {
-                              // Monday - Friday
-                              hourlyRate = Number(drvRate.mon_fri_rate) || baseRate;
-                            }
-                          } else {
-                            hourlyRate = baseRate;
-                          }
+                          const { rate: hourlyRate, noAmt: noAmount, grossPay: shiftGrossPay, agency } = getShiftFinancials(shift);
 
                           const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
                           const shiftStartMs = new Date(shift.start_time).getTime();
                           const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
-                          const shiftGrossPay = Number(((shift.total_hours || 0) * hourlyRate + noAmount).toFixed(2));
 
                           return (
                             <tr key={shift.id}>
