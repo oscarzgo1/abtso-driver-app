@@ -1496,11 +1496,26 @@ export default function App() {
     });
   };
 
+  const getShiftFinancials = (s: Shift) => {
+    const drvRate = employeeRates[s.driver_id] || (s as any).employee;
+    const shiftDate = new Date(s.start_time);
+    const dayOfWeek = shiftDate.getDay(); // 0 = Sun, 6 = Sat
+    const baseRate = Number((s as any).employee?.rate) || Number((s as any).rate) || Number(s.effective_rate) || Number(s.base_hourly_rate) || 16.00;
+    let rate = baseRate;
+    if (drvRate) {
+      if (dayOfWeek === 0) rate = Number(drvRate.sun_rate ?? drvRate.sunday_rate) || baseRate;
+      else if (dayOfWeek === 6) rate = Number(drvRate.sat_rate ?? drvRate.saturday_rate) || baseRate;
+      else rate = Number(drvRate.mon_fri_rate) || baseRate;
+    }
+    const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
+    const grossPay = Number(((s.total_hours || 0) * rate + noAmt).toFixed(2));
+    return { rate, noAmt, grossPay, agency: drvRate?.agency_name || 'Direct' };
+  };
+
   const exportCSV = () => {
     const filtered = getFilteredShifts();
     const exportData = filtered.map(s => {
-      const drvRate = employeeRates[s.driver_id];
-      const agency = drvRate?.agency_name || 'Direct';
+      const { rate, noAmt, grossPay, agency } = getShiftFinancials(s);
       return {
         'Employee Name': s.driver_name,
         'Employee ID': s.driver_code,
@@ -1509,10 +1524,10 @@ export default function App() {
         'Start Time': new Date(s.start_time).toLocaleString(),
         'End Time': s.end_time ? new Date(s.end_time).toLocaleString() : 'Active',
         'Hours Worked': (s.total_hours || 0).toFixed(2),
-        'Effective Rate (£/hr)': (s.effective_rate || s.base_hourly_rate || 16.00).toFixed(2),
+        'Effective Rate (£/hr)': rate.toFixed(2),
         'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
-        'Night Out Allowance (£)': (s.night_out_amount || 0).toFixed(2),
-        'Gross Pay (£)': (s.total_pay || 0).toFixed(2),
+        'Night Out Allowance (£)': noAmt.toFixed(2),
+        'Gross Pay (£)': grossPay.toFixed(2),
       };
     });
 
@@ -1530,8 +1545,7 @@ export default function App() {
   const exportExcel = () => {
     const filtered = getFilteredShifts();
     const exportData = filtered.map(s => {
-      const drvRate = employeeRates[s.driver_id];
-      const agency = drvRate?.agency_name || 'Direct';
+      const { rate, noAmt, grossPay, agency } = getShiftFinancials(s);
       return {
         'Driver Name': s.driver_name,
         'Driver ID': s.driver_code,
@@ -1540,10 +1554,10 @@ export default function App() {
         'Shift Start': new Date(s.start_time).toLocaleString(),
         'Shift End': s.end_time ? new Date(s.end_time).toLocaleString() : 'In Progress',
         'Hours': s.total_hours || 0,
-        'Rate (£/hr)': s.effective_rate,
+        'Rate (£/hr)': rate,
         'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
-        'Night Out Allowance (£)': s.night_out_amount || 0,
-        'Gross Pay (£)': s.total_pay || 0,
+        'Night Out Allowance (£)': noAmt,
+        'Gross Pay (£)': grossPay,
       };
     });
 
