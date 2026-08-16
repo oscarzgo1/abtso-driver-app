@@ -2419,7 +2419,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Flagged Shifts >18h Alert Banner */}
+              {/* Flagged Shifts & Night Out Alert Banners */}
               {(() => {
                 const flaggedShifts = filteredShifts.filter(shift => {
                   const end = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
@@ -2428,19 +2428,76 @@ export default function App() {
                   return durationHours > 18;
                 });
 
-                if (flaggedShifts.length === 0) return null;
+                // Night Out Detection Logic (8 to 15 hours gap)
+                interface NightOutSuggestion {
+                  driverName: string;
+                  prevEnd: string;
+                  nextStart: string;
+                  gapHours: string;
+                }
+
+                const nightOutSuggestions: NightOutSuggestion[] = [];
+                const employeeGroups: Record<string, typeof filteredShifts> = {};
+
+                // Group shifts by driver
+                filteredShifts.forEach(shift => {
+                  if (!employeeGroups[shift.driver_id]) employeeGroups[shift.driver_id] = [];
+                  employeeGroups[shift.driver_id].push(shift);
+                });
+
+                // Analyze gaps for each driver
+                Object.keys(employeeGroups).forEach(driverId => {
+                  const dShifts = employeeGroups[driverId].sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+                  
+                  for (let i = 0; i < dShifts.length - 1; i++) {
+                    const currentShift = dShifts[i];
+                    const nextShift = dShifts[i+1];
+                    
+                    if (currentShift.end_time && nextShift.start_time) {
+                      const gapMs = new Date(nextShift.start_time).getTime() - new Date(currentShift.end_time).getTime();
+                      const gapHours = gapMs / (1000 * 60 * 60);
+                      
+                      if (gapHours >= 8 && gapHours <= 15) {
+                        nightOutSuggestions.push({
+                          driverName: currentShift.driver_name || 'Driver',
+                          prevEnd: currentShift.end_time,
+                          nextStart: nextShift.start_time,
+                          gapHours: gapHours.toFixed(1)
+                        });
+                      }
+                    }
+                  }
+                });
 
                 return (
-                  <div className="alert-box alert-danger" style={{ marginBottom: '24px', backgroundColor: '#FEF2F2', border: '1px solid #F87171', color: '#B91C1C', padding: '16px', borderRadius: '8px' }}>
-                    <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>⚠️ Flags to review (Shifts &gt; 18 hours)</h3>
-                    <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
-                      {flaggedShifts.map(fs => (
-                        <li key={fs.id} style={{ marginBottom: '4px' }}>
-                          <strong>{fs.driver_name}</strong> - Shift started: {new Date(fs.start_time).toLocaleString()} - <em>Check clock-out time!</em>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                  <>
+                    {flaggedShifts.length > 0 && (
+                      <div className="alert-box alert-danger" style={{ marginBottom: '24px', backgroundColor: '#FEF2F2', border: '1px solid #F87171', color: '#B91C1C', padding: '16px', borderRadius: '8px' }}>
+                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>⚠️ Flags to review (Shifts &gt; 18 hours)</h3>
+                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
+                          {flaggedShifts.map(fs => (
+                            <li key={fs.id} style={{ marginBottom: '4px' }}>
+                              <strong>{fs.driver_name}</strong> - Shift started: {new Date(fs.start_time).toLocaleString()} - <em>Check clock-out time!</em>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Render the Night out suggestions box */}
+                    {nightOutSuggestions.length > 0 && (
+                      <div className="alert-box alert-warning" style={{ marginBottom: '24px', backgroundColor: '#FFFBEB', border: '1px solid #FCD34D', color: '#92400E', padding: '16px', borderRadius: '8px' }}>
+                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>🌙 Night outs detected (8-15h break between shifts)</h3>
+                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
+                          {nightOutSuggestions.map((no, idx) => (
+                            <li key={idx} style={{ marginBottom: '4px' }}>
+                              <strong>{no.driverName}</strong> - Break between {new Date(no.prevEnd).toLocaleDateString()} {new Date(no.prevEnd).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} and {new Date(no.nextStart).toLocaleDateString()} {new Date(no.nextStart).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} | <em>Duration: {no.gapHours}h</em>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
                 );
               })()}
 
