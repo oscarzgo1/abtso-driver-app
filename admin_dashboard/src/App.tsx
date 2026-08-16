@@ -58,6 +58,7 @@ export interface EmployeeRate {
   id?: string;
   driver_id: string;
   rate_type: string;
+  fixed_rate?: number | null;
   mon_fri_rate: number;
   sat_rate: number;
   sun_rate: number;
@@ -73,6 +74,7 @@ interface Employee {
   phone: string;
   is_active: boolean;
   hourly_rate?: number;
+  fixed_rate?: number | null;
   rate_profile?: string;
   created_at?: string;
 }
@@ -299,6 +301,7 @@ export default function App() {
   const [editMonFriRate, setEditMonFriRate] = useState<string>('16.00');
   const [editSatRate, setEditSatRate] = useState<string>('17.00');
   const [editSunRate, setEditSunRate] = useState<string>('18.00');
+  const [editFixedRate, setEditFixedRate] = useState<string>('150.00');
   const [editRateType, setEditRateType] = useState<string>('Hourly');
   const [editAgencyName, setEditAgencyName] = useState<string>('Direct');
 
@@ -473,6 +476,7 @@ export default function App() {
             id: d.id,
             driver_id: d.id,
             rate_type: rateTypeVal,
+            fixed_rate: d.fixed_rate ?? existing.fixed_rate ?? null,
             mon_fri_rate: Number(d.mon_fri_rate ?? d.hourly_rate ?? existing.mon_fri_rate) || 16.00,
             sat_rate: Number(d.saturday_rate ?? d.sat_rate ?? existing.sat_rate) || 17.00,
             sun_rate: Number(d.sunday_rate ?? d.sun_rate ?? existing.sun_rate) || 18.00,
@@ -1414,14 +1418,21 @@ export default function App() {
 
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
+    const isFixed = editRateType === 'Fixed';
+    const parsedFixed = parseFloat(editFixedRate) || 150.00;
+    const parsedMonFri = parseFloat(editMonFriRate) || 16.00;
+    const parsedSat = parseFloat(editSatRate) || 17.00;
+    const parsedSun = parseFloat(editSunRate) || 18.00;
+
     const rateData: EmployeeRate = {
       driver_id: driverId,
       rate_type: editRateType,
-      mon_fri_rate: parseFloat(editMonFriRate) || 16.00,
-      sat_rate: parseFloat(editSatRate) || 17.00,
-      sun_rate: parseFloat(editSunRate) || 18.00,
-      saturday_rate: parseFloat(editSatRate) || 17.00,
-      sunday_rate: parseFloat(editSunRate) || 18.00,
+      fixed_rate: isFixed ? parsedFixed : null,
+      mon_fri_rate: isFixed ? parsedFixed : parsedMonFri,
+      sat_rate: isFixed ? parsedFixed : parsedSat,
+      sun_rate: isFixed ? parsedFixed : parsedSun,
+      saturday_rate: isFixed ? parsedFixed : parsedSat,
+      sunday_rate: isFixed ? parsedFixed : parsedSun,
       agency_name: editAgencyName || 'Direct',
     };
 
@@ -1438,6 +1449,7 @@ export default function App() {
     setEmployees(prev => prev.map(e => (e.id === driverId || e.driver_id === driverId) ? {
       ...e,
       rate_type: rateData.rate_type,
+      fixed_rate: rateData.fixed_rate,
       mon_fri_rate: rateData.mon_fri_rate,
       saturday_rate: rateData.sat_rate,
       sunday_rate: rateData.sun_rate,
@@ -1455,11 +1467,12 @@ export default function App() {
     try {
       // 1. Try updating public.drivers table (Single Source of Truth)
       let updatePayload: any = { 
-        mon_fri_rate: rateData.mon_fri_rate,
-        saturday_rate: rateData.sat_rate,
-        sunday_rate: rateData.sun_rate,
-        hourly_rate: rateData.mon_fri_rate,
         rate_type: rateData.rate_type,
+        fixed_rate: isFixed ? parsedFixed : null,
+        mon_fri_rate: isFixed ? parsedFixed : parsedMonFri,
+        saturday_rate: isFixed ? parsedFixed : parsedSat,
+        sunday_rate: isFixed ? parsedFixed : parsedSun,
+        hourly_rate: isFixed ? parsedFixed : parsedMonFri,
         agency_name: rateData.agency_name
       };
 
@@ -1470,6 +1483,7 @@ export default function App() {
 
       // Progressive fallback if schema cache hasn't updated drivers table columns yet
       if (driverErr && driverErr.message.includes('schema cache')) {
+        delete updatePayload.fixed_rate;
         delete updatePayload.agency_name;
         const res2 = await supabase!.from('drivers').update(updatePayload).eq('id', driverId);
         driverErr = res2.error;
@@ -1485,7 +1499,7 @@ export default function App() {
       } catch (_) {}
 
       await loadData();
-      alert(`Driver profile saved successfully! Structure: ${rateData.rate_type} (${rateData.rate_type === 'Fixed' ? 'Fixed Shift Pay' : 'Hourly Rate'})`);
+      alert(`Driver profile saved successfully! Structure: ${rateData.rate_type} (${isFixed ? `£${parsedFixed.toFixed(2)}/shift` : 'Hourly Rate'})`);
     } catch (e: any) {
       alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
     }
@@ -1569,6 +1583,7 @@ export default function App() {
 
     const getRateForDay = (day: number) => {
       if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
+      if (drvRate.fixed_rate) return Number(drvRate.fixed_rate);
       if (day === 0) return Number(drvRate.sun_rate ?? drvRate.sunday_rate) || Number(drvRate.mon_fri_rate) || 18.00;
       if (day === 6) return Number(drvRate.sat_rate ?? drvRate.saturday_rate) || Number(drvRate.mon_fri_rate) || 17.00;
       return Number(drvRate.mon_fri_rate) || 16.00;
@@ -1577,7 +1592,7 @@ export default function App() {
     const startRateVal = getRateForDay(startDay);
     const endRateVal = getRateForDay(endDay);
 
-    const isFixedRate = Boolean(drvRate?.rate_type && (
+    const isFixedRate = Boolean(drvRate?.fixed_rate) || Boolean(drvRate?.rate_type && (
       drvRate.rate_type.toLowerCase().includes('fixed') || 
       drvRate.rate_type.toLowerCase().includes('day') || 
       drvRate.rate_type.toLowerCase().includes('flat')
@@ -1586,8 +1601,8 @@ export default function App() {
     let basePay = 0;
 
     if (isFixedRate) {
-      // Flat rate per shift based on start day, completely bypassing hourly multiplication
-      basePay = startRateVal;
+      // Flat rate per shift based on fixed_rate or start day, completely bypassing hourly multiplication
+      basePay = Number(drvRate?.fixed_rate) || startRateVal;
     } else {
       // Hourly Split Shift calculation
       basePay = s.end_time 
@@ -2468,48 +2483,77 @@ export default function App() {
                             </span>
                           )}
                         </td>
-                        <td>
-                          {isEditing ? (
-                            <input
-                              type="number"
-                              step="0.50"
-                              className="input-field"
-                              style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
-                              value={editMonFriRate}
-                              onChange={(e) => setEditMonFriRate(e.target.value)}
-                            />
+                        {isEditing ? (
+                          editRateType === 'Fixed' ? (
+                            <td colSpan={3} style={{ padding: '8px 12px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#4338CA', whiteSpace: 'nowrap' }}>Flat Rate per Shift (£):</label>
+                                <input
+                                  type="number"
+                                  step="1.00"
+                                  className="input-field"
+                                  style={{ padding: '4px 8px', fontSize: '12px', width: '120px', fontWeight: 'bold', color: '#3730A3', borderColor: '#818CF8' }}
+                                  value={editFixedRate}
+                                  onChange={(e) => {
+                                    setEditFixedRate(e.target.value);
+                                    setEditMonFriRate(e.target.value);
+                                    setEditSatRate(e.target.value);
+                                    setEditSunRate(e.target.value);
+                                  }}
+                                />
+                              </div>
+                            </td>
                           ) : (
-                            <span className="font-bold text-primary">£{(currentRate?.mon_fri_rate || 16.00).toFixed(2)}{isFixedRate ? '/shift' : '/hr'}</span>
-                          )}
-                        </td>
-                        <td>
-                          {isEditing ? (
-                            <input
-                              type="number"
-                              step="0.50"
-                              className="input-field"
-                              style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
-                              value={editSatRate}
-                              onChange={(e) => setEditSatRate(e.target.value)}
-                            />
-                          ) : (
-                            <span className="font-bold text-secondary">£{(currentRate?.sat_rate || 17.00).toFixed(2)}{isFixedRate ? '/shift' : '/hr'}</span>
-                          )}
-                        </td>
-                        <td>
-                          {isEditing ? (
-                            <input
-                              type="number"
-                              step="0.50"
-                              className="input-field"
-                              style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
-                              value={editSunRate}
-                              onChange={(e) => setEditSunRate(e.target.value)}
-                            />
-                          ) : (
-                            <span className="font-bold text-success">£{(currentRate?.sun_rate || 18.00).toFixed(2)}{isFixedRate ? '/shift' : '/hr'}</span>
-                          )}
-                        </td>
+                            <>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="0.50"
+                                  className="input-field"
+                                  style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
+                                  value={editMonFriRate}
+                                  onChange={(e) => setEditMonFriRate(e.target.value)}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="0.50"
+                                  className="input-field"
+                                  style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
+                                  value={editSatRate}
+                                  onChange={(e) => setEditSatRate(e.target.value)}
+                                />
+                              </td>
+                              <td>
+                                <input
+                                  type="number"
+                                  step="0.50"
+                                  className="input-field"
+                                  style={{ padding: '4px 8px', fontSize: '12px', width: '80px' }}
+                                  value={editSunRate}
+                                  onChange={(e) => setEditSunRate(e.target.value)}
+                                />
+                              </td>
+                            </>
+                          )
+                        ) : isFixedRate ? (
+                          <td colSpan={3} className="text-center font-bold" style={{ textAlign: 'center', color: '#4338CA', fontWeight: 'bold', backgroundColor: '#EEF2FF', borderRadius: '6px' }}>
+                            Flat Rate: £{Number(currentRate.fixed_rate || currentRate.mon_fri_rate || 0).toFixed(2)} / shift
+                          </td>
+                        ) : (
+                          <>
+                            <td>
+                              <span className="font-bold text-primary">£{(currentRate?.mon_fri_rate || 16.00).toFixed(2)}/hr</span>
+                            </td>
+                            <td>
+                              <span className="font-bold text-secondary">£{(currentRate?.sat_rate || 17.00).toFixed(2)}/hr</span>
+                            </td>
+                            <td>
+                              <span className="font-bold text-success">£{(currentRate?.sun_rate || 18.00).toFixed(2)}/hr</span>
+                            </td>
+                          </>
+                        )}
                         <td>
                           {isEditing ? (
                             <div className="flex gap-6">
@@ -2529,8 +2573,9 @@ export default function App() {
                                 setEditMonFriRate(currentRate.mon_fri_rate.toString());
                                 setEditSatRate(currentRate.sat_rate.toString());
                                 setEditSunRate(currentRate.sun_rate.toString());
-                                setEditRateType(currentRate.rate_type);
-                                setEditAgencyName(currentRate.agency_name);
+                                setEditFixedRate((currentRate.fixed_rate || currentRate.mon_fri_rate || 150.00).toString());
+                                setEditRateType(currentRate.rate_type || 'Hourly');
+                                setEditAgencyName(currentRate.agency_name || 'Direct');
                               }}
                             >
                               Edit Profile
