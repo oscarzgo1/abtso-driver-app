@@ -1497,9 +1497,23 @@ export default function App() {
     const startRateVal = getRateForDay(startDay);
     const endRateVal = getRateForDay(endDay);
 
-    const basePay = s.end_time 
-      ? calculateSplitShiftPay(s.start_time, s.end_time, drvRate)
-      : (s.total_hours || 0) * startRateVal;
+    const isFixedRate = Boolean(drvRate?.rate_type && (
+      drvRate.rate_type.toLowerCase().includes('fixed') || 
+      drvRate.rate_type.toLowerCase().includes('day') || 
+      drvRate.rate_type.toLowerCase().includes('flat')
+    ));
+
+    let basePay = 0;
+
+    if (isFixedRate) {
+      // Flat rate per shift based on start day, completely bypassing hourly multiplication
+      basePay = startRateVal;
+    } else {
+      // Hourly Split Shift calculation
+      basePay = s.end_time 
+        ? calculateSplitShiftPay(s.start_time, s.end_time, drvRate)
+        : (s.total_hours || 0) * startRateVal;
+    }
 
     const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
     const grossPay = Number((basePay + noAmt).toFixed(2));
@@ -1510,6 +1524,7 @@ export default function App() {
       endRateVal, 
       startDay, 
       endDay, 
+      isFixedRate,
       noAmt, 
       grossPay, 
       agency: drvRate?.agency_name || 'Direct' 
@@ -1519,7 +1534,7 @@ export default function App() {
   const exportCSV = () => {
     const filtered = getFilteredShifts();
     const exportData = filtered.map(s => {
-      const { rate, noAmt, grossPay, agency } = getShiftFinancials(s);
+      const { rate, isFixedRate, noAmt, grossPay, agency } = getShiftFinancials(s);
       return {
         'Employee Name': s.driver_name,
         'Employee ID': s.driver_code,
@@ -1528,7 +1543,7 @@ export default function App() {
         'Start Time': new Date(s.start_time).toLocaleString(),
         'End Time': s.end_time ? new Date(s.end_time).toLocaleString() : 'Active',
         'Hours Worked': (s.total_hours || 0).toFixed(2),
-        'Effective Rate (£/hr)': rate.toFixed(2),
+        'Effective Rate': isFixedRate ? `£${rate.toFixed(2)} (Fixed/Shift)` : `£${rate.toFixed(2)}/hr`,
         'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
         'Night Out Allowance (£)': noAmt.toFixed(2),
         'Gross Pay (£)': grossPay.toFixed(2),
@@ -1549,7 +1564,7 @@ export default function App() {
   const exportExcel = () => {
     const filtered = getFilteredShifts();
     const exportData = filtered.map(s => {
-      const { rate, noAmt, grossPay, agency } = getShiftFinancials(s);
+      const { rate, isFixedRate, noAmt, grossPay, agency } = getShiftFinancials(s);
       return {
         'Driver Name': s.driver_name,
         'Driver ID': s.driver_code,
@@ -1558,7 +1573,7 @@ export default function App() {
         'Shift Start': new Date(s.start_time).toLocaleString(),
         'Shift End': s.end_time ? new Date(s.end_time).toLocaleString() : 'In Progress',
         'Hours': s.total_hours || 0,
-        'Rate (£/hr)': rate,
+        'Rate': isFixedRate ? `£${rate.toFixed(2)} (Fixed/Shift)` : `£${rate.toFixed(2)}/hr`,
         'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
         'Night Out Allowance (£)': noAmt,
         'Gross Pay (£)': grossPay,
@@ -2651,6 +2666,7 @@ export default function App() {
                             endRateVal, 
                             startDay, 
                             endDay, 
+                            isFixedRate,
                             noAmt: noAmount, 
                             grossPay: shiftGrossPay, 
                             agency 
@@ -2721,7 +2737,11 @@ export default function App() {
                               </td>
                               <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
                               <td className="font-semibold">
-                                {startDay !== endDay && startRateVal !== endRateVal ? (
+                                {isFixedRate ? (
+                                  <span style={{ fontWeight: 'bold', color: '#4F46E5' }}>
+                                    £{startRateVal.toFixed(2)} <span style={{ fontSize: '11px', fontWeight: 'normal', color: '#6B7280' }}>(Fixed/Shift)</span>
+                                  </span>
+                                ) : startDay !== endDay && startRateVal !== endRateVal ? (
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                                      <span style={{ fontSize: '13px' }}>£{startRateVal.toFixed(2)}/hr</span>
                                      <span style={{ fontSize: '11px', color: '#6B7280' }}>→ £{endRateVal.toFixed(2)}/hr</span>
