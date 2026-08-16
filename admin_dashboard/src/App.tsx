@@ -2730,40 +2730,28 @@ export default function App() {
                                     ✏️ EDIT TIME
                                   </button>
 
-                                  {(shift.night_out_requested || shift.night_out_status === 'pending') ? (
-                                    <div className="flex align-center gap-4">
-                                      <span className="badge badge-warning text-xs font-bold" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D' }}>
-                                        📩 Driver Requested N/O
-                                      </span>
-                                      <button 
-                                        className="btn btn-success" 
-                                        style={{ padding: '4px 8px', fontSize: '11px' }}
-                                        onClick={() => handleAcceptNightOut(shift.id)}
-                                      >
-                                        Accept (£30)
-                                      </button>
-                                      <button 
-                                        className="btn btn-danger" 
-                                        style={{ padding: '4px 8px', fontSize: '11px' }}
-                                        onClick={() => handleRejectNightOut(shift.id)}
-                                      >
-                                        Reject
-                                      </button>
+                                  {shift.night_out_requested ? (
+                                    // SCENARIO 1: Driver requested a Night Out from the app
+                                    <div className="flex gap-2 align-center">
+                                      <span className="badge badge-warning text-xs">🔔 N/O Requested</span>
+                                      <button className="btn btn-sm btn-success text-xs" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={() => handleAcceptNightOut(shift.id)}>✅ ACCEPT</button>
+                                      <button className="btn btn-sm btn-danger text-xs" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={() => handleRejectNightOut(shift.id)}>❌ REJECT</button>
                                     </div>
                                   ) : (
+                                    // SCENARIO 2 & 3: No request pending (either manually added, already approved, or empty)
                                     <button 
                                       className="btn btn-outline flex align-center gap-2" 
                                       style={{ 
                                         padding: '4px 8px', 
                                         fontSize: '11px', 
                                         fontWeight: 'bold', 
-                                        borderColor: noAmount > 0 ? '#10B981' : '#D1D5DB',
-                                        color: noAmount > 0 ? '#047857' : '#4B5563',
-                                        backgroundColor: noAmount > 0 ? '#ECFDF5' : 'transparent'
+                                        borderColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#10B981' : '#D1D5DB',
+                                        color: (shift.night_out_allowance ?? shift.night_out_amount) ? '#047857' : '#4B5563',
+                                        backgroundColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#ECFDF5' : 'transparent'
                                       }}
                                       onClick={() => handleNightOutAmount(shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
                                     >
-                                      {noAmount > 0 ? `🌙 N/O: £${noAmount.toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
+                                      {(shift.night_out_allowance ?? shift.night_out_amount) ? `🌙 N/O: £${Number(shift.night_out_allowance ?? shift.night_out_amount).toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
                                     </button>
                                   )}
                                 </div>
