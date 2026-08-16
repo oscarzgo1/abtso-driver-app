@@ -1418,7 +1418,7 @@ export default function App() {
 
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
-    console.log("Saving driver rate profile override for driver ID:", driverId);
+    console.log("Saving driver rate profile for driver ID:", driverId);
 
     const targetEmp = employees.find(e => e.id === driverId || e.driver_id === driverId);
     const primaryId = targetEmp?.id || driverId;
@@ -1429,12 +1429,6 @@ export default function App() {
     const parsedMonFri = parseFloat(editMonFriRate) || 16.00;
     const parsedSat = parseFloat(editSatRate) || 17.00;
     const parsedSun = parseFloat(editSunRate) || 18.00;
-
-    // Driver individual override payload (STRICTLY rate_type & fixed_rate for drivers table)
-    const driverOverridePayload = {
-      rate_type: isFixed ? 'Fixed' : 'Hourly',
-      fixed_rate: isFixed ? parsedFixed : null
-    };
 
     const ratePayload: any = {
       driver_id: primaryId,
@@ -1485,56 +1479,57 @@ export default function App() {
     }
 
     try {
-      // 1. UPDATE DRIVERS TABLE STRICTLY WITH OVERRIDE FIELDS (rate_type and fixed_rate)
-      let query = supabase!
-        .from('drivers')
-        .update(driverOverridePayload);
+      // 1. SAVE TO employee_rates TABLE (Primary Source of Truth for driver rate structures)
+      let { data: rateData, error: rateErr } = await supabase!
+        .from('employee_rates')
+        .upsert(ratePayload, { onConflict: 'driver_id' })
+        .select();
 
-      if (primaryId && driverCode && primaryId !== driverCode) {
-        query = query.or(`id.eq.${primaryId},driver_id.eq.${driverCode}`);
-      } else {
-        query = query.eq('id', primaryId);
-      }
-
-      let { data: driverData, error: driverErr, status } = await query.select();
-
-      // Progressive fallback if fixed_rate is missing in drivers table schema cache
-      if (driverErr && driverErr.message.includes('schema cache')) {
-        const fbRes = await supabase!
-          .from('drivers')
-          .update({ rate_type: isFixed ? 'Fixed' : 'Hourly' })
-          .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
+      // Progressive fallback if fixed_rate column is missing from schema cache in employee_rates
+      if (rateErr && rateErr.message.includes('schema cache')) {
+        delete ratePayload.fixed_rate;
+        const resFb = await supabase!
+          .from('employee_rates')
+          .upsert(ratePayload, { onConflict: 'driver_id' })
           .select();
-        driverData = fbRes.data;
-        driverErr = fbRes.error;
-        status = fbRes.status;
+        rateData = resFb.data;
+        rateErr = resFb.error;
       }
 
-      if (driverErr) {
-        alert("Error updating driver profile: " + driverErr.message);
-        await loadData();
-        return;
+      // If primaryId upsert returned no row, retry with driverCode string
+      if ((!rateData || rateData.length === 0) && driverCode && driverCode !== primaryId) {
+        const altPayload = { ...ratePayload, driver_id: driverCode };
+        const resCode = await supabase!
+          .from('employee_rates')
+          .upsert(altPayload, { onConflict: 'driver_id' })
+          .select();
+        if (resCode.data && resCode.data.length > 0) {
+          rateData = resCode.data;
+          rateErr = null;
+        }
       }
 
-      if (!driverData || driverData.length === 0) {
-        alert(`Silent Failure: Could not update driver ID (${primaryId} / ${driverCode}) in drivers table (Status ${status}).`);
-        await loadData();
-        return;
-      }
-
-      // 2. ALSO save to employee_rates table if present (for hourly rates & agency names)
+      // 2. OPTIONAL SILENT UPDATE TO drivers TABLE (Only standard hourly_rate, strictly wrapped in try/catch)
       try {
         await supabase!
-          .from('employee_rates')
-          .upsert(ratePayload, { onConflict: 'driver_id' });
+          .from('drivers')
+          .update({ hourly_rate: isFixed ? parsedFixed : parsedMonFri })
+          .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`);
       } catch (_) {}
 
-      // 3. Recalculate shifts pay
+      // 3. Recalculate shifts pay RPC
       try {
         await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: primaryId });
       } catch (_) {}
 
-      alert(`Driver profile structure updated successfully!\n\nRate Type: ${isFixed ? 'Fixed Shift Rate' : 'Hourly'} ${isFixed ? `(£${parsedFixed.toFixed(2)}/shift)` : ''}`);
+      // Verify success
+      if (rateErr) {
+        alert("Error updating driver profile in employee_rates: " + rateErr.message);
+        await loadData();
+        return;
+      }
+
+      alert(`Driver compensation profile saved successfully!\n\nRate Type: ${isFixed ? 'Fixed Shift Rate' : 'Hourly'} ${isFixed ? `(£${parsedFixed.toFixed(2)}/shift)` : ''}`);
       await loadData();
     } catch (e: any) {
       alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
