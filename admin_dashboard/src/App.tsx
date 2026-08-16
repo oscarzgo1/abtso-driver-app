@@ -1347,20 +1347,22 @@ export default function App() {
     }
   };
 
-  const handleAcceptNightOut = async (shiftId: string) => {
-    const userInput = window.prompt("Driver requested a Night Out. Enter approved amount (£):", "30");
-    if (userInput === null) return;
+  const handleAcceptNightOut = async (shiftId: string, driverName: string) => {
+    const userInput = window.prompt(`Approve Night Out for ${driverName}.\nEnter approved amount (£):`, "30");
+    if (userInput === null) return; // User cancelled
     
     const amount = parseFloat(userInput);
     if (isNaN(amount) || amount <= 0) {
-        alert("Invalid amount. Night out not approved.");
+        alert("Invalid amount entered. Night out approval cancelled.");
         return;
     }
 
     const targetShift = shifts.find(s => s.id === shiftId);
-    const baseHours = targetShift?.total_hours || 0;
-    const baseRate = targetShift?.effective_rate || targetShift?.base_hourly_rate || 16.00;
-    const newTotalPay = Number(((baseHours * baseRate) + amount).toFixed(2));
+    const drvRate = employeeRates[targetShift?.driver_id || ''] || (targetShift as any)?.employee;
+    const basePay = targetShift?.end_time 
+      ? calculateSplitShiftPay(targetShift.start_time, targetShift.end_time, drvRate)
+      : 0;
+    const newTotalPay = Number((basePay + amount).toFixed(2));
 
     const updatePayload: any = {
       night_out_requested: false,
@@ -1375,15 +1377,23 @@ export default function App() {
       .update(updatePayload)
       .eq('id', shiftId);
 
-    if (error) alert("Error accepting night out: " + error.message);
-    else loadData();
+    if (error) {
+        alert("Error approving night out: " + error.message);
+    } else {
+        alert(`Night out approved for ${driverName} (£${amount.toFixed(2)}). Status synced with driver app.`);
+        loadData();
+    }
   };
 
-  const handleRejectNightOut = async (shiftId: string) => {
+  const handleRejectNightOut = async (shiftId: string, driverName: string) => {
+    if (!window.confirm(`Are you sure you want to REJECT the night out request from ${driverName}?`)) return;
+
     const targetShift = shifts.find(s => s.id === shiftId);
-    const baseHours = targetShift?.total_hours || 0;
-    const baseRate = targetShift?.effective_rate || targetShift?.base_hourly_rate || 16.00;
-    const newTotalPay = Number((baseHours * baseRate).toFixed(2));
+    const drvRate = employeeRates[targetShift?.driver_id || ''] || (targetShift as any)?.employee;
+    const basePay = targetShift?.end_time 
+      ? calculateSplitShiftPay(targetShift.start_time, targetShift.end_time, drvRate)
+      : 0;
+    const newTotalPay = Number(basePay.toFixed(2));
 
     const updatePayload: any = {
       night_out_requested: false,
@@ -1398,8 +1408,12 @@ export default function App() {
       .update(updatePayload)
       .eq('id', shiftId);
 
-    if (error) alert("Error rejecting night out: " + error.message);
-    else loadData();
+    if (error) {
+        alert("Error rejecting night out: " + error.message);
+    } else {
+        alert(`Night out request from ${driverName} rejected. Status synced with driver app.`);
+        loadData();
+    }
   };
 
   // ── Rates & Night Out Handlers ────────────────────────────────
@@ -2763,11 +2777,23 @@ export default function App() {
                                   </button>
 
                                   {shift.night_out_requested ? (
-                                    // SCENARIO 1: Driver requested a Night Out from the app
-                                    <div className="flex gap-2 align-center">
-                                      <span className="badge badge-warning text-xs">🔔 N/O Requested</span>
-                                      <button className="btn btn-sm btn-success text-xs" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={() => handleAcceptNightOut(shift.id)}>✅ ACCEPT</button>
-                                      <button className="btn btn-sm btn-danger text-xs" style={{ padding: '4px 8px', fontSize: '11px' }} onClick={() => handleRejectNightOut(shift.id)}>❌ REJECT</button>
+                                    // Driver has requested a night out
+                                    <div className="flex gap-2 align-center p-1 rounded border" style={{ backgroundColor: '#FEF3C7', borderColor: '#FCD34D' }}>
+                                      <span className="text-xs font-bold" style={{ color: '#92400E' }}>🔔 Requested</span>
+                                      <button 
+                                        className="btn btn-sm btn-success text-xs" 
+                                        style={{ padding: '4px 8px', fontSize: '11px' }} 
+                                        onClick={() => handleAcceptNightOut(shift.id, shift.driver_name || (shift as any).driver?.name || 'Driver')}
+                                      >
+                                        ✅ ACCEPT
+                                      </button>
+                                      <button 
+                                        className="btn btn-sm btn-danger text-xs" 
+                                        style={{ padding: '4px 8px', fontSize: '11px' }} 
+                                        onClick={() => handleRejectNightOut(shift.id, shift.driver_name || (shift as any).driver?.name || 'Driver')}
+                                      >
+                                        ❌ REJECT
+                                      </button>
                                     </div>
                                   ) : (
                                     // SCENARIO 2 & 3: No request pending (either manually added, already approved, or empty)
