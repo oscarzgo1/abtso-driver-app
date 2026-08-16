@@ -2588,6 +2588,13 @@ export default function App() {
                   return durationHours > 18;
                 });
 
+                // Pending Night Out Requests Notification
+                const pendingRequests = filteredShifts.filter(shift => 
+                  shift.night_out_requested === true || 
+                  (shift as any).has_requested_night_out === true || 
+                  shift.night_out_status === 'pending'
+                );
+
                 // Night Out Detection Logic (8 to 15 hours gap)
                 interface NightOutSuggestion {
                   driverName: string;
@@ -2631,6 +2638,24 @@ export default function App() {
 
                 return (
                   <>
+                    {/* Render Pending Night Out Requests Notification Banner */}
+                    {pendingRequests.length > 0 && (
+                      <div className="alert-box alert-warning" style={{ marginBottom: '24px', backgroundColor: '#FEF3C7', border: '1px solid #FCD34D', color: '#92400E', padding: '16px', borderRadius: '8px' }}>
+                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>🔔 Pending Night Out Requests ({pendingRequests.length})</h3>
+                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
+                          {pendingRequests.map(pr => {
+                            const name = pr.driver_name || (pr as any).drivers?.full_name || (pr as any).employee?.name || (pr as any).driver?.name || 'Driver';
+                            const code = pr.driver_code || (pr as any).drivers?.driver_id || '';
+                            return (
+                              <li key={pr.id} style={{ marginBottom: '6px' }}>
+                                <strong>{name} {code ? `(${code})` : ''}</strong> has submitted a Night Out request for shift starting on {new Date(pr.start_time).toLocaleDateString()} at {new Date(pr.start_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}.
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
+
                     {flaggedShifts.length > 0 && (
                       <div className="alert-box alert-danger" style={{ marginBottom: '24px', backgroundColor: '#FEF2F2', border: '1px solid #F87171', color: '#B91C1C', padding: '16px', borderRadius: '8px' }}>
                         <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>⚠️ Flags to review (Shifts &gt; 18 hours)</h3>
