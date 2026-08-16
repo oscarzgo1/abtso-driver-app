@@ -112,6 +112,7 @@ interface Shift {
   week_year?: number;
   night_out_status?: 'none' | 'pending' | 'approved' | 'rejected';
   night_out_amount?: number;
+  night_out_allowance?: number | null;
   created_at?: string;
 }
 
@@ -1292,6 +1293,45 @@ export default function App() {
     }
   };
 
+  const handleNightOutAmount = async (shiftId: string, currentAllowance: number | null | undefined) => {
+    const defaultAmount = (currentAllowance && currentAllowance > 0) ? currentAllowance.toString() : "30";
+    const userInput = window.prompt(
+      "Enter the Night Out allowance amount (£) for this shift:\n(Enter 0 or leave empty to remove it)", 
+      defaultAmount
+    );
+
+    if (userInput === null) return; // User cancelled
+
+    const amount = parseFloat(userInput);
+    let newAllowance: number | null = null;
+
+    if (!isNaN(amount) && amount > 0) {
+      newAllowance = amount;
+    } // If 0 or invalid, it stays null (removes the allowance)
+
+    // Calculate updated total pay
+    const targetShift = shifts.find(s => s.id === shiftId);
+    const baseHours = targetShift?.total_hours || 0;
+    const baseRate = targetShift?.effective_rate || targetShift?.base_hourly_rate || 16.00;
+    const newTotalPay = Number(((baseHours * baseRate) + (newAllowance || 0)).toFixed(2));
+
+    const { error } = await supabase!
+      .from('shifts')
+      .update({
+        night_out_allowance: newAllowance,
+        night_out_amount: newAllowance ?? 0,
+        night_out_status: newAllowance ? 'approved' : 'none',
+        total_pay: newTotalPay
+      })
+      .eq('id', shiftId);
+
+    if (error) {
+      alert("Failed to update Night Out allowance: " + error.message);
+    } else {
+      loadData(); // Refresh UI and recalculate payroll
+    }
+  };
+
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
     const rateData: EmployeeRate = {
@@ -1355,52 +1395,7 @@ export default function App() {
     }
   };
 
-  const handleUpdateNightOutStatus = async (shiftId: string, status: 'approved' | 'rejected' | 'none', amount = 25.00) => {
-    const targetShift = shifts.find(s => s.id === shiftId);
-    const baseHours = targetShift?.total_hours || 0;
-    const baseRate = targetShift?.effective_rate || 0;
-    const newNightOutAmount = status === 'approved' ? amount : 0;
-    const newTotalPay = Number(((baseHours * baseRate) + newNightOutAmount).toFixed(2));
 
-    // Optimistically update local shift state immediately
-    setShifts(prev =>
-      prev.map(s => (s.id === shiftId ? {
-        ...s,
-        night_out_status: status,
-        night_out_amount: newNightOutAmount,
-        total_pay: newTotalPay
-      } : s))
-    );
-
-    if (isMockMode) return;
-
-    try {
-      // 1. Explicit RPC call to update_night_out_status as primary
-      const { data, error } = await supabase!.rpc('update_night_out_status', {
-        p_shift_id: shiftId,
-        p_status: status,
-        p_amount: amount,
-      });
-
-      if (error || (data && data.success === false)) {
-        console.warn('RPC update_night_out_status notice:', error?.message || data?.error);
-        // Direct DB update fallback if RPC function is missing/pending
-        await supabase!
-          .from('shifts')
-          .update({
-            night_out_status: status,
-            night_out_amount: newNightOutAmount,
-            total_pay: newTotalPay
-          })
-          .eq('id', shiftId);
-      }
-
-      // 2. Fetch fresh data after RPC call / DB update succeeds
-      await loadData();
-    } catch (e: any) {
-      console.warn('Connection error during Night Out update:', e?.message);
-    }
-  };
 
   // ── CSV & Excel Export Functions ────────────────────────────
   const getFilteredShifts = () => {
@@ -2359,8 +2354,8 @@ export default function App() {
           const filteredShifts = getFilteredShifts();
           const totalEarnings = filteredShifts.reduce((sum, s) => sum + (s.total_pay || 0), 0);
           const totalHours = filteredShifts.reduce((sum, s) => sum + (s.total_hours || 0), 0);
-          const totalNightOutPay = filteredShifts.reduce((sum, s) => sum + (s.night_out_status === 'approved' ? (s.night_out_amount || 25.00) : 0), 0);
-          const approvedNightOutsCount = filteredShifts.filter(s => s.night_out_status === 'approved').length;
+          const totalNightOutAmount = filteredShifts.reduce((sum, shift) => sum + (Number(shift.night_out_allowance ?? shift.night_out_amount) || 0), 0);
+          const nightOutCount = filteredShifts.filter(shift => (Number(shift.night_out_allowance ?? shift.night_out_amount) || 0) > 0).length;
 
           // Collect unique agencies for filter dropdown
           const agencies = Array.from(new Set(Object.values(employeeRates).map(r => r.agency_name || 'Direct')));
@@ -2540,8 +2535,7 @@ export default function App() {
                         {filteredShifts.map(shift => {
                           const drvRate = employeeRates[shift.driver_id];
                           const agency = drvRate?.agency_name || 'Direct';
-                          const isPendingN_O = shift.night_out_status === 'pending';
-                          const isApprovedN_O = shift.night_out_status === 'approved';
+                          const noAmount = Number(shift.night_out_allowance ?? shift.night_out_amount) || 0;
 
                           const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
                           const shiftStartMs = new Date(shift.start_time).getTime();
@@ -2597,13 +2591,9 @@ export default function App() {
                               <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
                               <td className="font-semibold">£{(shift.effective_rate || shift.base_hourly_rate || 16.00).toFixed(2)}/hr</td>
                               <td>
-                                {isApprovedN_O ? (
+                                {noAmount > 0 ? (
                                   <span className="badge badge-success font-bold">
-                                    +£{(shift.night_out_amount || 25.00).toFixed(2)} N/O
-                                  </span>
-                                ) : isPendingN_O ? (
-                                  <span className="badge badge-warning font-bold" style={{ backgroundColor: '#F59E0B', color: '#FFFFFF' }}>
-                                    PENDING APPROVAL
+                                    +£{noAmount.toFixed(2)} N/O
                                   </span>
                                 ) : (
                                   <span className="text-muted text-xs">—</span>
@@ -2619,43 +2609,20 @@ export default function App() {
                                   >
                                     ✏️ EDIT TIME
                                   </button>
-
-                                  {userRole === 'payroll_admin' && (
-                                    isPendingN_O ? (
-                                      <>
-                                        <button
-                                          className="btn btn-success"
-                                          style={{ padding: '4px 8px', fontSize: '11px' }}
-                                          onClick={() => handleUpdateNightOutStatus(shift.id, 'approved', 25.00)}
-                                        >
-                                          Approve N/O (£25)
-                                        </button>
-                                        <button
-                                          className="btn btn-danger"
-                                          style={{ padding: '4px 8px', fontSize: '11px' }}
-                                          onClick={() => handleUpdateNightOutStatus(shift.id, 'rejected', 0)}
-                                        >
-                                          Reject
-                                        </button>
-                                      </>
-                                    ) : isApprovedN_O ? (
-                                      <button
-                                        className="btn btn-secondary"
-                                        style={{ padding: '4px 8px', fontSize: '11px', color: '#EF4444' }}
-                                        onClick={() => handleUpdateNightOutStatus(shift.id, 'none', 0)}
-                                      >
-                                        Remove N/O
-                                      </button>
-                                    ) : (
-                                      <button
-                                        className="btn btn-secondary"
-                                        style={{ padding: '4px 8px', fontSize: '11px' }}
-                                        onClick={() => handleUpdateNightOutStatus(shift.id, 'approved', 25.00)}
-                                      >
-                                        + Add N/O (£25)
-                                      </button>
-                                    )
-                                  )}
+                                  <button 
+                                    className="btn btn-outline flex align-center gap-2" 
+                                    style={{ 
+                                      padding: '4px 8px', 
+                                      fontSize: '11px', 
+                                      fontWeight: 'bold', 
+                                      borderColor: noAmount > 0 ? '#10B981' : '#D1D5DB',
+                                      color: noAmount > 0 ? '#047857' : '#4B5563',
+                                      backgroundColor: noAmount > 0 ? '#ECFDF5' : 'transparent'
+                                    }}
+                                    onClick={() => handleNightOutAmount(shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
+                                  >
+                                    {noAmount > 0 ? `🌙 N/O: £${noAmount.toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
+                                  </button>
                                 </div>
                               </td>
                               <td className="font-bold text-success">
@@ -2667,7 +2634,7 @@ export default function App() {
                         {/* Summary Row */}
                         <tr style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', fontWeight: 'bold', borderTop: '2px solid rgba(16, 185, 129, 0.2)' }}>
                           <td colSpan={3} className="text-primary font-black" style={{ padding: '16px' }}>
-                            TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts | {approvedNightOutsCount} Night Outs: £{(totalNightOutPay || 0).toFixed(2)})
+                            TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts | {nightOutCount} Night Outs: £{totalNightOutAmount.toFixed(2)})
                           </td>
                           <td className="text-primary font-bold" style={{ padding: '16px' }}>
                             {(totalHours || 0).toFixed(2)} hrs
