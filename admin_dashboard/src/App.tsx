@@ -113,6 +113,7 @@ interface Shift {
   week_number: number;
   week_year?: number;
   night_out_status?: 'none' | 'pending' | 'approved' | 'rejected';
+  night_out_requested?: boolean;
   night_out_amount?: number;
   night_out_allowance?: number | null;
   created_at?: string;
@@ -1344,6 +1345,61 @@ export default function App() {
     } else {
       loadData(); // Refresh UI and recalculate payroll
     }
+  };
+
+  const handleAcceptNightOut = async (shiftId: string) => {
+    const userInput = window.prompt("Driver requested a Night Out. Enter approved amount (£):", "30");
+    if (userInput === null) return;
+    
+    const amount = parseFloat(userInput);
+    if (isNaN(amount) || amount <= 0) {
+        alert("Invalid amount. Night out not approved.");
+        return;
+    }
+
+    const targetShift = shifts.find(s => s.id === shiftId);
+    const baseHours = targetShift?.total_hours || 0;
+    const baseRate = targetShift?.effective_rate || targetShift?.base_hourly_rate || 16.00;
+    const newTotalPay = Number(((baseHours * baseRate) + amount).toFixed(2));
+
+    const updatePayload: any = {
+      night_out_requested: false,
+      night_out_status: 'approved',
+      night_out_amount: amount,
+      night_out_allowance: amount,
+      total_pay: newTotalPay
+    };
+
+    const { error } = await supabase!
+      .from('shifts')
+      .update(updatePayload)
+      .eq('id', shiftId);
+
+    if (error) alert("Error accepting night out: " + error.message);
+    else loadData();
+  };
+
+  const handleRejectNightOut = async (shiftId: string) => {
+    const targetShift = shifts.find(s => s.id === shiftId);
+    const baseHours = targetShift?.total_hours || 0;
+    const baseRate = targetShift?.effective_rate || targetShift?.base_hourly_rate || 16.00;
+    const newTotalPay = Number((baseHours * baseRate).toFixed(2));
+
+    const updatePayload: any = {
+      night_out_requested: false,
+      night_out_status: 'rejected',
+      night_out_allowance: null,
+      night_out_amount: 0,
+      total_pay: newTotalPay
+    };
+
+    const { error } = await supabase!
+      .from('shifts')
+      .update(updatePayload)
+      .eq('id', shiftId);
+
+    if (error) alert("Error rejecting night out: " + error.message);
+    else loadData();
   };
 
   // ── Rates & Night Out Handlers ────────────────────────────────
@@ -2659,20 +2715,43 @@ export default function App() {
                                   >
                                     ✏️ EDIT TIME
                                   </button>
-                                  <button 
-                                    className="btn btn-outline flex align-center gap-2" 
-                                    style={{ 
-                                      padding: '4px 8px', 
-                                      fontSize: '11px', 
-                                      fontWeight: 'bold', 
-                                      borderColor: noAmount > 0 ? '#10B981' : '#D1D5DB',
-                                      color: noAmount > 0 ? '#047857' : '#4B5563',
-                                      backgroundColor: noAmount > 0 ? '#ECFDF5' : 'transparent'
-                                    }}
-                                    onClick={() => handleNightOutAmount(shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
-                                  >
-                                    {noAmount > 0 ? `🌙 N/O: £${noAmount.toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
-                                  </button>
+
+                                  {(shift.night_out_requested || shift.night_out_status === 'pending') ? (
+                                    <div className="flex align-center gap-4">
+                                      <span className="badge badge-warning text-xs font-bold" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D' }}>
+                                        📩 Driver Requested N/O
+                                      </span>
+                                      <button 
+                                        className="btn btn-success" 
+                                        style={{ padding: '4px 8px', fontSize: '11px' }}
+                                        onClick={() => handleAcceptNightOut(shift.id)}
+                                      >
+                                        Accept (£30)
+                                      </button>
+                                      <button 
+                                        className="btn btn-danger" 
+                                        style={{ padding: '4px 8px', fontSize: '11px' }}
+                                        onClick={() => handleRejectNightOut(shift.id)}
+                                      >
+                                        Reject
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button 
+                                      className="btn btn-outline flex align-center gap-2" 
+                                      style={{ 
+                                        padding: '4px 8px', 
+                                        fontSize: '11px', 
+                                        fontWeight: 'bold', 
+                                        borderColor: noAmount > 0 ? '#10B981' : '#D1D5DB',
+                                        color: noAmount > 0 ? '#047857' : '#4B5563',
+                                        backgroundColor: noAmount > 0 ? '#ECFDF5' : 'transparent'
+                                      }}
+                                      onClick={() => handleNightOutAmount(shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
+                                    >
+                                      {noAmount > 0 ? `🌙 N/O: £${noAmount.toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
+                                    </button>
+                                  )}
                                 </div>
                               </td>
                               <td className="font-bold text-success">
