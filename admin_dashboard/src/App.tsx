@@ -1251,29 +1251,43 @@ export default function App() {
     const newStartRaw = window.prompt("1/2: Edit START date and time (YYYY-MM-DD HH:mm):", defaultStart);
     if (!newStartRaw) return; // User cancelled
 
-    // 2. Edit End Time
-    const defaultEnd = currentEndTime ? formatForPrompt(currentEndTime) : new Date().toISOString().slice(0, 16).replace('T', ' ');
-    const newEndRaw = window.prompt("2/2: Edit END date and time (YYYY-MM-DD HH:mm):\nLeave exactly as is if shift is still active.", defaultEnd);
-    if (!newEndRaw) return; // User cancelled
+    // 2. Edit End Time (Allowing clearing for 'ongoing')
+    const defaultEnd = currentEndTime ? formatForPrompt(currentEndTime) : "";
+    const newEndRaw = window.prompt("2/2: Edit END date and time (YYYY-MM-DD HH:mm).\nTo leave the shift ACTIVE (ongoing), completely CLEAR this text box before clicking OK:", defaultEnd);
+    
+    if (newEndRaw === null) return; // User clicked Cancel
 
     const newStartTime = new Date(newStartRaw).toISOString();
-    const newEndTime = new Date(newEndRaw).toISOString();
+    
+    let updatePayload: { start_time: string; end_time?: string | null; status: string } = {
+      start_time: newStartTime,
+      status: 'completed'
+    };
 
-    if (new Date(newEndTime) <= new Date(newStartTime)) {
-      alert("Error: End time must be strictly after the start time!");
-      return;
+    if (newEndRaw.trim() === "") {
+      // User cleared the field, make it ongoing
+      updatePayload.end_time = null;
+      updatePayload.status = 'active';
+    } else {
+      // User provided an end time
+      const newEndTime = new Date(newEndRaw).toISOString();
+      if (new Date(newEndTime) <= new Date(newStartTime)) {
+        alert("Error: End time must be strictly after the start time!");
+        return;
+      }
+      updatePayload.end_time = newEndTime;
     }
 
     // 3. Update Database
     const { error } = await supabase!
       .from('shifts')
-      .update({ start_time: newStartTime, end_time: newEndTime, status: 'completed' })
+      .update(updatePayload)
       .eq('id', shiftId);
 
     if (error) {
       alert("Failed to update shift: " + error.message);
     } else {
-      alert("Shift times updated and payroll recalculated successfully.");
+      alert("Shift times updated successfully.");
       loadData(); // Refresh UI
     }
   };
