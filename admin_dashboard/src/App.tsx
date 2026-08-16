@@ -469,8 +469,8 @@ export default function App() {
 
       const mappedShifts = (sfts || []).map((s: any) => ({
         ...s,
-        driver_name: s.drivers?.full_name,
-        driver_code: s.drivers?.driver_id,
+        driver_name: s.drivers?.full_name || s.employee?.name || s.driver?.name || s.driver_name || 'Driver',
+        driver_code: s.drivers?.driver_id || s.driver_code || '',
         depot_name: s.depots?.name,
       }));
       setShifts(mappedShifts);
@@ -2698,6 +2698,18 @@ export default function App() {
                           const shiftStartMs = new Date(shift.start_time).getTime();
                           const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
 
+                          const isRequested = 
+                            shift.night_out_requested === true || 
+                            (shift as any).has_requested_night_out === true || 
+                            shift.night_out_status === 'pending';
+
+                          const resolvedDriverName = 
+                            shift.driver_name || 
+                            (shift as any).drivers?.full_name || 
+                            (shift as any).employee?.name || 
+                            (shift as any).driver?.name || 
+                            'Unknown Driver';
+
                           return (
                             <tr key={shift.id}>
                               <td className="font-bold text-primary">
@@ -2776,21 +2788,21 @@ export default function App() {
                                     ✏️ EDIT TIME
                                   </button>
 
-                                  {shift.night_out_requested ? (
+                                  {isRequested ? (
                                     // Driver has requested a night out
                                     <div className="flex gap-2 align-center p-1 rounded border" style={{ backgroundColor: '#FEF3C7', borderColor: '#FCD34D' }}>
                                       <span className="text-xs font-bold" style={{ color: '#92400E' }}>🔔 Requested</span>
                                       <button 
                                         className="btn btn-sm btn-success text-xs" 
                                         style={{ padding: '4px 8px', fontSize: '11px' }} 
-                                        onClick={() => handleAcceptNightOut(shift.id, shift.driver_name || (shift as any).driver?.name || 'Driver')}
+                                        onClick={() => handleAcceptNightOut(shift.id, resolvedDriverName)}
                                       >
                                         ✅ ACCEPT
                                       </button>
                                       <button 
                                         className="btn btn-sm btn-danger text-xs" 
                                         style={{ padding: '4px 8px', fontSize: '11px' }} 
-                                        onClick={() => handleRejectNightOut(shift.id, shift.driver_name || (shift as any).driver?.name || 'Driver')}
+                                        onClick={() => handleRejectNightOut(shift.id, resolvedDriverName)}
                                       >
                                         ❌ REJECT
                                       </button>
