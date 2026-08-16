@@ -1315,15 +1315,27 @@ export default function App() {
     const baseRate = targetShift?.effective_rate || targetShift?.base_hourly_rate || 16.00;
     const newTotalPay = Number(((baseHours * baseRate) + (newAllowance || 0)).toFixed(2));
 
-    const { error } = await supabase!
+    // Update using established schema columns (night_out_amount & night_out_status)
+    const updatePayload: any = {
+      night_out_amount: newAllowance ?? 0,
+      night_out_status: newAllowance ? 'approved' : 'none',
+      total_pay: newTotalPay
+    };
+
+    let { error } = await supabase!
       .from('shifts')
-      .update({
-        night_out_allowance: newAllowance,
-        night_out_amount: newAllowance ?? 0,
-        night_out_status: newAllowance ? 'approved' : 'none',
-        total_pay: newTotalPay
-      })
+      .update(updatePayload)
       .eq('id', shiftId);
+
+    if (!error) {
+      // Safely try updating night_out_allowance column if migration 024 was executed
+      try {
+        await supabase!
+          .from('shifts')
+          .update({ night_out_allowance: newAllowance })
+          .eq('id', shiftId);
+      } catch (_) {}
+    }
 
     if (error) {
       alert("Failed to update Night Out allowance: " + error.message);
