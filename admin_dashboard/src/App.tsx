@@ -2524,7 +2524,6 @@ export default function App() {
                     ) : (
                       <>
                         {filteredShifts.map(shift => {
-                          const startDate = new Date(shift.start_time);
                           const drvRate = employeeRates[shift.driver_id];
                           const agency = drvRate?.agency_name || 'Direct';
                           const isPendingN_O = shift.night_out_status === 'pending';
@@ -2543,10 +2542,43 @@ export default function App() {
                                 <span className="badge badge-accent">{agency}</span>
                               </td>
                               <td>
-                                <div className="font-semibold text-primary">{startDate.toLocaleDateString()}</div>
-                                <div className="text-xs text-secondary font-mono mt-4">
-                                  {new Date(shift.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {shift.end_time ? new Date(shift.end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'In Progress'}
-                                </div>
+                                {(() => {
+                                  const startObj = new Date(shift.start_time);
+                                  const endObj = shift.end_time ? new Date(shift.end_time) : null;
+                                  
+                                  const startDateStr = startObj.toLocaleDateString();
+                                  const startTimeStr = startObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                  
+                                  let endDateStr = '';
+                                  let endTimeStr = 'Ongoing';
+                                  
+                                  if (endObj) {
+                                    endDateStr = endObj.toLocaleDateString();
+                                    endTimeStr = endObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                  }
+
+                                  if (endObj && startDateStr !== endDateStr) {
+                                    // Multi-day format rendering
+                                    return (
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                        <span style={{ fontSize: '13px', fontWeight: '600' }}>
+                                          {startDateStr} <span style={{ fontWeight: 'normal', color: '#6B7280' }}>{startTimeStr}</span>
+                                        </span>
+                                        <span style={{ fontSize: '13px', fontWeight: '600' }}>
+                                          {endDateStr} <span style={{ fontWeight: 'normal', color: '#6B7280' }}>{endTimeStr}</span>
+                                        </span>
+                                      </div>
+                                    );
+                                  } else {
+                                    // Single-day format rendering
+                                    return (
+                                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                        <span style={{ fontWeight: 'bold' }}>{startDateStr}</span>
+                                        <span className="text-xs text-muted">{startTimeStr} - {endTimeStr}</span>
+                                      </div>
+                                    );
+                                  }
+                                })()}
                               </td>
                               <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
                               <td className="font-semibold">£{(shift.effective_rate || shift.base_hourly_rate || 16.00).toFixed(2)}/hr</td>
