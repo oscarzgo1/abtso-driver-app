@@ -1418,7 +1418,7 @@ export default function App() {
 
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
-    console.log("Attempting to save rate profile for driver ID:", driverId);
+    console.log("Saving rates to employee_rates table for driver ID:", driverId);
 
     const targetEmp = employees.find(e => e.id === driverId || e.driver_id === driverId);
     const primaryId = targetEmp?.id || driverId;
@@ -1430,8 +1430,18 @@ export default function App() {
     const parsedSat = parseFloat(editSatRate) || 17.00;
     const parsedSun = parseFloat(editSunRate) || 18.00;
 
-    const rateData: EmployeeRate = {
-      driver_id: driverCode,
+    const ratePayload: any = {
+      driver_id: primaryId,
+      rate_type: editRateType,
+      fixed_rate: isFixed ? parsedFixed : null,
+      mon_fri_rate: isFixed ? parsedFixed : parsedMonFri,
+      sat_rate: isFixed ? parsedFixed : parsedSat,
+      sun_rate: isFixed ? parsedFixed : parsedSun,
+      agency_name: editAgencyName || 'Direct',
+    };
+
+    const localDisplayRate: EmployeeRate = {
+      driver_id: primaryId,
       rate_type: editRateType,
       fixed_rate: isFixed ? parsedFixed : null,
       mon_fri_rate: isFixed ? parsedFixed : parsedMonFri,
@@ -1442,34 +1452,23 @@ export default function App() {
       agency_name: editAgencyName || 'Direct',
     };
 
-    // Prepare update payload for public.drivers
-    const updatePayload: any = { 
-      rate_type: editRateType,
-      fixed_rate: isFixed ? parsedFixed : null,
-      mon_fri_rate: isFixed ? parsedFixed : parsedMonFri,
-      saturday_rate: isFixed ? parsedFixed : parsedSat,
-      sunday_rate: isFixed ? parsedFixed : parsedSun,
-      hourly_rate: isFixed ? parsedFixed : parsedMonFri,
-      agency_name: editAgencyName || 'Direct'
-    };
-
     // Optimistically update local state for all key variations (UUID & code)
     setEmployeeRates(prev => ({ 
       ...prev, 
-      [driverId]: rateData,
-      [primaryId]: rateData,
-      [driverCode]: rateData 
+      [driverId]: localDisplayRate,
+      [primaryId]: localDisplayRate,
+      [driverCode]: localDisplayRate 
     }));
 
     setEmployees(prev => prev.map(e => (e.id === primaryId || e.driver_id === driverCode) ? {
       ...e,
-      rate_type: rateData.rate_type,
-      fixed_rate: rateData.fixed_rate,
-      mon_fri_rate: rateData.mon_fri_rate,
-      saturday_rate: rateData.sat_rate,
-      sunday_rate: rateData.sun_rate,
-      hourly_rate: rateData.mon_fri_rate,
-      agency_name: rateData.agency_name
+      rate_type: localDisplayRate.rate_type,
+      fixed_rate: localDisplayRate.fixed_rate,
+      mon_fri_rate: localDisplayRate.mon_fri_rate,
+      saturday_rate: localDisplayRate.sat_rate,
+      sunday_rate: localDisplayRate.sun_rate,
+      hourly_rate: localDisplayRate.mon_fri_rate,
+      agency_name: localDisplayRate.agency_name
     } : e));
 
     setEditingRateDriverId(null);
@@ -1480,78 +1479,70 @@ export default function App() {
     }
 
     try {
-      // 1. Perform Update AND append .select() so Supabase returns the modified rows
-      let query = supabase!
-        .from('drivers')
-        .update(updatePayload);
+      // 1. PRIMARY SAVE TARGET: Upsert to public.employee_rates table and verify with .select()!
+      let { data: rateData, error: rateErr, status } = await supabase!
+        .from('employee_rates')
+        .upsert(ratePayload, { onConflict: 'driver_id' })
+        .select();
 
-      // Match by either primary UUID key or driver_id code
-      if (primaryId && driverCode && primaryId !== driverCode) {
-        query = query.or(`id.eq.${primaryId},driver_id.eq.${driverCode}`);
-      } else {
-        query = query.eq('id', primaryId);
+      // Progressive fallback if fixed_rate column is missing from schema cache
+      if (rateErr && rateErr.message.includes('schema cache')) {
+        delete ratePayload.fixed_rate;
+        const resFb = await supabase!
+          .from('employee_rates')
+          .upsert(ratePayload, { onConflict: 'driver_id' })
+          .select();
+        rateData = resFb.data;
+        rateErr = resFb.error;
+        status = resFb.status;
       }
 
-      let { data, error, status } = await query.select();
-
-      // Progressive fallback if schema cache hasn't updated columns yet
-      if (error && error.message.includes('schema cache')) {
-        delete updatePayload.fixed_rate;
-        delete updatePayload.agency_name;
-        
-        let fbQuery = supabase!.from('drivers').update(updatePayload);
-        if (primaryId && driverCode && primaryId !== driverCode) {
-          fbQuery = fbQuery.or(`id.eq.${primaryId},driver_id.eq.${driverCode}`);
-        } else {
-          fbQuery = fbQuery.eq('id', primaryId);
+      // If upsert with primaryId returned no rows, attempt driverCode
+      if ((!rateData || rateData.length === 0) && driverCode && driverCode !== primaryId) {
+        const altPayload = { ...ratePayload, driver_id: driverCode };
+        const resCode = await supabase!
+          .from('employee_rates')
+          .upsert(altPayload, { onConflict: 'driver_id' })
+          .select();
+        if (resCode.data && resCode.data.length > 0) {
+          rateData = resCode.data;
+          rateErr = null;
+          status = resCode.status;
         }
-
-        const res2 = await fbQuery.select();
-        data = res2.data;
-        error = res2.error;
-        status = res2.status;
       }
 
       // Hard Error Check
-      if (error) {
-        alert("Hard Error from Supabase: " + error.message);
+      if (rateErr) {
+        alert("Hard Error saving rates to 'employee_rates': " + rateErr.message);
         await loadData();
         return;
       }
 
-      // Silent Failure Verification Check (0 rows modified)
-      if (!data || data.length === 0) {
-        // Fallback: attempt upsert into employee_rates table
-        const { data: empData, error: empErr } = await supabase!
-          .from('employee_rates')
-          .upsert([
-            { ...rateData, driver_id: primaryId },
-            { ...rateData, driver_id: driverCode }
-          ], { onConflict: 'driver_id' })
-          .select();
-
-        if (empErr || !empData || empData.length === 0) {
-          alert(`SILENT FAILURE: Supabase returned success (Status ${status}), but 0 rows were updated.\n\nLikely causes:\n1. The driver ID (${primaryId} / ${driverCode}) does not exist in the database table.\n2. RLS (Row Level Security) policies are blocking UPDATE.\n3. The database columns (like 'fixed_rate') are missing in Supabase.`);
-          await loadData();
-          return; // Stop execution, do not pretend it succeeded
-        }
+      // Silent Failure Verification Check (0 rows modified in employee_rates)
+      if (!rateData || rateData.length === 0) {
+        alert(`SILENT FAILURE: 0 rows updated in 'employee_rates' table (Status ${status}).\n\nEnsure driver ID (${primaryId} / ${driverCode}) exists in the database table and RLS allows UPDATE.`);
+        await loadData();
+        return;
       }
 
-      // 3. ALWAYS upsert to employee_rates table as well for secondary persistence
+      // 2. SECONDARY SAVE TARGET: Update drivers table with basic rate_type & hourly_rate (no custom columns)
       try {
-        await supabase!.from('employee_rates').upsert([
-          { ...rateData, driver_id: primaryId },
-          { ...rateData, driver_id: driverCode }
-        ], { onConflict: 'driver_id' });
+        await supabase!
+          .from('drivers')
+          .update({ 
+            rate_type: editRateType,
+            hourly_rate: isFixed ? parsedFixed : parsedMonFri
+          })
+          .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`);
       } catch (_) {}
 
-      // Recalculate shifts pay
+      // 3. Recalculate shifts pay
       try {
         await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: primaryId });
       } catch (_) {}
 
       await loadData();
-      alert(`Driver profile TRULY saved successfully in database!\n\nStructure: ${rateData.rate_type} (${isFixed ? `£${parsedFixed.toFixed(2)}/shift` : 'Hourly Rate'})`);
+      alert(`Rates updated successfully in 'employee_rates' table!\n\nStructure: ${editRateType} (${isFixed ? `£${parsedFixed.toFixed(2)}/shift` : 'Hourly Rate'})`);
     } catch (e: any) {
       alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
       await loadData();
