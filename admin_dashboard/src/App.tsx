@@ -1243,26 +1243,38 @@ export default function App() {
     }
   };
 
-  const handleFixShiftTime = async (shiftId: string, currentStartTime: string) => {
-    const newEndTimeRaw = window.prompt("Enter correct end date and time (Format: YYYY-MM-DD HH:mm):", new Date().toISOString().slice(0, 16).replace('T', ' '));
-    if (!newEndTimeRaw) return;
-    
-    const newEndTime = new Date(newEndTimeRaw).toISOString();
-    if (new Date(newEndTime) <= new Date(currentStartTime)) {
-      alert("End time must be after start time!");
+  const handleEditShiftTime = async (shiftId: string, currentStartTime: string, currentEndTime: string | null) => {
+    const formatForPrompt = (isoStr: string) => new Date(isoStr).toISOString().slice(0, 16).replace('T', ' ');
+
+    // 1. Edit Start Time
+    const defaultStart = formatForPrompt(currentStartTime);
+    const newStartRaw = window.prompt("1/2: Edit START date and time (YYYY-MM-DD HH:mm):", defaultStart);
+    if (!newStartRaw) return; // User cancelled
+
+    // 2. Edit End Time
+    const defaultEnd = currentEndTime ? formatForPrompt(currentEndTime) : new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const newEndRaw = window.prompt("2/2: Edit END date and time (YYYY-MM-DD HH:mm):\nLeave exactly as is if shift is still active.", defaultEnd);
+    if (!newEndRaw) return; // User cancelled
+
+    const newStartTime = new Date(newStartRaw).toISOString();
+    const newEndTime = new Date(newEndRaw).toISOString();
+
+    if (new Date(newEndTime) <= new Date(newStartTime)) {
+      alert("Error: End time must be strictly after the start time!");
       return;
     }
 
+    // 3. Update Database
     const { error } = await supabase!
       .from('shifts')
-      .update({ end_time: newEndTime, status: 'completed' })
+      .update({ start_time: newStartTime, end_time: newEndTime, status: 'completed' })
       .eq('id', shiftId);
 
     if (error) {
       alert("Failed to update shift: " + error.message);
     } else {
-      alert("Shift time corrected and recalculated successfully.");
-      loadData(); // Refresh UI and recalculate payroll
+      alert("Shift times updated and payroll recalculated successfully.");
+      loadData(); // Refresh UI
     }
   };
 
@@ -2496,22 +2508,14 @@ export default function App() {
                               </td>
                               <td>
                                 <div className="flex align-center gap-6" style={{ flexWrap: 'wrap' }}>
-                                  {isFlagged ? (
-                                    <div className="flex gap-4 align-center">
-                                      <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>
-                                        ⚠️ &gt;18h
-                                      </span>
-                                      <button 
-                                        className="btn btn-secondary" 
-                                        style={{ padding: '4px 8px', fontSize: '11px', backgroundColor: '#FEF2F2', color: '#DC2626', borderColor: '#FCA5A5' }}
-                                        onClick={() => handleFixShiftTime(shift.id, shift.start_time)}
-                                      >
-                                        FIX TIME
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    !userRole || userRole !== 'payroll_admin' ? <span className="text-muted text-xs">OK</span> : null
-                                  )}
+                                  {isFlagged && <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>⚠️ &gt;18h</span>}
+                                  <button 
+                                    className="btn btn-secondary flex align-center gap-2" 
+                                    style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 'bold' }}
+                                    onClick={() => handleEditShiftTime(shift.id, shift.start_time, shift.end_time)}
+                                  >
+                                    ✏️ EDIT TIME
+                                  </button>
 
                                   {userRole === 'payroll_admin' && (
                                     isPendingN_O ? (
