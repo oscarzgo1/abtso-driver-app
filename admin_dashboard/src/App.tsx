@@ -1347,75 +1347,6 @@ export default function App() {
     }
   };
 
-  const handleAcceptNightOut = async (shiftId: string, driverName: string) => {
-    const userInput = window.prompt(`Approve Night Out for ${driverName}.\nEnter approved amount (£):`, "30");
-    if (userInput === null) return; // User cancelled
-    
-    const amount = parseFloat(userInput);
-    if (isNaN(amount) || amount <= 0) {
-        alert("Invalid amount entered. Night out approval cancelled.");
-        return;
-    }
-
-    const targetShift = shifts.find(s => s.id === shiftId);
-    const drvRate = employeeRates[targetShift?.driver_id || ''] || (targetShift as any)?.employee;
-    const basePay = targetShift?.end_time 
-      ? calculateSplitShiftPay(targetShift.start_time, targetShift.end_time, drvRate)
-      : 0;
-    const newTotalPay = Number((basePay + amount).toFixed(2));
-
-    const updatePayload: any = {
-      night_out_requested: false,
-      night_out_status: 'approved',
-      night_out_amount: amount,
-      night_out_allowance: amount,
-      total_pay: newTotalPay
-    };
-
-    const { error } = await supabase!
-      .from('shifts')
-      .update(updatePayload)
-      .eq('id', shiftId);
-
-    if (error) {
-        alert("Error approving night out: " + error.message);
-    } else {
-        alert(`Night out approved for ${driverName} (£${amount.toFixed(2)}). Status synced with driver app.`);
-        loadData();
-    }
-  };
-
-  const handleRejectNightOut = async (shiftId: string, driverName: string) => {
-    if (!window.confirm(`Are you sure you want to REJECT the night out request from ${driverName}?`)) return;
-
-    const targetShift = shifts.find(s => s.id === shiftId);
-    const drvRate = employeeRates[targetShift?.driver_id || ''] || (targetShift as any)?.employee;
-    const basePay = targetShift?.end_time 
-      ? calculateSplitShiftPay(targetShift.start_time, targetShift.end_time, drvRate)
-      : 0;
-    const newTotalPay = Number(basePay.toFixed(2));
-
-    const updatePayload: any = {
-      night_out_requested: false,
-      night_out_status: 'rejected',
-      night_out_allowance: null,
-      night_out_amount: 0,
-      total_pay: newTotalPay
-    };
-
-    const { error } = await supabase!
-      .from('shifts')
-      .update(updatePayload)
-      .eq('id', shiftId);
-
-    if (error) {
-        alert("Error rejecting night out: " + error.message);
-    } else {
-        alert(`Night out request from ${driverName} rejected. Status synced with driver app.`);
-        loadData();
-    }
-  };
-
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
     const rateData: EmployeeRate = {
@@ -2588,12 +2519,17 @@ export default function App() {
                   return durationHours > 18;
                 });
 
-                // Pending Night Out Requests Notification
-                const pendingRequests = filteredShifts.filter(shift => 
+                // Pending Night Out Requests Notification Data
+                const pendingNightOutRequests = filteredShifts.filter(shift => 
                   shift.night_out_requested === true || 
                   (shift as any).has_requested_night_out === true || 
                   shift.night_out_status === 'pending'
                 );
+
+                const pendingRequestsData = pendingNightOutRequests.map(shift => {
+                  const driverName = shift.driver_name || (shift as any).drivers?.full_name || (shift as any).employee?.name || (shift as any).driver?.name || 'Unknown Driver'; 
+                  return { id: shift.id, name: driverName, date: new Date(shift.start_time).toLocaleDateString() };
+                });
 
                 // Night Out Detection Logic (8 to 15 hours gap)
                 interface NightOutSuggestion {
@@ -2638,20 +2574,17 @@ export default function App() {
 
                 return (
                   <>
-                    {/* Render Pending Night Out Requests Notification Banner */}
-                    {pendingRequests.length > 0 && (
-                      <div className="alert-box alert-warning" style={{ marginBottom: '24px', backgroundColor: '#FEF3C7', border: '1px solid #FCD34D', color: '#92400E', padding: '16px', borderRadius: '8px' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>🔔 Pending Night Out Requests ({pendingRequests.length})</h3>
+                    {/* Night Out Request Notification Banner */}
+                    {pendingRequestsData.length > 0 && (
+                      <div className="alert-box alert-info" style={{ marginBottom: '24px', backgroundColor: '#EFF6FF', border: '1px solid #93C5FD', color: '#1E3A8A', padding: '16px', borderRadius: '8px' }}>
+                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>🛎️ New Night Out Requests Pending</h3>
                         <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
-                          {pendingRequests.map(pr => {
-                            const name = pr.driver_name || (pr as any).drivers?.full_name || (pr as any).employee?.name || (pr as any).driver?.name || 'Driver';
-                            const code = pr.driver_code || (pr as any).drivers?.driver_id || '';
-                            return (
-                              <li key={pr.id} style={{ marginBottom: '6px' }}>
-                                <strong>{name} {code ? `(${code})` : ''}</strong> has submitted a Night Out request for shift starting on {new Date(pr.start_time).toLocaleDateString()} at {new Date(pr.start_time).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}.
-                              </li>
-                            );
-                          })}
+                          {pendingRequestsData.map(req => (
+                            <li key={req.id} style={{ marginBottom: '4px' }}>
+                              <strong>{req.name}</strong> has requested a Night Out allowance for their shift on {req.date}. 
+                              <em> (Use the N/O button in the table below to review and add the allowance).</em>
+                            </li>
+                          ))}
                         </ul>
                       </div>
                     )}
@@ -2722,18 +2655,6 @@ export default function App() {
                           const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
                           const shiftStartMs = new Date(shift.start_time).getTime();
                           const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
-
-                          const isRequested = 
-                            shift.night_out_requested === true || 
-                            (shift as any).has_requested_night_out === true || 
-                            shift.night_out_status === 'pending';
-
-                          const resolvedDriverName = 
-                            shift.driver_name || 
-                            (shift as any).drivers?.full_name || 
-                            (shift as any).employee?.name || 
-                            (shift as any).driver?.name || 
-                            'Unknown Driver';
 
                           return (
                             <tr key={shift.id}>
@@ -2813,42 +2734,20 @@ export default function App() {
                                     ✏️ EDIT TIME
                                   </button>
 
-                                  {isRequested ? (
-                                    // Driver has requested a night out
-                                    <div className="flex gap-2 align-center p-1 rounded border" style={{ backgroundColor: '#FEF3C7', borderColor: '#FCD34D' }}>
-                                      <span className="text-xs font-bold" style={{ color: '#92400E' }}>🔔 Requested</span>
-                                      <button 
-                                        className="btn btn-sm btn-success text-xs" 
-                                        style={{ padding: '4px 8px', fontSize: '11px' }} 
-                                        onClick={() => handleAcceptNightOut(shift.id, resolvedDriverName)}
-                                      >
-                                        ✅ ACCEPT
-                                      </button>
-                                      <button 
-                                        className="btn btn-sm btn-danger text-xs" 
-                                        style={{ padding: '4px 8px', fontSize: '11px' }} 
-                                        onClick={() => handleRejectNightOut(shift.id, resolvedDriverName)}
-                                      >
-                                        ❌ REJECT
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    // SCENARIO 2 & 3: No request pending (either manually added, already approved, or empty)
-                                    <button 
-                                      className="btn btn-outline flex align-center gap-2" 
-                                      style={{ 
-                                        padding: '4px 8px', 
-                                        fontSize: '11px', 
-                                        fontWeight: 'bold', 
-                                        borderColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#10B981' : '#D1D5DB',
-                                        color: (shift.night_out_allowance ?? shift.night_out_amount) ? '#047857' : '#4B5563',
-                                        backgroundColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#ECFDF5' : 'transparent'
-                                      }}
-                                      onClick={() => handleNightOutAmount(shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
-                                    >
-                                      {(shift.night_out_allowance ?? shift.night_out_amount) ? `🌙 N/O: £${Number(shift.night_out_allowance ?? shift.night_out_amount).toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
-                                    </button>
-                                  )}
+                                  <button 
+                                    className="btn btn-outline flex align-center gap-2" 
+                                    style={{ 
+                                      padding: '4px 8px', 
+                                      fontSize: '11px', 
+                                      fontWeight: 'bold', 
+                                      borderColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#10B981' : '#D1D5DB',
+                                      color: (shift.night_out_allowance ?? shift.night_out_amount) ? '#047857' : '#4B5563',
+                                      backgroundColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#ECFDF5' : 'transparent'
+                                    }}
+                                    onClick={() => handleNightOutAmount(shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
+                                  >
+                                    {(shift.night_out_allowance ?? shift.night_out_amount) ? `🌙 N/O: £${Number(shift.night_out_allowance ?? shift.night_out_amount).toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
+                                  </button>
                                 </div>
                               </td>
                               <td className="font-bold text-success">
