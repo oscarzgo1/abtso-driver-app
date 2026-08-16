@@ -304,6 +304,7 @@ export default function App() {
   const [reportEmployeeFilter, setReportEmployeeFilter] = useState('all');
   const [reportDateStart, setReportDateStart] = useState('');
   const [reportDateEnd, setReportDateEnd] = useState('');
+  const [showOnlyNightOutRequested, setShowOnlyNightOutRequested] = useState(false);
 
   // Leaflet Map Reference
   const mapRef = useRef<L.Map | null>(null);
@@ -1415,6 +1416,14 @@ export default function App() {
   // ── CSV & Excel Export Functions ────────────────────────────
   const getFilteredShifts = () => {
     return shifts.filter(s => {
+      // Night Out Requested Filter
+      if (showOnlyNightOutRequested) {
+        const isReq = s.night_out_requested === true || 
+                      (s as any).has_requested_night_out === true || 
+                      s.night_out_status === 'pending';
+        if (!isReq) return false;
+      }
+
       // Employee Filter
       if (reportEmployeeFilter !== 'all' && s.driver_id !== reportEmployeeFilter) return false;
       
@@ -2497,6 +2506,28 @@ export default function App() {
                       onChange={(e) => setReportDateEnd(e.target.value)}
                     />
                   </div>
+                  <div className="flex flex-col gap-6 justify-end">
+                    <button 
+                      className="btn flex align-center gap-6"
+                      style={{ 
+                        height: '38px', 
+                        backgroundColor: showOnlyNightOutRequested ? '#D97706' : 'transparent',
+                        borderColor: '#F59E0B',
+                        color: showOnlyNightOutRequested ? '#FFFFFF' : '#D97706',
+                        fontWeight: 'bold',
+                        fontSize: '12px',
+                        border: '1px solid #F59E0B'
+                      }}
+                      onClick={() => setShowOnlyNightOutRequested(!showOnlyNightOutRequested)}
+                    >
+                      🌙 {showOnlyNightOutRequested ? 'SHOWING REQUESTS ONLY' : 'FILTER N/O REQUESTS'} 
+                      {pendingNightOutsCount > 0 && (
+                        <span style={{ backgroundColor: showOnlyNightOutRequested ? '#FFFFFF' : '#F59E0B', color: showOnlyNightOutRequested ? '#D97706' : '#FFFFFF', padding: '2px 6px', borderRadius: '10px', fontSize: '11px', marginLeft: '4px' }}>
+                          {pendingNightOutsCount}
+                        </span>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Download actions */}
@@ -2520,7 +2551,7 @@ export default function App() {
                 });
 
                 // Pending Night Out Requests Notification Data
-                const pendingNightOutRequests = filteredShifts.filter(shift => 
+                const pendingNightOutRequests = shifts.filter(shift => 
                   shift.night_out_requested === true || 
                   (shift as any).has_requested_night_out === true || 
                   shift.night_out_status === 'pending'
@@ -2577,7 +2608,16 @@ export default function App() {
                     {/* Night Out Request Notification Banner */}
                     {pendingRequestsData.length > 0 && (
                       <div className="alert-box alert-info" style={{ marginBottom: '24px', backgroundColor: '#EFF6FF', border: '1px solid #93C5FD', color: '#1E3A8A', padding: '16px', borderRadius: '8px' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>🛎️ New Night Out Requests Pending</h3>
+                        <div className="flex align-center justify-between mb-8" style={{ flexWrap: 'wrap', gap: '12px' }}>
+                          <h3 style={{ margin: '0', fontSize: '16px', fontWeight: 'bold' }}>🛎️ New Night Out Requests Pending ({pendingRequestsData.length})</h3>
+                          <button 
+                            className="btn btn-sm" 
+                            style={{ backgroundColor: '#2563EB', color: '#FFFFFF', padding: '4px 12px', fontSize: '12px', fontWeight: 'bold', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                            onClick={() => setShowOnlyNightOutRequested(!showOnlyNightOutRequested)}
+                          >
+                            {showOnlyNightOutRequested ? 'Show All Shifts' : '🔍 Filter Table to Pending Requests'}
+                          </button>
+                        </div>
                         <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
                           {pendingRequestsData.map(req => (
                             <li key={req.id} style={{ marginBottom: '4px' }}>
@@ -2656,10 +2696,22 @@ export default function App() {
                           const shiftStartMs = new Date(shift.start_time).getTime();
                           const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
 
+                          const isRequested = 
+                            shift.night_out_requested === true || 
+                            (shift as any).has_requested_night_out === true || 
+                            shift.night_out_status === 'pending';
+
                           return (
                             <tr key={shift.id}>
                               <td className="font-bold text-primary">
-                                {shift.driver_name} ({shift.driver_code})
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                  <span>{shift.driver_name} ({shift.driver_code})</span>
+                                  {isRequested && (
+                                    <span className="badge text-xs font-bold" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', alignSelf: 'flex-start', padding: '2px 6px', fontSize: '10px' }}>
+                                      🔔 N/O REQUESTED
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                               <td>
                                 <span className="badge badge-accent">{agency}</span>
