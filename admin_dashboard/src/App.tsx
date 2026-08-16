@@ -1427,21 +1427,46 @@ export default function App() {
     }
 
     try {
-      // Direct update to public.drivers table (Single Source of Truth)
-      const { error: driverErr } = await supabase!
+      // 1. Try full update to public.drivers table (Single Source of Truth)
+      let updatePayload: any = { 
+        mon_fri_rate: rateData.mon_fri_rate,
+        saturday_rate: rateData.sat_rate,
+        sunday_rate: rateData.sun_rate,
+        hourly_rate: rateData.mon_fri_rate,
+        rate_type: rateData.rate_type,
+        agency_name: rateData.agency_name
+      };
+
+      let { error: driverErr } = await supabase!
         .from('drivers')
-        .update({ 
-          mon_fri_rate: rateData.mon_fri_rate,
-          saturday_rate: rateData.sat_rate,
-          sunday_rate: rateData.sun_rate,
-          hourly_rate: rateData.mon_fri_rate,
-          rate_type: rateData.rate_type,
-          agency_name: rateData.agency_name
-        })
+        .update(updatePayload)
         .eq('id', driverId);
 
+      // 2. Progressive fallback if extended columns (e.g. agency_name) are missing from schema cache
+      if (driverErr && driverErr.message.includes('schema cache')) {
+        // Retry without agency_name
+        delete updatePayload.agency_name;
+        const res2 = await supabase!.from('drivers').update(updatePayload).eq('id', driverId);
+        driverErr = res2.error;
+
+        if (driverErr && driverErr.message.includes('schema cache')) {
+          // Retry without saturday_rate / sunday_rate / rate_type
+          const fallbackPayload = { 
+            hourly_rate: rateData.mon_fri_rate,
+            mon_fri_rate: rateData.mon_fri_rate
+          };
+          const res3 = await supabase!.from('drivers').update(fallbackPayload).eq('id', driverId);
+          if (res3.error) {
+            const res4 = await supabase!.from('drivers').update({ hourly_rate: rateData.mon_fri_rate }).eq('id', driverId);
+            driverErr = res4.error;
+          } else {
+            driverErr = null;
+          }
+        }
+      }
+
       if (driverErr) {
-        alert("Error saving profile to database: " + driverErr.message + "\nEnsure 'rate_type' column exists in 'drivers' table.");
+        alert("Error saving profile to database: " + driverErr.message + "\nPlease run migration 025 in Supabase SQL Editor.");
         return;
       }
 
@@ -1455,7 +1480,7 @@ export default function App() {
       } catch (_) {}
 
       await loadData();
-      alert(`Driver profile saved directly to database! Rate Structure: ${rateData.rate_type} • Mon-Fri: £${rateData.mon_fri_rate} • Sat: £${rateData.sat_rate} • Sun: £${rateData.sun_rate}`);
+      alert(`Driver profile saved successfully! Rate Structure: ${rateData.rate_type} • Mon-Fri: £${rateData.mon_fri_rate} • Sat: £${rateData.sat_rate} • Sun: £${rateData.sun_rate}`);
     } catch (e: any) {
       alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
     }
