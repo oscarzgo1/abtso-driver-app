@@ -1479,10 +1479,11 @@ export default function App() {
     }
 
     try {
-      // 1. SAVE TO employee_rates TABLE (Primary Source of Truth for driver rate structures)
+      // 1. SAVE TO employee_rates TABLE (UPDATE existing or INSERT new)
       let { data: rateData, error: rateErr } = await supabase!
         .from('employee_rates')
-        .upsert(ratePayload, { onConflict: 'driver_id' })
+        .update(ratePayload)
+        .eq('driver_id', primaryId)
         .select();
 
       // Progressive fallback if fixed_rate column is missing from schema cache in employee_rates
@@ -1490,22 +1491,43 @@ export default function App() {
         delete ratePayload.fixed_rate;
         const resFb = await supabase!
           .from('employee_rates')
-          .upsert(ratePayload, { onConflict: 'driver_id' })
+          .update(ratePayload)
+          .eq('driver_id', primaryId)
           .select();
         rateData = resFb.data;
         rateErr = resFb.error;
       }
 
-      // If primaryId upsert returned no row, retry with driverCode string
+      // If update returned 0 rows, INSERT a new record for driver_id
+      if ((!rateData || rateData.length === 0) && !rateErr) {
+        const insertRes = await supabase!
+          .from('employee_rates')
+          .insert(ratePayload)
+          .select();
+        rateData = insertRes.data;
+        rateErr = insertRes.error;
+      }
+
+      // If primaryId returned no row, retry matching driverCode string
       if ((!rateData || rateData.length === 0) && driverCode && driverCode !== primaryId) {
         const altPayload = { ...ratePayload, driver_id: driverCode };
         const resCode = await supabase!
           .from('employee_rates')
-          .upsert(altPayload, { onConflict: 'driver_id' })
+          .update(altPayload)
+          .eq('driver_id', driverCode)
           .select();
         if (resCode.data && resCode.data.length > 0) {
           rateData = resCode.data;
           rateErr = null;
+        } else {
+          const insCode = await supabase!
+            .from('employee_rates')
+            .insert(altPayload)
+            .select();
+          if (insCode.data && insCode.data.length > 0) {
+            rateData = insCode.data;
+            rateErr = null;
+          }
         }
       }
 
