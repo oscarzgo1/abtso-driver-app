@@ -61,6 +61,8 @@ export interface EmployeeRate {
   mon_fri_rate: number;
   sat_rate: number;
   sun_rate: number;
+  saturday_rate?: number;
+  sunday_rate?: number;
   agency_name: string;
 }
 
@@ -2364,7 +2366,20 @@ export default function App() {
         {/* ── TAB 5: Automated Payroll Calculator (Payroll Admin Only) ─ */}
         {activeTab === 'reports' && userRole === 'payroll_admin' && (() => {
           const filteredShifts = getFilteredShifts();
-          const totalEarnings = filteredShifts.reduce((sum, s) => sum + (s.total_pay || 0), 0);
+          const totalEarnings = filteredShifts.reduce((sum, shift) => {
+            const shiftDate = new Date(shift.start_time);
+            const dayOfWeek = shiftDate.getDay();
+            const drvRate = employeeRates[shift.driver_id] || (shift as any).employee;
+            const baseRate = Number((shift as any).employee?.rate) || Number((shift as any).rate) || Number(shift.effective_rate) || Number(shift.base_hourly_rate) || 16.00;
+            let rate = baseRate;
+            if (drvRate) {
+              if (dayOfWeek === 0) rate = Number(drvRate.sun_rate ?? drvRate.sunday_rate) || baseRate;
+              else if (dayOfWeek === 6) rate = Number(drvRate.sat_rate ?? drvRate.saturday_rate) || baseRate;
+              else rate = Number(drvRate.mon_fri_rate) || baseRate;
+            }
+            const noAmt = Number(shift.night_out_allowance ?? shift.night_out_amount) || 0;
+            return sum + Number(((shift.total_hours || 0) * rate + noAmt).toFixed(2));
+          }, 0);
           const totalHours = filteredShifts.reduce((sum, s) => sum + (s.total_hours || 0), 0);
           const totalNightOutAmount = filteredShifts.reduce((sum, shift) => sum + (Number(shift.night_out_allowance ?? shift.night_out_amount) || 0), 0);
           const nightOutCount = filteredShifts.filter(shift => (Number(shift.night_out_allowance ?? shift.night_out_amount) || 0) > 0).length;
@@ -2545,13 +2560,36 @@ export default function App() {
                     ) : (
                       <>
                         {filteredShifts.map(shift => {
-                          const drvRate = employeeRates[shift.driver_id];
+                          const drvRate = employeeRates[shift.driver_id] || (shift as any).employee;
                           const agency = drvRate?.agency_name || 'Direct';
                           const noAmount = Number(shift.night_out_allowance ?? shift.night_out_amount) || 0;
+
+                          // Strict Day-Aware Rate Fetching
+                          const shiftDate = new Date(shift.start_time);
+                          const dayOfWeek = shiftDate.getDay(); // 0 = Sunday, 1 = Monday, ... 6 = Saturday
+
+                          let hourlyRate = 0;
+                          const baseRate = Number((shift as any).employee?.rate) || Number((shift as any).rate) || Number(shift.effective_rate) || Number(shift.base_hourly_rate) || 16.00;
+
+                          if (drvRate) {
+                            if (dayOfWeek === 0) {
+                              // Sunday
+                              hourlyRate = Number(drvRate.sun_rate ?? drvRate.sunday_rate) || baseRate;
+                            } else if (dayOfWeek === 6) {
+                              // Saturday
+                              hourlyRate = Number(drvRate.sat_rate ?? drvRate.saturday_rate) || baseRate;
+                            } else {
+                              // Monday - Friday
+                              hourlyRate = Number(drvRate.mon_fri_rate) || baseRate;
+                            }
+                          } else {
+                            hourlyRate = baseRate;
+                          }
 
                           const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
                           const shiftStartMs = new Date(shift.start_time).getTime();
                           const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
+                          const shiftGrossPay = Number(((shift.total_hours || 0) * hourlyRate + noAmount).toFixed(2));
 
                           return (
                             <tr key={shift.id}>
@@ -2601,7 +2639,7 @@ export default function App() {
                                 })()}
                               </td>
                               <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
-                              <td className="font-semibold">£{(shift.effective_rate || shift.base_hourly_rate || 16.00).toFixed(2)}/hr</td>
+                              <td className="font-semibold">£{hourlyRate.toFixed(2)}/hr</td>
                               <td>
                                 {noAmount > 0 ? (
                                   <span className="badge badge-success font-bold">
@@ -2638,7 +2676,7 @@ export default function App() {
                                 </div>
                               </td>
                               <td className="font-bold text-success">
-                                £{(shift.total_pay || 0).toFixed(2)}
+                                £{shiftGrossPay.toFixed(2)}
                               </td>
                             </tr>
                           );
