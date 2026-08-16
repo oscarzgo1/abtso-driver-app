@@ -57,7 +57,7 @@ export type UserRole = 'logistics' | 'payroll_admin';
 export interface EmployeeRate {
   id?: string;
   driver_id: string;
-  rate_type: 'Hourly Sat/Sun separate' | 'Fixed weekly';
+  rate_type: string;
   mon_fri_rate: number;
   sat_rate: number;
   sun_rate: number;
@@ -116,6 +116,8 @@ interface Shift {
   night_out_requested?: boolean;
   night_out_amount?: number;
   night_out_allowance?: number | null;
+  extras_amount?: number | null;
+  extras_note?: string | null;
   created_at?: string;
 }
 
@@ -297,7 +299,7 @@ export default function App() {
   const [editMonFriRate, setEditMonFriRate] = useState<string>('16.00');
   const [editSatRate, setEditSatRate] = useState<string>('17.00');
   const [editSunRate, setEditSunRate] = useState<string>('18.00');
-  const [editRateType, setEditRateType] = useState<'Hourly Sat/Sun separate' | 'Fixed weekly'>('Hourly Sat/Sun separate');
+  const [editRateType, setEditRateType] = useState<string>('Hourly');
   const [editAgencyName, setEditAgencyName] = useState<string>('Direct');
 
   // Report Filters
@@ -444,23 +446,42 @@ export default function App() {
       const activeRole = (localStorage.getItem('admin_role') as UserRole) || userRole;
       setUserRole(activeRole);
 
-      // Fetch Employee Rates ONLY if user is payroll_admin
-      if (activeRole === 'payroll_admin') {
-        try {
-          const { data: ratesRes } = await supabase!.from('employee_rates').select('*');
-          if (ratesRes) {
-            const map: Record<string, EmployeeRate> = {};
-            ratesRes.forEach((r: any) => { map[r.driver_id] = r; });
-            setEmployeeRates(map);
-          }
-        } catch (_) {}
-      } else {
-        setEmployeeRates({});
-      }
-
       // Fetch Drivers directly from Supabase — single source of truth
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
       setEmployees(drvs || []);
+
+      if (drvs && activeRole === 'payroll_admin') {
+        const ratesMap: Record<string, EmployeeRate> = {};
+        drvs.forEach((d: any) => {
+          ratesMap[d.id] = {
+            id: d.id,
+            driver_id: d.id,
+            rate_type: d.rate_type || 'Hourly',
+            mon_fri_rate: Number(d.mon_fri_rate ?? d.hourly_rate) || 16.00,
+            sat_rate: Number(d.saturday_rate ?? d.sat_rate) || 17.00,
+            sun_rate: Number(d.sunday_rate ?? d.sun_rate) || 18.00,
+            saturday_rate: Number(d.saturday_rate ?? d.sat_rate) || 17.00,
+            sunday_rate: Number(d.sunday_rate ?? d.sun_rate) || 18.00,
+            agency_name: d.agency_name || 'Direct',
+          };
+        });
+
+        // Optionally merge from employee_rates if present
+        try {
+          const { data: ratesRes } = await supabase!.from('employee_rates').select('*');
+          if (ratesRes) {
+            ratesRes.forEach((r: any) => { 
+              if (r.driver_id && !drvs.find(d => d.id === r.driver_id && d.rate_type)) {
+                ratesMap[r.driver_id] = { ...ratesMap[r.driver_id], ...r };
+              }
+            });
+          }
+        } catch (_) {}
+
+        setEmployeeRates(ratesMap);
+      } else {
+        setEmployeeRates({});
+      }
 
       // Fetch Shifts
       const { data: sfts } = await supabase!
@@ -1348,6 +1369,41 @@ export default function App() {
     }
   };
 
+  const handleEditExtras = async (shiftId: string, currentAmount: number | null, currentNote: string | null) => {
+    const noteInput = window.prompt("Enter a note for this extra charge/bonus (e.g., 'Tolls', 'Damage'):", currentNote || "");
+    if (noteInput === null) return; // Cancelled
+
+    const amountInput = window.prompt("Enter the amount (£). Use negative numbers for deductions:", currentAmount?.toString() || "0");
+    if (amountInput === null) return; // Cancelled
+
+    const amount = parseFloat(amountInput);
+    if (isNaN(amount)) {
+       alert("Invalid amount.");
+       return;
+    }
+
+    const targetShift = shifts.find(s => s.id === shiftId);
+    const { grossPay: calculatedGrossPay } = targetShift 
+      ? getShiftFinancials({ ...targetShift, extras_amount: amount })
+      : { grossPay: 0 };
+
+    // Save to DB and trigger full sync
+    const { error } = await supabase!
+      .from('shifts')
+      .update({ 
+        extras_amount: amount, 
+        extras_note: noteInput,
+        total_pay: calculatedGrossPay 
+      })
+      .eq('id', shiftId);
+
+    if (error) {
+       alert("Failed to save extras: " + error.message);
+    } else {
+       loadData(); 
+    }
+  };
+
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
     const rateData: EmployeeRate = {
@@ -1356,6 +1412,8 @@ export default function App() {
       mon_fri_rate: parseFloat(editMonFriRate) || 16.00,
       sat_rate: parseFloat(editSatRate) || 17.00,
       sun_rate: parseFloat(editSunRate) || 18.00,
+      saturday_rate: parseFloat(editSatRate) || 17.00,
+      sunday_rate: parseFloat(editSunRate) || 18.00,
       agency_name: editAgencyName || 'Direct',
     };
 
@@ -1369,43 +1427,35 @@ export default function App() {
     }
 
     try {
-      // 1. Always update public.drivers hourly_rate first (so rate update succeeds in DB)
+      // Direct update to public.drivers table (Single Source of Truth)
       const { error: driverErr } = await supabase!
         .from('drivers')
-        .update({ hourly_rate: rateData.mon_fri_rate })
+        .update({ 
+          mon_fri_rate: rateData.mon_fri_rate,
+          saturday_rate: rateData.sat_rate,
+          sunday_rate: rateData.sun_rate,
+          hourly_rate: rateData.mon_fri_rate,
+          rate_type: rateData.rate_type,
+          agency_name: rateData.agency_name
+        })
         .eq('id', driverId);
 
       if (driverErr) {
-        console.warn('drivers.hourly_rate update notice:', driverErr.message);
+        alert("Error saving profile to database: " + driverErr.message + "\nEnsure 'rate_type' column exists in 'drivers' table.");
+        return;
       }
 
-      // 2. Attempt to upsert to employee_rates table for full Mon-Fri/Sat/Sun breakdown
-      const { error: ratesErr } = await supabase!
-        .from('employee_rates')
-        .upsert(rateData, { onConflict: 'driver_id' });
+      // Also attempt updating employee_rates table if present
+      try {
+        await supabase!.from('employee_rates').upsert(rateData, { onConflict: 'driver_id' });
+      } catch (_) {}
 
-      if (ratesErr) {
-        console.warn('employee_rates upsert notice:', ratesErr.message);
-        if (driverErr) {
-          alert(`Rate save failed: ${ratesErr.message}`);
-        } else {
-          // driver.hourly_rate update succeeded even though employee_rates table is missing/restricted
-          try {
-            await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: driverId });
-          } catch (_) {}
+      try {
+        await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: driverId });
+      } catch (_) {}
 
-          await loadData();
-          alert(`Rate updated to £${rateData.mon_fri_rate}/hr in database! (Note: Run migration 009 in Supabase SQL Editor if you want to enable separate Sat/Sun rates).`);
-        }
-      } else {
-        try {
-          // Recalculate shift financials for this driver using updated rate
-          await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: driverId });
-        } catch (_) {}
-
-        await loadData();
-        alert(`Rate profile saved. Mon-Fri: £${rateData.mon_fri_rate}/hr • Sat: £${rateData.sat_rate}/hr • Sun: £${rateData.sun_rate}/hr. Mobile app will reflect the updated rate on the driver's next login.`);
-      }
+      await loadData();
+      alert(`Driver profile saved directly to database! Rate Structure: ${rateData.rate_type} • Mon-Fri: £${rateData.mon_fri_rate} • Sat: £${rateData.sat_rate} • Sun: £${rateData.sun_rate}`);
     } catch (e: any) {
       alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
     }
@@ -1516,7 +1566,8 @@ export default function App() {
     }
 
     const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
-    const grossPay = Number((basePay + noAmt).toFixed(2));
+    const extrasAmt = Number(s.extras_amount) || 0;
+    const grossPay = Number((basePay + noAmt + extrasAmt).toFixed(2));
 
     return { 
       rate: startRateVal, 
@@ -1526,6 +1577,8 @@ export default function App() {
       endDay, 
       isFixedRate,
       noAmt, 
+      extrasAmt,
+      extrasNote: s.extras_note,
       grossPay, 
       agency: drvRate?.agency_name || 'Direct' 
     };
@@ -1534,7 +1587,7 @@ export default function App() {
   const exportCSV = () => {
     const filtered = getFilteredShifts();
     const exportData = filtered.map(s => {
-      const { rate, isFixedRate, noAmt, grossPay, agency } = getShiftFinancials(s);
+      const { rate, isFixedRate, noAmt, extrasAmt, extrasNote, grossPay, agency } = getShiftFinancials(s);
       return {
         'Employee Name': s.driver_name,
         'Employee ID': s.driver_code,
@@ -1546,6 +1599,8 @@ export default function App() {
         'Effective Rate': isFixedRate ? `£${rate.toFixed(2)} (Fixed/Shift)` : `£${rate.toFixed(2)}/hr`,
         'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
         'Night Out Allowance (£)': noAmt.toFixed(2),
+        'Extras (£)': extrasAmt.toFixed(2),
+        'Extras Note': extrasNote || '',
         'Gross Pay (£)': grossPay.toFixed(2),
       };
     });
@@ -1564,7 +1619,7 @@ export default function App() {
   const exportExcel = () => {
     const filtered = getFilteredShifts();
     const exportData = filtered.map(s => {
-      const { rate, isFixedRate, noAmt, grossPay, agency } = getShiftFinancials(s);
+      const { rate, isFixedRate, noAmt, extrasAmt, extrasNote, grossPay, agency } = getShiftFinancials(s);
       return {
         'Driver Name': s.driver_name,
         'Driver ID': s.driver_code,
@@ -1576,6 +1631,8 @@ export default function App() {
         'Rate': isFixedRate ? `£${rate.toFixed(2)} (Fixed/Shift)` : `£${rate.toFixed(2)}/hr`,
         'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
         'Night Out Allowance (£)': noAmt,
+        'Extras (£)': extrasAmt,
+        'Extras Note': extrasNote || '',
         'Gross Pay (£)': grossPay,
       };
     });
@@ -2364,24 +2421,20 @@ export default function App() {
                             <select
                               className="select-field"
                               style={{ padding: '4px 8px', fontSize: '12px' }}
-                              value={editRateType || 'Hourly Sat/Sun separate'}
+                              value={editRateType || 'Hourly'}
                               onChange={(e) => setEditRateType(e.target.value as any)}
                             >
-                              <option value="Hourly Sat/Sun separate">Hourly (Sat/Sun separate)</option>
-                              <option value="Fixed Shift Rate">Fixed Shift Rate (Day Rate)</option>
+                              <option value="Hourly">Hourly</option>
+                              <option value="Fixed">Fixed Shift Rate (Day Rate)</option>
                             </select>
                           ) : (
-                            currentRate.rate_type && (
-                              currentRate.rate_type.toLowerCase().includes('fixed') || 
-                              currentRate.rate_type.toLowerCase().includes('day') || 
-                              currentRate.rate_type.toLowerCase().includes('flat')
-                            ) ? (
-                              <span style={{ fontWeight: 'bold', color: '#4F46E5', backgroundColor: '#E0E7FF', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
+                            currentRate.rate_type === 'Fixed' || (currentRate.rate_type && currentRate.rate_type.toLowerCase().includes('fixed')) ? (
+                              <span className="badge badge-primary text-xs bg-indigo-100 text-indigo-800 p-1 rounded font-bold" style={{ backgroundColor: '#E0E7FF', color: '#3730A3', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
                                 Fixed Shift
                               </span>
                             ) : (
                               <span style={{ color: '#4B5563', fontSize: '13px' }}>
-                                {currentRate.rate_type || 'Hourly Sat/Sun separate'}
+                                {currentRate.rate_type || 'Hourly'}
                               </span>
                             )
                           )}
@@ -2796,6 +2849,26 @@ export default function App() {
                                   >
                                     {(shift.night_out_allowance ?? shift.night_out_amount) ? `🌙 N/O: £${Number(shift.night_out_allowance ?? shift.night_out_amount).toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
                                   </button>
+
+                                  <button 
+                                    className="btn btn-outline flex align-center gap-2" 
+                                    style={{ 
+                                      padding: '4px 8px', 
+                                      fontSize: '11px', 
+                                      fontWeight: 'bold', 
+                                      borderColor: shift.extras_amount ? '#3B82F6' : '#D1D5DB',
+                                      color: shift.extras_amount ? '#1D4ED8' : '#4B5563',
+                                      backgroundColor: shift.extras_amount ? '#EFF6FF' : 'transparent'
+                                    }}
+                                    onClick={() => handleEditExtras(shift.id, shift.extras_amount ?? null, shift.extras_note ?? null)}
+                                  >
+                                    ✏️ Edit Extras {shift.extras_amount ? `(£${Number(shift.extras_amount).toFixed(2)})` : ''}
+                                  </button>
+                                  {shift.extras_note && (
+                                    <div className="text-xs text-gray-500 italic mt-1" style={{ fontSize: '11px', color: '#6B7280', fontStyle: 'italic', width: '100%' }}>
+                                      Note: {shift.extras_note}
+                                    </div>
+                                  )}
                                 </div>
                               </td>
                               <td className="font-bold text-success">
