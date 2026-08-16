@@ -2364,14 +2364,26 @@ export default function App() {
                             <select
                               className="select-field"
                               style={{ padding: '4px 8px', fontSize: '12px' }}
-                              value={editRateType}
+                              value={editRateType || 'Hourly Sat/Sun separate'}
                               onChange={(e) => setEditRateType(e.target.value as any)}
                             >
-                              <option value="Hourly Sat/Sun separate">Hourly Sat/Sun separate</option>
-                              <option value="Fixed weekly">Fixed weekly</option>
+                              <option value="Hourly Sat/Sun separate">Hourly (Sat/Sun separate)</option>
+                              <option value="Fixed Shift Rate">Fixed Shift Rate (Day Rate)</option>
                             </select>
                           ) : (
-                            <span className="text-sm font-semibold">{currentRate.rate_type}</span>
+                            currentRate.rate_type && (
+                              currentRate.rate_type.toLowerCase().includes('fixed') || 
+                              currentRate.rate_type.toLowerCase().includes('day') || 
+                              currentRate.rate_type.toLowerCase().includes('flat')
+                            ) ? (
+                              <span style={{ fontWeight: 'bold', color: '#4F46E5', backgroundColor: '#E0E7FF', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
+                                Fixed Shift
+                              </span>
+                            ) : (
+                              <span style={{ color: '#4B5563', fontSize: '13px' }}>
+                                {currentRate.rate_type || 'Hourly Sat/Sun separate'}
+                              </span>
+                            )
                           )}
                         </td>
                         <td>
