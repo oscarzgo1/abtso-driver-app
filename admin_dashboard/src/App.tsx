@@ -452,31 +452,39 @@ export default function App() {
 
       if (drvs && activeRole === 'payroll_admin') {
         const ratesMap: Record<string, EmployeeRate> = {};
-        drvs.forEach((d: any) => {
-          ratesMap[d.id] = {
-            id: d.id,
-            driver_id: d.id,
-            rate_type: d.rate_type || 'Hourly',
-            mon_fri_rate: Number(d.mon_fri_rate ?? d.hourly_rate) || 16.00,
-            sat_rate: Number(d.saturday_rate ?? d.sat_rate) || 17.00,
-            sun_rate: Number(d.sunday_rate ?? d.sun_rate) || 18.00,
-            saturday_rate: Number(d.saturday_rate ?? d.sat_rate) || 17.00,
-            sunday_rate: Number(d.sunday_rate ?? d.sun_rate) || 18.00,
-            agency_name: d.agency_name || 'Direct',
-          };
-        });
 
-        // Optionally merge from employee_rates if present
+        // 1. Fetch from employee_rates table if exists
         try {
           const { data: ratesRes } = await supabase!.from('employee_rates').select('*');
           if (ratesRes) {
             ratesRes.forEach((r: any) => { 
-              if (r.driver_id && !drvs.find(d => d.id === r.driver_id && d.rate_type)) {
-                ratesMap[r.driver_id] = { ...ratesMap[r.driver_id], ...r };
+              if (r.driver_id) {
+                ratesMap[r.driver_id] = r;
               }
             });
           }
         } catch (_) {}
+
+        // 2. Combine with drivers table (overriding with drivers fields if present)
+        drvs.forEach((d: any) => {
+          const existing = ratesMap[d.id] || ratesMap[d.driver_id] || {};
+          const rateTypeVal = d.rate_type || existing.rate_type || 'Hourly';
+          const mappedRate: EmployeeRate = {
+            id: d.id,
+            driver_id: d.id,
+            rate_type: rateTypeVal,
+            mon_fri_rate: Number(d.mon_fri_rate ?? d.hourly_rate ?? existing.mon_fri_rate) || 16.00,
+            sat_rate: Number(d.saturday_rate ?? d.sat_rate ?? existing.sat_rate) || 17.00,
+            sun_rate: Number(d.sunday_rate ?? d.sun_rate ?? existing.sun_rate) || 18.00,
+            saturday_rate: Number(d.saturday_rate ?? d.sat_rate ?? existing.sat_rate) || 17.00,
+            sunday_rate: Number(d.sunday_rate ?? d.sun_rate ?? existing.sun_rate) || 18.00,
+            agency_name: d.agency_name || existing.agency_name || 'Direct',
+          };
+          ratesMap[d.id] = mappedRate;
+          if (d.driver_id) {
+            ratesMap[d.driver_id] = mappedRate;
+          }
+        });
 
         setEmployeeRates(ratesMap);
       } else {
@@ -1417,8 +1425,26 @@ export default function App() {
       agency_name: editAgencyName || 'Direct',
     };
 
-    // Optimistically update local state so UI reflects changes immediately
-    setEmployeeRates(prev => ({ ...prev, [driverId]: rateData }));
+    const targetEmp = employees.find(e => e.id === driverId || e.driver_id === driverId);
+    const altId = targetEmp?.driver_id || driverId;
+
+    // Optimistically update local state for both keys (UUID & code)
+    setEmployeeRates(prev => ({ 
+      ...prev, 
+      [driverId]: rateData,
+      [altId]: rateData 
+    }));
+
+    setEmployees(prev => prev.map(e => (e.id === driverId || e.driver_id === driverId) ? {
+      ...e,
+      rate_type: rateData.rate_type,
+      mon_fri_rate: rateData.mon_fri_rate,
+      saturday_rate: rateData.sat_rate,
+      sunday_rate: rateData.sun_rate,
+      hourly_rate: rateData.mon_fri_rate,
+      agency_name: rateData.agency_name
+    } : e));
+
     setEditingRateDriverId(null);
 
     if (isMockMode) {
@@ -1427,7 +1453,7 @@ export default function App() {
     }
 
     try {
-      // 1. Try full update to public.drivers table (Single Source of Truth)
+      // 1. Try updating public.drivers table (Single Source of Truth)
       let updatePayload: any = { 
         mon_fri_rate: rateData.mon_fri_rate,
         saturday_rate: rateData.sat_rate,
@@ -1442,35 +1468,14 @@ export default function App() {
         .update(updatePayload)
         .eq('id', driverId);
 
-      // 2. Progressive fallback if extended columns (e.g. agency_name) are missing from schema cache
+      // Progressive fallback if schema cache hasn't updated drivers table columns yet
       if (driverErr && driverErr.message.includes('schema cache')) {
-        // Retry without agency_name
         delete updatePayload.agency_name;
         const res2 = await supabase!.from('drivers').update(updatePayload).eq('id', driverId);
         driverErr = res2.error;
-
-        if (driverErr && driverErr.message.includes('schema cache')) {
-          // Retry without saturday_rate / sunday_rate / rate_type
-          const fallbackPayload = { 
-            hourly_rate: rateData.mon_fri_rate,
-            mon_fri_rate: rateData.mon_fri_rate
-          };
-          const res3 = await supabase!.from('drivers').update(fallbackPayload).eq('id', driverId);
-          if (res3.error) {
-            const res4 = await supabase!.from('drivers').update({ hourly_rate: rateData.mon_fri_rate }).eq('id', driverId);
-            driverErr = res4.error;
-          } else {
-            driverErr = null;
-          }
-        }
       }
 
-      if (driverErr) {
-        alert("Error saving profile to database: " + driverErr.message + "\nPlease run migration 025 in Supabase SQL Editor.");
-        return;
-      }
-
-      // Also attempt updating employee_rates table if present
+      // 2. ALWAYS upsert to employee_rates table as well to guarantee rate_type persistence
       try {
         await supabase!.from('employee_rates').upsert(rateData, { onConflict: 'driver_id' });
       } catch (_) {}
@@ -1480,7 +1485,7 @@ export default function App() {
       } catch (_) {}
 
       await loadData();
-      alert(`Driver profile saved successfully! Rate Structure: ${rateData.rate_type} • Mon-Fri: £${rateData.mon_fri_rate} • Sat: £${rateData.sat_rate} • Sun: £${rateData.sun_rate}`);
+      alert(`Driver profile saved successfully! Structure: ${rateData.rate_type} (${rateData.rate_type === 'Fixed' ? 'Fixed Shift Pay' : 'Hourly Rate'})`);
     } catch (e: any) {
       alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
     }
@@ -2413,15 +2418,16 @@ export default function App() {
                 </thead>
                 <tbody>
                   {employees.map(emp => {
-                    const currentRate = employeeRates[emp.id] || {
+                    const currentRate = employeeRates[emp.id] || employeeRates[emp.driver_id] || {
                       driver_id: emp.id,
-                      rate_type: 'Hourly Sat/Sun separate',
-                      mon_fri_rate: emp.hourly_rate || 16.00,
-                      sat_rate: 17.00,
-                      sun_rate: 18.00,
-                      agency_name: 'Direct',
+                      rate_type: (emp as any).rate_type || 'Hourly',
+                      mon_fri_rate: Number((emp as any).mon_fri_rate ?? emp.hourly_rate) || 16.00,
+                      sat_rate: Number((emp as any).saturday_rate) || 17.00,
+                      sun_rate: Number((emp as any).sunday_rate) || 18.00,
+                      agency_name: (emp as any).agency_name || 'Direct',
                     };
                     const isEditing = editingRateDriverId === emp.id;
+                    const isFixedRate = currentRate.rate_type === 'Fixed' || Boolean(currentRate.rate_type && currentRate.rate_type.toLowerCase().includes('fixed'));
 
                     return (
                       <tr key={emp.id}>
@@ -2452,16 +2458,14 @@ export default function App() {
                               <option value="Hourly">Hourly</option>
                               <option value="Fixed">Fixed Shift Rate (Day Rate)</option>
                             </select>
+                          ) : isFixedRate ? (
+                            <span className="badge badge-primary text-xs font-bold" style={{ backgroundColor: '#E0E7FF', color: '#3730A3', border: '1px solid #C7D2FE', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
+                              Fixed Shift
+                            </span>
                           ) : (
-                            currentRate.rate_type === 'Fixed' || (currentRate.rate_type && currentRate.rate_type.toLowerCase().includes('fixed')) ? (
-                              <span className="badge badge-primary text-xs bg-indigo-100 text-indigo-800 p-1 rounded font-bold" style={{ backgroundColor: '#E0E7FF', color: '#3730A3', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
-                                Fixed Shift
-                              </span>
-                            ) : (
-                              <span style={{ color: '#4B5563', fontSize: '13px' }}>
-                                {currentRate.rate_type || 'Hourly'}
-                              </span>
-                            )
+                            <span style={{ color: '#4B5563', fontSize: '13px' }}>
+                              {currentRate.rate_type || 'Hourly'}
+                            </span>
                           )}
                         </td>
                         <td>
@@ -2475,7 +2479,7 @@ export default function App() {
                               onChange={(e) => setEditMonFriRate(e.target.value)}
                             />
                           ) : (
-                            <span className="font-bold text-primary">£{(currentRate?.mon_fri_rate || 16.00).toFixed(2)}/hr</span>
+                            <span className="font-bold text-primary">£{(currentRate?.mon_fri_rate || 16.00).toFixed(2)}{isFixedRate ? '/shift' : '/hr'}</span>
                           )}
                         </td>
                         <td>
@@ -2489,7 +2493,7 @@ export default function App() {
                               onChange={(e) => setEditSatRate(e.target.value)}
                             />
                           ) : (
-                            <span className="font-bold text-secondary">£{(currentRate?.sat_rate || 17.00).toFixed(2)}/hr</span>
+                            <span className="font-bold text-secondary">£{(currentRate?.sat_rate || 17.00).toFixed(2)}{isFixedRate ? '/shift' : '/hr'}</span>
                           )}
                         </td>
                         <td>
@@ -2503,7 +2507,7 @@ export default function App() {
                               onChange={(e) => setEditSunRate(e.target.value)}
                             />
                           ) : (
-                            <span className="font-bold text-success">£{(currentRate?.sun_rate || 18.00).toFixed(2)}/hr</span>
+                            <span className="font-bold text-success">£{(currentRate?.sun_rate || 18.00).toFixed(2)}{isFixedRate ? '/shift' : '/hr'}</span>
                           )}
                         </td>
                         <td>
