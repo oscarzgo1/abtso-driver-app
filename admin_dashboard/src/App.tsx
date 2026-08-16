@@ -1418,7 +1418,7 @@ export default function App() {
 
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
-    console.log("Saving driver rate profile for driver ID:", driverId);
+    console.log("Saving rate profile overrides directly to drivers table for driver ID:", driverId);
 
     const targetEmp = employees.find(e => e.id === driverId || e.driver_id === driverId);
     const primaryId = targetEmp?.id || driverId;
@@ -1430,19 +1430,16 @@ export default function App() {
     const parsedSat = parseFloat(editSatRate) || 17.00;
     const parsedSun = parseFloat(editSunRate) || 18.00;
 
-    const ratePayload: any = {
-      driver_id: primaryId,
-      rate_type: isFixed ? 'Fixed' : 'Hourly',
-      fixed_rate: isFixed ? parsedFixed : null,
-      mon_fri_rate: isFixed ? parsedFixed : parsedMonFri,
-      sat_rate: isFixed ? parsedFixed : parsedSat,
-      sun_rate: isFixed ? parsedFixed : parsedSun,
-      agency_name: editAgencyName || 'Direct',
+    // CRITICAL: We only update the 'drivers' table with the specific overrides.
+    // DO NOT touch 'employee_rates' or 'rate_configurations' here.
+    const driverPayload: any = {
+      rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
+      fixed_rate: isFixed ? parsedFixed : null
     };
 
     const localDisplayRate: EmployeeRate = {
       driver_id: primaryId,
-      rate_type: isFixed ? 'Fixed' : 'Hourly',
+      rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
       fixed_rate: isFixed ? parsedFixed : null,
       mon_fri_rate: isFixed ? parsedFixed : parsedMonFri,
       sat_rate: isFixed ? parsedFixed : parsedSat,
@@ -1479,79 +1476,48 @@ export default function App() {
     }
 
     try {
-      // 1. SAVE TO employee_rates TABLE (UPDATE existing or INSERT new)
-      let { data: rateData, error: rateErr } = await supabase!
-        .from('employee_rates')
-        .update(ratePayload)
-        .eq('driver_id', primaryId)
-        .select();
+      // ONLY TARGET 'drivers' TABLE FOR MUTATION
+      let query = supabase!
+        .from('drivers')
+        .update(driverPayload);
 
-      // Progressive fallback if fixed_rate column is missing from schema cache in employee_rates
-      if (rateErr && rateErr.message.includes('schema cache')) {
-        delete ratePayload.fixed_rate;
-        const resFb = await supabase!
-          .from('employee_rates')
-          .update(ratePayload)
-          .eq('driver_id', primaryId)
-          .select();
-        rateData = resFb.data;
-        rateErr = resFb.error;
+      if (primaryId && driverCode && primaryId !== driverCode) {
+        query = query.or(`id.eq.${primaryId},driver_id.eq.${driverCode}`);
+      } else {
+        query = query.eq('id', primaryId);
       }
 
-      // If update returned 0 rows, INSERT a new record for driver_id
-      if ((!rateData || rateData.length === 0) && !rateErr) {
-        const insertRes = await supabase!
-          .from('employee_rates')
-          .insert(ratePayload)
-          .select();
-        rateData = insertRes.data;
-        rateErr = insertRes.error;
-      }
+      let { data, error } = await query.select();
 
-      // If primaryId returned no row, retry matching driverCode string
-      if ((!rateData || rateData.length === 0) && driverCode && driverCode !== primaryId) {
-        const altPayload = { ...ratePayload, driver_id: driverCode };
-        const resCode = await supabase!
-          .from('employee_rates')
-          .update(altPayload)
-          .eq('driver_id', driverCode)
-          .select();
-        if (resCode.data && resCode.data.length > 0) {
-          rateData = resCode.data;
-          rateErr = null;
-        } else {
-          const insCode = await supabase!
-            .from('employee_rates')
-            .insert(altPayload)
-            .select();
-          if (insCode.data && insCode.data.length > 0) {
-            rateData = insCode.data;
-            rateErr = null;
-          }
-        }
-      }
-
-      // 2. OPTIONAL SILENT UPDATE TO drivers TABLE (Only standard hourly_rate, strictly wrapped in try/catch)
-      try {
-        await supabase!
+      // Progressive fallback if fixed_rate column is missing from schema cache in drivers table
+      if (error && error.message.includes('schema cache')) {
+        const fbRes = await supabase!
           .from('drivers')
-          .update({ hourly_rate: isFixed ? parsedFixed : parsedMonFri })
-          .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`);
-      } catch (_) {}
+          .update({ rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly' })
+          .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
+          .select();
+        data = fbRes.data;
+        error = fbRes.error;
+      }
 
-      // 3. Recalculate shifts pay RPC
-      try {
-        await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: primaryId });
-      } catch (_) {}
-
-      // Verify success
-      if (rateErr) {
-        alert("Error updating driver profile in employee_rates: " + rateErr.message);
+      if (error) {
+        alert("Database Error updating drivers table: " + error.message);
         await loadData();
         return;
       }
 
-      alert(`Driver compensation profile saved successfully!\n\nRate Type: ${isFixed ? 'Fixed Shift Rate' : 'Hourly'} ${isFixed ? `(£${parsedFixed.toFixed(2)}/shift)` : ''}`);
+      if (!data || data.length === 0) {
+        alert(`Error: No rows updated. Ensure driver ID (${primaryId} / ${driverCode}) is correct and RLS allows updating 'drivers' table.`);
+        await loadData();
+        return;
+      }
+
+      // Recalculate shifts pay
+      try {
+        await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: primaryId });
+      } catch (_) {}
+
+      alert(`Profile updated successfully!\n\nRate Type: ${isFixed ? 'Fixed Shift Rate' : 'Hourly'} ${isFixed ? `(£${parsedFixed.toFixed(2)}/shift)` : ''}`);
       await loadData();
     } catch (e: any) {
       alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
