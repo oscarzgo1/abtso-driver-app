@@ -1496,28 +1496,70 @@ export default function App() {
     });
   };
 
-  const getShiftFinancials = (s: Shift) => {
-    const drvRate = employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver;
-    const shiftDate = new Date(s.start_time);
-    const dayOfWeek = shiftDate.getDay(); // 0 = Sun, 6 = Sat
-    
-    let rate = 0;
-    if (drvRate) {
-      if (dayOfWeek === 0) {
-        rate = Number(drvRate.sun_rate ?? drvRate.sunday_rate) || Number(drvRate.mon_fri_rate) || 18.00;
-      } else if (dayOfWeek === 6) {
-        rate = Number(drvRate.sat_rate ?? drvRate.saturday_rate) || Number(drvRate.mon_fri_rate) || 17.00;
-      } else {
-        rate = Number(drvRate.mon_fri_rate) || 16.00;
-      }
-    } else {
-      // Clean default rate structure by day — NEVER use hardcoded shift table rates
-      rate = dayOfWeek === 0 ? 18.00 : dayOfWeek === 6 ? 17.00 : 16.00;
+  const calculateSplitShiftPay = (startTimeIso: string, endTimeIso: string, drvRates: any) => {
+    if (!endTimeIso) return 0; // Ongoing shift
+
+    let start = new Date(startTimeIso);
+    const end = new Date(endTimeIso);
+    let totalPay = 0;
+
+    const getRateForDay = (date: Date) => {
+      const day = date.getDay();
+      if (!drvRates) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
+      if (day === 0) return Number(drvRates.sun_rate ?? drvRates.sunday_rate) || Number(drvRates.mon_fri_rate) || 18.00;
+      if (day === 6) return Number(drvRates.sat_rate ?? drvRates.saturday_rate) || Number(drvRates.mon_fri_rate) || 17.00;
+      return Number(drvRates.mon_fri_rate) || 16.00;
+    };
+
+    while (start < end) {
+      let nextMidnight = new Date(start);
+      nextMidnight.setHours(24, 0, 0, 0);
+
+      const chunkEnd = nextMidnight < end ? nextMidnight : end;
+      const chunkHours = (chunkEnd.getTime() - start.getTime()) / (1000 * 60 * 60);
+      
+      totalPay += chunkHours * getRateForDay(start);
+      start = chunkEnd;
     }
 
+    return totalPay;
+  };
+
+  const getShiftFinancials = (s: Shift) => {
+    const drvRate = employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver;
+    const startObj = new Date(s.start_time);
+    const endObj = s.end_time ? new Date(s.end_time) : null;
+    
+    const startDay = startObj.getDay();
+    const endDay = endObj ? endObj.getDay() : startDay;
+
+    const getRateForDay = (day: number) => {
+      if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
+      if (day === 0) return Number(drvRate.sun_rate ?? drvRate.sunday_rate) || Number(drvRate.mon_fri_rate) || 18.00;
+      if (day === 6) return Number(drvRate.sat_rate ?? drvRate.saturday_rate) || Number(drvRate.mon_fri_rate) || 17.00;
+      return Number(drvRate.mon_fri_rate) || 16.00;
+    };
+
+    const startRateVal = getRateForDay(startDay);
+    const endRateVal = getRateForDay(endDay);
+
+    const basePay = s.end_time 
+      ? calculateSplitShiftPay(s.start_time, s.end_time, drvRate)
+      : (s.total_hours || 0) * startRateVal;
+
     const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
-    const grossPay = Number(((s.total_hours || 0) * rate + noAmt).toFixed(2));
-    return { rate, noAmt, grossPay, agency: drvRate?.agency_name || 'Direct' };
+    const grossPay = Number((basePay + noAmt).toFixed(2));
+
+    return { 
+      rate: startRateVal, 
+      startRateVal, 
+      endRateVal, 
+      startDay, 
+      endDay, 
+      noAmt, 
+      grossPay, 
+      agency: drvRate?.agency_name || 'Direct' 
+    };
   };
 
   const exportCSV = () => {
@@ -2628,7 +2670,15 @@ export default function App() {
                     ) : (
                       <>
                         {filteredShifts.map(shift => {
-                          const { rate: hourlyRate, noAmt: noAmount, grossPay: shiftGrossPay, agency } = getShiftFinancials(shift);
+                          const { 
+                            startRateVal, 
+                            endRateVal, 
+                            startDay, 
+                            endDay, 
+                            noAmt: noAmount, 
+                            grossPay: shiftGrossPay, 
+                            agency 
+                          } = getShiftFinancials(shift);
 
                           const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
                           const shiftStartMs = new Date(shift.start_time).getTime();
@@ -2682,7 +2732,16 @@ export default function App() {
                                 })()}
                               </td>
                               <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
-                              <td className="font-semibold">£{hourlyRate.toFixed(2)}/hr</td>
+                              <td className="font-semibold">
+                                {startDay !== endDay && startRateVal !== endRateVal ? (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                     <span style={{ fontSize: '13px' }}>£{startRateVal.toFixed(2)}/hr</span>
+                                     <span style={{ fontSize: '11px', color: '#6B7280' }}>→ £{endRateVal.toFixed(2)}/hr</span>
+                                  </div>
+                                ) : (
+                                  <span>£{startRateVal.toFixed(2)}/hr</span>
+                                )}
+                              </td>
                               <td>
                                 {noAmount > 0 ? (
                                   <span className="badge badge-success font-bold">
