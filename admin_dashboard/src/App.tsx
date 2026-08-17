@@ -1260,7 +1260,7 @@ export default function App() {
   };
 
 
-  const handleManualClockOut = async (_driverId: string, shiftId: string) => {
+  const handleManualClockOut = async (driverId: string, shiftId: string) => {
     if (isMockMode) {
       alert("Manual Clock Out not supported in Mock Mode.");
       return;
@@ -1279,21 +1279,51 @@ export default function App() {
 
       const lat = shiftData?.depots?.latitude ?? 53.481798;
       const lng = shiftData?.depots?.longitude ?? -1.086552;
+      const endTime = new Date().toISOString();
 
+      // 1. Calculate final duration
+      const totalHours = (new Date(endTime).getTime() - new Date(shiftData.start_time).getTime()) / (1000 * 60 * 60);
+
+      // 2. Fetch the CURRENT driver profile to lock it in history
+      const drvProfile = employeeRates[driverId] || employees.find(e => e.id === driverId || e.driver_id === driverId);
+      const isFixed = drvProfile?.rate_type?.toLowerCase().includes('fixed') || Boolean(drvProfile?.fixed_rate);
+      const baseRate = isFixed ? (Number(drvProfile?.fixed_rate) || 150) : (Number(drvProfile?.mon_fri_rate) || 16);
+
+      // 3. Simulate shift to calculate exact gross pay
+      const simulatedShift = {
+        ...shiftData,
+        start_time: shiftData.start_time,
+        end_time: endTime,
+        total_hours: totalHours,
+        status: 'completed',
+        total_pay: null,
+        rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
+        effective_rate: isFixed ? baseRate : null,
+        base_hourly_rate: isFixed ? null : baseRate,
+      };
+      const { grossPay } = getShiftFinancials(simulatedShift as any);
+
+      // 4. Update the shift with frozen historical data
       const { error } = await supabase!
         .from('shifts')
         .update({
           status: 'completed',
-          end_time: new Date().toISOString(),
+          end_time: endTime,
           end_lat: lat,
-          end_lng: lng
+          end_lng: lng,
+          total_hours: totalHours,
+          total_pay: grossPay,
+          // STAMP THE HISTORY PERMANENTLY:
+          rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
+          base_hourly_rate: isFixed ? null : baseRate,
+          effective_rate: isFixed ? baseRate : null
         })
         .eq('id', shiftId);
 
       if (error) {
         alert("Failed to manual clock out: " + error.message);
       } else {
-        loadData();
+        await loadData();
       }
     } catch (e: any) {
       alert("Failed to manual clock out: " + e.message);
@@ -1641,32 +1671,6 @@ export default function App() {
         await loadData();
         return;
       }
-
-      // Snapshot current rate onto all COMPLETED shifts for this driver so history is preserved
-      // This ensures historical pay calculations are never altered by future rate changes
-      try {
-        const snapshotPayload: any = {
-          rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
-        };
-        if (isFixed) {
-          snapshotPayload.effective_rate = parsedFixed;
-        } else {
-          snapshotPayload.base_hourly_rate = parsedMonFri;
-        }
-        // Stamp all completed shifts for this driver that don't yet have a snapshot
-        await supabase!
-          .from('shifts')
-          .update(snapshotPayload)
-          .eq('driver_id', primaryId)
-          .eq('status', 'completed')
-          .is('effective_rate', null)
-          .is('base_hourly_rate', null);
-      } catch (_) {}
-
-      // Recalculate active/future shifts pay
-      try {
-        await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: primaryId });
-      } catch (_) {}
 
       alert(`Profile updated successfully!\n\nRate Type: ${isFixed ? 'Fixed Shift Rate' : 'Hourly'} ${isFixed ? `(£${parsedFixed.toFixed(2)}/shift)` : ''}`);
       await loadData();
