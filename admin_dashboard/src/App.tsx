@@ -1315,30 +1315,47 @@ export default function App() {
 
     const newStartTime = new Date(newStartRaw).toISOString();
     
-    let updatePayload: { start_time: string; end_time?: string | null; status: string; total_pay?: number | null } = {
+    const targetShift = shifts.find(s => s.id === shiftId);
+    if (!targetShift) return;
+
+    let updatePayload: any = {
       start_time: newStartTime,
       status: 'completed'
     };
 
     if (newEndRaw.trim() === "") {
-      // User cleared the field, make it ongoing
       updatePayload.end_time = null;
       updatePayload.status = 'active';
-      updatePayload.total_pay = null; // Clear pay for active shifts
+      updatePayload.total_pay = null;
+      updatePayload.total_hours = null;
     } else {
-      // User provided an end time
       const newEndTime = new Date(newEndRaw).toISOString();
       if (new Date(newEndTime) <= new Date(newStartTime)) {
         alert("Error: End time must be strictly after the start time!");
         return;
       }
       updatePayload.end_time = newEndTime;
+      
+      // 1. Calculate new duration
+      const newHours = (new Date(newEndTime).getTime() - new Date(newStartTime).getTime()) / (1000 * 60 * 60);
+      updatePayload.total_hours = newHours;
+      
+      // 2. FORCE FRONTEND RECALCULATION 
+      // Create a mocked shift overriding the time and stripping the old total_pay so the engine calculates it fresh
+      const simulatedShift = {
+          ...targetShift,
+          start_time: newStartTime,
+          end_time: newEndTime,
+          total_hours: newHours,
+          status: 'completed',
+          total_pay: null 
+      };
 
-      // FORCE TOTAL PAY RECALCULATION:
-      // By explicitly setting total_pay to null during a time edit, we force `getShiftFinancials` 
-      // (or the database trigger) to freshly recalculate the gross pay based on the new hours, 
-      // rather than retaining a stale, incorrect mathematical product in the database.
-      updatePayload.total_pay = null;
+      // 3. Extract perfectly calculated gross pay from our master engine
+      const { grossPay } = getShiftFinancials(simulatedShift as any);
+      
+      // 4. Set the exact payload to bypass any dumb DB triggers
+      updatePayload.total_pay = grossPay; 
     }
 
     // 3. Update Database
