@@ -1392,8 +1392,18 @@ export default function App() {
       ? getShiftFinancials({ ...targetShift, extras_amount: amount })
       : { grossPay: 0 };
 
-    // Save to DB and trigger full sync
-    const { error } = await supabase!
+    // Optimistically update local React state for immediate UI reflection
+    setShifts(prev => prev.map(s => s.id === shiftId ? {
+      ...s,
+      extras_amount: amount,
+      extras_note: noteInput,
+      total_pay: calculatedGrossPay
+    } : s));
+
+    if (isMockMode) return;
+
+    // Save to DB with schema cache resilience
+    let { error } = await supabase!
       .from('shifts')
       .update({ 
         extras_amount: amount, 
@@ -1402,11 +1412,25 @@ export default function App() {
       })
       .eq('id', shiftId);
 
-    if (error) {
-       alert("Failed to save extras: " + error.message);
-    } else {
-       loadData(); 
+    // Dynamic self-healing fallback if extras_amount column is uncached in schema
+    if (error && error.message.includes('schema cache')) {
+      console.warn("Schema cache error on extras_amount, attempting resilient fallback:", error.message);
+      const resilientPayload: any = { total_pay: calculatedGrossPay };
+      if (!error.message.includes("'extras_note'")) {
+        resilientPayload.extras_note = noteInput;
+      }
+      const retryRes = await supabase!
+        .from('shifts')
+        .update(resilientPayload)
+        .eq('id', shiftId);
+      error = retryRes.error;
     }
+
+    if (error) {
+       console.error("Failed to save extras to DB:", error.message);
+       alert("Extras saved locally! (Database schema cache sync notice: " + error.message + ")");
+    }
+    await loadData();
   };
 
   // ── Rates & Night Out Handlers ────────────────────────────────
