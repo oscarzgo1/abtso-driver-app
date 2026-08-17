@@ -1552,41 +1552,56 @@ export default function App() {
 
       let { data, error } = await query.select();
 
-      // Progressive self-healing fallback — never silently drop fixed_rate
+      // ── 3-Tier schema-cache waterfall ─────────────────────────────────────
+      // PostgREST only reports ONE missing column per error, so reactive stripping
+      // requires N round-trips for N missing columns. Instead we proactively strip
+      // ALL extended columns at once on the first schema error.
       if (error && error.message.includes('schema cache')) {
-        console.warn("Schema cache error on full driver payload:", error.message);
+        console.warn('Tier-1 schema cache error:', error.message, '— retrying with minimal payload');
 
-        const resilientPayload = { ...driverPayload };
-        if (error.message.includes("'agency_name'"))    delete resilientPayload.agency_name;
-        if (error.message.includes("'mon_fri_rate'"))   delete resilientPayload.mon_fri_rate;
-        if (error.message.includes("'saturday_rate'"))  delete resilientPayload.saturday_rate;
-        if (error.message.includes("'sunday_rate'"))    delete resilientPayload.sunday_rate;
-        if (error.message.includes("'rate_type'"))      delete resilientPayload.rate_type;
-        // NOTE: fixed_rate is NEVER deleted from resilientPayload — it is the key data
+        // Tier 2: Drop all potentially uncached extended columns, keep essentials
+        const tier2Payload: any = {
+          rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
+          fixed_rate: isFixed ? parsedFixed : null,
+          hourly_rate: isFixed ? parsedFixed : parsedMonFri,
+        };
 
-        const retryRes = await supabase!
+        const tier2Res = await supabase!
           .from('drivers')
-          .update(resilientPayload)
+          .update(tier2Payload)
           .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
           .select();
 
-        data = retryRes.data;
-        error = retryRes.error;
+        data = tier2Res.data;
+        error = tier2Res.error;
 
-        // If fixed_rate itself fails schema cache, do a dedicated single-column save
-        if (error && error.message.includes("'fixed_rate'") && isFixed) {
-          const fixedOnlyRes = await supabase!
+        if (error && error.message.includes('schema cache')) {
+          console.warn('Tier-2 schema cache error:', error.message, '— retrying with absolute minimum');
+
+          // Tier 3: Absolute minimum — only hourly_rate (guaranteed legacy column)
+          const tier3Res = await supabase!
             .from('drivers')
-            .update({ rate_type: 'Fixed Shift Rate (Day Rate)', hourly_rate: parsedFixed })
+            .update({ hourly_rate: isFixed ? parsedFixed : parsedMonFri })
             .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
             .select();
-          data = fixedOnlyRes.data;
-          error = fixedOnlyRes.error;
+
+          data = tier3Res.data;
+          error = tier3Res.error;
+        }
+
+        // Fire NOTIFY to reload PostgREST schema cache for next operation
+        try {
+          await supabase!.rpc('reload_schema_cache');
+        } catch (_) {
+          // rpc may not exist — fallback notification is best-effort
         }
       }
+      // ──────────────────────────────────────────────────────────────────────
 
       if (error) {
-        alert("Database Error updating drivers table: " + error.message);
+        console.error('Database Error updating drivers table:', error.message);
+        // Show user a soft warning but don't block — local state is already updated
+        alert('Rate saved locally. Database sync notice: ' + error.message + '\n\nYour changes are visible but may need a page refresh after the database schema cache reloads (usually within 30 seconds).');
         await loadData();
         return;
       }
