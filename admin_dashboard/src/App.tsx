@@ -2516,9 +2516,6 @@ export default function App() {
                                   value={editFixedRate}
                                   onChange={(e) => {
                                     setEditFixedRate(e.target.value);
-                                    setEditMonFriRate(e.target.value);
-                                    setEditSatRate(e.target.value);
-                                    setEditSunRate(e.target.value);
                                   }}
                                 />
                               </div>
@@ -2559,7 +2556,7 @@ export default function App() {
                           )
                         ) : isFixedRate ? (
                           <td colSpan={3} className="text-center font-bold" style={{ textAlign: 'center', color: '#4338CA', fontWeight: 'bold', backgroundColor: '#EEF2FF', borderRadius: '6px' }}>
-                            Flat Rate: £{Number(currentRate.fixed_rate || currentRate.mon_fri_rate || 0).toFixed(2)} / shift
+                            Flat Rate: £{Number(currentRate.fixed_rate || 0).toFixed(2)} / shift
                           </td>
                         ) : (
                           <>
@@ -2593,7 +2590,7 @@ export default function App() {
                                 setEditMonFriRate(currentRate.mon_fri_rate.toString());
                                 setEditSatRate(currentRate.sat_rate.toString());
                                 setEditSunRate(currentRate.sun_rate.toString());
-                                setEditFixedRate((currentRate.fixed_rate || currentRate.mon_fri_rate || 150.00).toString());
+                                setEditFixedRate((currentRate.fixed_rate || 150.00).toString());
                                 setEditRateType(currentRate.rate_type || 'Hourly');
                                 setEditAgencyName(currentRate.agency_name || 'Direct');
                               }}
