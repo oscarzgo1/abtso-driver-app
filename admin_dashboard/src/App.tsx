@@ -1598,20 +1598,43 @@ export default function App() {
   };
 
   const getShiftFinancials = (s: Shift) => {
-    const drvRate = employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver;
+    // 1. Determine if this shift has historical snapshot data saved directly on the shift record
+    // If the shift is completed and has a stored effective rate/base rate or total pay, we use that to prevent historical rewriting.
+    const hasHistoricalSnapshot = s.status === 'completed' && Boolean(s.effective_rate || s.base_hourly_rate || (s.total_pay !== null && s.total_pay !== undefined));
+
+    // 2. Resolve the Rate Source
+    // We use the live profile ONLY IF there's no snapshot, or if the shift is active
+    const drvRate = hasHistoricalSnapshot 
+      ? null 
+      : (employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver);
+      
     const startObj = new Date(s.start_time);
     const endObj = s.end_time ? new Date(s.end_time) : null;
     
     const startDay = startObj.getDay();
     const endDay = endObj ? endObj.getDay() : startDay;
 
-    const isFixedRate = Boolean(drvRate?.rate_type && (
+    // Determine if historical shift was fixed
+    const isHistoricallyFixed = hasHistoricalSnapshot && Boolean(
+      (s as any).rate_type_snapshot === 'Fixed' || 
+      (s as any).rate_type === 'Fixed Shift Rate (Day Rate)' ||
+      (s as any).rate_type === 'Fixed'
+    );
+
+    const isFixedRate = isHistoricallyFixed || Boolean(drvRate?.rate_type && (
       drvRate.rate_type.toLowerCase().includes('fixed') || 
       drvRate.rate_type.toLowerCase().includes('day') || 
       drvRate.rate_type.toLowerCase().includes('flat')
     ));
 
+    // 3. Rate determination logic
     const getRateForDay = (day: number) => {
+      // If we have a historical snapshot on the shift, ALWAYS use that hardcoded value
+      if (hasHistoricalSnapshot) {
+        return Number(s.effective_rate) || Number(s.base_hourly_rate) || 16.00;
+      }
+      
+      // Otherwise, fall back to live profile logic
       if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
       if (isFixedRate && drvRate.fixed_rate) return Number(drvRate.fixed_rate);
       if (day === 0) return Number(drvRate.sun_rate ?? drvRate.sunday_rate) || Number(drvRate.mon_fri_rate) || 18.00;
@@ -1625,18 +1648,29 @@ export default function App() {
     let basePay = 0;
 
     if (isFixedRate) {
-      // Flat rate per shift based on fixed_rate OR fallback to start day rate if fixed_rate is accidentally null
       basePay = Number(drvRate?.fixed_rate) || startRateVal;
     } else {
-      // Hourly Split Shift calculation
-      basePay = s.end_time 
-        ? calculateSplitShiftPay(s.start_time, s.end_time, drvRate)
-        : (s.total_hours || 0) * startRateVal;
+      // If shift is completed and has a hardcoded total pay snapshot, use it (unless we are manually editing extras right now)
+      if (hasHistoricalSnapshot && s.total_pay !== null && s.total_pay !== undefined && !isFixedRate) {
+        const storedNoAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
+        const storedExtras = Number(s.extras_amount) || 0;
+        basePay = Number(s.total_pay) - storedNoAmt - storedExtras;
+        
+        if (basePay < 0) basePay = (s.total_hours || 0) * startRateVal;
+      } else {
+        basePay = s.end_time 
+          ? calculateSplitShiftPay(s.start_time, s.end_time, drvRate)
+          : (s.total_hours || 0) * startRateVal;
+      }
     }
 
     const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
     const extrasAmt = Number(s.extras_amount) || 0;
-    const grossPay = Number((basePay + noAmt + extrasAmt).toFixed(2));
+    
+    // Use historical total_pay if available and valid, otherwise calculate live
+    const grossPay = (hasHistoricalSnapshot && s.total_pay !== null && s.total_pay !== undefined)
+      ? Number(s.total_pay) 
+      : Number((basePay + noAmt + extrasAmt).toFixed(2));
 
     return { 
       rate: startRateVal, 
