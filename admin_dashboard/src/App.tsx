@@ -1488,24 +1488,43 @@ export default function App() {
 
       let { data, error } = await query.select();
 
-      // Progressive fallback if custom columns are missing from schema cache in drivers table
+      // Progressive self-healing fallback if any column is missing from schema cache in drivers table
       if (error && error.message.includes('schema cache')) {
-        console.warn("Schema cache error on full payload, attempting standard payload fallback:", error.message);
-        const stdPayload: any = {
-          rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
-          hourly_rate: isFixed ? parsedFixed : parsedMonFri,
-          agency_name: editAgencyName || 'Direct'
-        };
-        if (isFixed) {
-          stdPayload.fixed_rate = parsedFixed;
-        }
-        const fbRes = await supabase!
+        console.warn("Schema cache error encountered on full payload:", error.message);
+        
+        // Clone payload and purge failing column(s)
+        const resilientPayload = { ...driverPayload };
+        if (error.message.includes("'agency_name'")) delete resilientPayload.agency_name;
+        if (error.message.includes("'mon_fri_rate'")) delete resilientPayload.mon_fri_rate;
+        if (error.message.includes("'saturday_rate'")) delete resilientPayload.saturday_rate;
+        if (error.message.includes("'sunday_rate'")) delete resilientPayload.sunday_rate;
+        if (error.message.includes("'fixed_rate'")) delete resilientPayload.fixed_rate;
+        if (error.message.includes("'rate_type'")) delete resilientPayload.rate_type;
+
+        const retryRes = await supabase!
           .from('drivers')
-          .update(stdPayload)
+          .update(resilientPayload)
           .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
           .select();
-        data = fbRes.data;
-        error = fbRes.error;
+
+        data = retryRes.data;
+        error = retryRes.error;
+
+        // Secondary fallback to basic rate payload (hourly_rate & rate_type) if still errored
+        if (error && error.message.includes('schema cache')) {
+          const basicPayload: any = {
+            rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
+            hourly_rate: isFixed ? parsedFixed : parsedMonFri
+          };
+          const basicRes = await supabase!
+            .from('drivers')
+            .update(basicPayload)
+            .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
+            .select();
+
+          data = basicRes.data;
+          error = basicRes.error;
+        }
       }
 
       if (error) {
