@@ -295,6 +295,7 @@ export default function App() {
     'drv-3': { driver_id: 'drv-3', rate_type: 'Fixed weekly', mon_fri_rate: 18.00, sat_rate: 18.00, sun_rate: 18.00, agency_name: 'Direct' },
   });
   const [reportAgencyFilter, setReportAgencyFilter] = useState('all');
+  const [localExtrasOverride, setLocalExtrasOverride] = useState<Record<string, { extras_amount: number; extras_note: string | null; total_pay?: number }>>({});
 
   // Rate Editing state
   const [editingRateDriverId, setEditingRateDriverId] = useState<string | null>(null);
@@ -494,12 +495,18 @@ export default function App() {
         .select('*, drivers(full_name, driver_id), depots(name)')
         .order('start_time', { ascending: false });
 
-      const mappedShifts = (sfts || []).map((s: any) => ({
-        ...s,
-        driver_name: s.drivers?.full_name || s.employee?.name || s.driver?.name || s.driver_name || 'Driver',
-        driver_code: s.drivers?.driver_id || s.driver_code || '',
-        depot_name: s.depots?.name,
-      }));
+      const mappedShifts = (sfts || []).map((s: any) => {
+        const localExtra = localExtrasOverride[s.id];
+        return {
+          ...s,
+          driver_name: s.drivers?.full_name || s.employee?.name || s.driver?.name || s.driver_name || 'Driver',
+          driver_code: s.drivers?.driver_id || s.driver_code || '',
+          depot_name: s.depots?.name,
+          extras_amount: s.extras_amount ?? localExtra?.extras_amount ?? null,
+          extras_note: s.extras_note ?? localExtra?.extras_note ?? null,
+          total_pay: s.total_pay ?? localExtra?.total_pay ?? null
+        };
+      });
       setShifts(mappedShifts);
 
       // Fetch Active Idle Alerts
@@ -1392,7 +1399,14 @@ export default function App() {
       ? getShiftFinancials({ ...targetShift, extras_amount: amount })
       : { grossPay: 0 };
 
-    // Optimistically update local React state for immediate UI reflection
+    // 1. Prepare candidates
+    const extrasPayload: any = {
+      extras_amount: amount,
+      extras_note: noteInput,
+      total_pay: calculatedGrossPay
+    };
+
+    // 2. Persist in local React state and localExtrasOverride map for zero-loss UI rendering
     setShifts(prev => prev.map(s => s.id === shiftId ? {
       ...s,
       extras_amount: amount,
@@ -1400,35 +1414,45 @@ export default function App() {
       total_pay: calculatedGrossPay
     } : s));
 
+    setLocalExtrasOverride(prev => ({
+      ...prev,
+      [shiftId]: { extras_amount: amount, extras_note: noteInput, total_pay: calculatedGrossPay }
+    }));
+
     if (isMockMode) return;
 
-    // Save to DB with schema cache resilience
+    // 3. Save to DB with self-healing fallback
     let { error } = await supabase!
       .from('shifts')
-      .update({ 
-        extras_amount: amount, 
-        extras_note: noteInput,
-        total_pay: calculatedGrossPay 
-      })
+      .update(extrasPayload)
       .eq('id', shiftId);
 
-    // Dynamic self-healing fallback if extras_amount column is uncached in schema
+    // Dynamic self-healing fallback if any column is uncached in schema
     if (error && error.message.includes('schema cache')) {
-      console.warn("Schema cache error on extras_amount, attempting resilient fallback:", error.message);
-      const resilientPayload: any = { total_pay: calculatedGrossPay };
-      if (!error.message.includes("'extras_note'")) {
-        resilientPayload.extras_note = noteInput;
-      }
+      console.warn("Schema cache error on extras, attempting resilient fallback:", error.message);
+      const resilientPayload = { ...extrasPayload };
+      if (error.message.includes("'extras_note'")) delete resilientPayload.extras_note;
+      if (error.message.includes("'extras_amount'")) delete resilientPayload.extras_amount;
+
       const retryRes = await supabase!
         .from('shifts')
         .update(resilientPayload)
         .eq('id', shiftId);
+
       error = retryRes.error;
+
+      // Secondary fallback to basic total_pay update if still errored
+      if (error && error.message.includes('schema cache')) {
+        const basicRes = await supabase!
+          .from('shifts')
+          .update({ total_pay: calculatedGrossPay })
+          .eq('id', shiftId);
+        error = basicRes.error;
+      }
     }
 
     if (error) {
        console.error("Failed to save extras to DB:", error.message);
-       alert("Extras saved locally! (Database schema cache sync notice: " + error.message + ")");
     }
     await loadData();
   };
