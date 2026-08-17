@@ -1446,10 +1446,10 @@ export default function App() {
       rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
       fixed_rate: isFixed ? parsedFixed : null,
       mon_fri_rate: isFixed ? parsedFixed : parsedMonFri,
-      sat_rate: isFixed ? parsedFixed : parsedSat,
-      sun_rate: isFixed ? parsedFixed : parsedSun,
       saturday_rate: isFixed ? parsedFixed : parsedSat,
       sunday_rate: isFixed ? parsedFixed : parsedSun,
+      sat_rate: isFixed ? parsedFixed : parsedSat,
+      sun_rate: isFixed ? parsedFixed : parsedSun,
       agency_name: editAgencyName || 'Direct',
     };
 
@@ -1466,8 +1466,10 @@ export default function App() {
       rate_type: localDisplayRate.rate_type,
       fixed_rate: localDisplayRate.fixed_rate,
       mon_fri_rate: localDisplayRate.mon_fri_rate,
-      saturday_rate: localDisplayRate.sat_rate,
-      sunday_rate: localDisplayRate.sun_rate,
+      saturday_rate: localDisplayRate.saturday_rate,
+      sunday_rate: localDisplayRate.sunday_rate,
+      sat_rate: localDisplayRate.sat_rate,
+      sun_rate: localDisplayRate.sun_rate,
       hourly_rate: localDisplayRate.mon_fri_rate,
       agency_name: localDisplayRate.agency_name
     } : e));
@@ -2599,13 +2601,13 @@ export default function App() {
                         ) : (
                           <>
                             <td>
-                              <span className="font-bold text-primary">£{(currentRate?.mon_fri_rate || 16.00).toFixed(2)}/hr</span>
+                              <span className="font-bold text-primary">£{Number(currentRate?.mon_fri_rate || 16.00).toFixed(2)}/hr</span>
                             </td>
                             <td>
-                              <span className="font-bold text-secondary">£{(currentRate?.sat_rate || 17.00).toFixed(2)}/hr</span>
+                              <span className="font-bold text-secondary">£{Number(currentRate?.saturday_rate ?? currentRate?.sat_rate ?? 17.00).toFixed(2)}/hr</span>
                             </td>
                             <td>
-                              <span className="font-bold text-success">£{(currentRate?.sun_rate || 18.00).toFixed(2)}/hr</span>
+                              <span className="font-bold text-success">£{Number(currentRate?.sunday_rate ?? currentRate?.sun_rate ?? 18.00).toFixed(2)}/hr</span>
                             </td>
                           </>
                         )}
@@ -2625,10 +2627,10 @@ export default function App() {
                               style={{ padding: '4px 12px', fontSize: '11px' }}
                               onClick={() => {
                                 setEditingRateDriverId(emp.id);
-                                setEditMonFriRate(currentRate.mon_fri_rate.toString());
-                                setEditSatRate(currentRate.sat_rate.toString());
-                                setEditSunRate(currentRate.sun_rate.toString());
-                                setEditFixedRate((currentRate.fixed_rate || 150.00).toString());
+                                setEditMonFriRate(Number(currentRate.mon_fri_rate || 16.00).toString());
+                                setEditSatRate(Number(currentRate.saturday_rate ?? currentRate.sat_rate ?? 17.00).toString());
+                                setEditSunRate(Number(currentRate.sunday_rate ?? currentRate.sun_rate ?? 18.00).toString());
+                                setEditFixedRate(Number(currentRate.fixed_rate || 150.00).toString());
                                 setEditRateType(currentRate.rate_type || 'Hourly');
                                 setEditAgencyName(currentRate.agency_name || 'Direct');
                               }}
