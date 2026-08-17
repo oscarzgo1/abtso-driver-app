@@ -458,13 +458,14 @@ export default function App() {
         const ratesMap: Record<string, EmployeeRate> = {};
 
         drvs.forEach((d: any) => {
-          const rateTypeVal = d.rate_type === 'Fixed Shift Rate (Day Rate)' || (d.rate_type && d.rate_type.toLowerCase().includes('fixed'))
-            ? 'Fixed Shift Rate (Day Rate)' 
+          const rateTypeVal = d.rate_type === 'Fixed Shift Rate (Day Rate)'
+            ? 'Fixed Shift Rate (Day Rate)'
             : 'Hourly';
 
-          const baseHourly = Number(d.mon_fri_rate ?? d.hourly_rate) || 16.00;
-          const satHourly = Number(d.saturday_rate ?? d.sat_rate) || (baseHourly + 1.00);
-          const sunHourly = Number(d.sunday_rate ?? d.sun_rate) || (baseHourly + 2.00);
+          // FORCE hard-parse exact Supabase column names — no additive fallbacks
+          const baseHourly  = Number(d.mon_fri_rate)   || Number(d.hourly_rate)   || 16.00;
+          const satHourly   = Number(d.saturday_rate)  || Number(d.sat_rate)      || 17.00;
+          const sunHourly   = Number(d.sunday_rate)    || Number(d.sun_rate)      || 18.00;
 
           const mappedRate: EmployeeRate = {
             id: d.id,
@@ -472,10 +473,11 @@ export default function App() {
             rate_type: rateTypeVal,
             fixed_rate: d.fixed_rate ? Number(d.fixed_rate) : null,
             mon_fri_rate: baseHourly,
-            sat_rate: satHourly,
-            sun_rate: sunHourly,
+            // Populate BOTH naming conventions so legacy components still resolve
             saturday_rate: satHourly,
             sunday_rate: sunHourly,
+            sat_rate: satHourly,
+            sun_rate: sunHourly,
             agency_name: d.agency_name || 'Direct',
           };
           ratesMap[d.id] = mappedRate;
@@ -1716,12 +1718,15 @@ export default function App() {
       if (hasHistoricalSnapshot) {
         return Number(s.effective_rate) || Number(s.base_hourly_rate) || 16.00;
       }
-      
-      // Otherwise, fall back to live profile logic
+
       if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
+
+      // Only return fixed_rate when the rate type is STRICTLY fixed
       if (isFixedRate && drvRate.fixed_rate) return Number(drvRate.fixed_rate);
-      if (day === 0) return Number(drvRate.sunday_rate ?? drvRate.sun_rate) || Number(drvRate.mon_fri_rate) || 18.00;
-      if (day === 6) return Number(drvRate.saturday_rate ?? drvRate.sat_rate) || Number(drvRate.mon_fri_rate) || 17.00;
+
+      // STRICTLY resolve from exact Supabase column names — sunday_rate / saturday_rate first
+      if (day === 0) return Number(drvRate.sunday_rate)   || Number(drvRate.sun_rate)  || Number(drvRate.mon_fri_rate) || 18.00;
+      if (day === 6) return Number(drvRate.saturday_rate) || Number(drvRate.sat_rate)  || Number(drvRate.mon_fri_rate) || 17.00;
       return Number(drvRate.mon_fri_rate) || 16.00;
     };
 
