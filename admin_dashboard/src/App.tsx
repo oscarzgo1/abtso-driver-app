@@ -120,6 +120,7 @@ interface Shift {
   night_out_allowance?: number | null;
   extras_amount?: number | null;
   extras_note?: string | null;
+  rate_type?: string | null;
   created_at?: string;
 }
 
@@ -1352,10 +1353,11 @@ export default function App() {
       };
 
       // 3. Extract perfectly calculated gross pay from our master engine
-      const { grossPay } = getShiftFinancials(simulatedShift as any);
+      const { grossPay, isFixedRate: isSimulatedFixed } = getShiftFinancials(simulatedShift as any);
       
-      // 4. Set the exact payload to bypass any dumb DB triggers
+      // 4. Set the exact payload to bypass DB triggers AND STAMP HISTORY
       updatePayload.total_pay = grossPay; 
+      updatePayload.rate_type = isSimulatedFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly';
     }
 
     // 3. Update Database
@@ -1749,24 +1751,25 @@ export default function App() {
     const hasStoredRate = Boolean(s.effective_rate || s.base_hourly_rate);
     const hasHistoricalSnapshot = s.status === 'completed' && (hasStoredPay || hasStoredRate);
 
+    const storedNoAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
+    const storedExtras = Number(s.extras_amount) || 0;
+    const historicalTotalPay = hasStoredPay ? Number(s.total_pay) : null;
+    const historicalBasePay = historicalTotalPay !== null ? (historicalTotalPay - storedNoAmt - storedExtras) : null;
+    const historicalRateValue = Number(s.effective_rate) || Number(s.base_hourly_rate) || 0;
+
+    // 1. Is it historically fixed? (Check DB column explicitly, fallback to math logic to heal old shifts)
+    const isHistoricallyFixed = hasHistoricalSnapshot && (
+      (s as any).rate_type === 'Fixed Shift Rate (Day Rate)' || 
+      (s as any).rate_type === 'Fixed' || 
+      historicalRateValue > 35 ||
+      (historicalBasePay !== null && s.total_hours && Math.abs(historicalBasePay - (Number(s.total_hours) * historicalRateValue)) > 5)
+    );
+
     // 2. Resolve the Rate Source
     // Only active / ongoing shifts pick up the live driver profile.
     const drvRate = hasHistoricalSnapshot 
       ? null 
       : (employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver);
-      
-    const startObj = new Date(s.start_time);
-    const endObj = s.end_time ? new Date(s.end_time) : null;
-    
-    const startDay = startObj.getDay();
-    const endDay = endObj ? endObj.getDay() : startDay;
-
-    // Safely grab the historical numeric value
-    const historicalRateValue = Number(s.effective_rate) || Number(s.base_hourly_rate) || 0;
-    
-    // SMART DETECTION: If the snapshot rate is unusually high (e.g., > £35), it must be a Fixed Shift.
-    // No HGV driver has a base hourly rate of £150-£200+.
-    const isHistoricallyFixed = hasHistoricalSnapshot && historicalRateValue > 35;
 
     const isFixedRate = isHistoricallyFixed || Boolean(drvRate?.rate_type && (
       drvRate.rate_type.toLowerCase().includes('fixed') || 
@@ -1774,11 +1777,19 @@ export default function App() {
       drvRate.rate_type.toLowerCase().includes('flat')
     ));
 
+    const startObj = new Date(s.start_time);
+    const endObj = s.end_time ? new Date(s.end_time) : null;
+    
+    const startDay = startObj.getDay();
+    const endDay = endObj ? endObj.getDay() : startDay;
+
     // 3. Rate determination logic
     const getRateForDay = (day: number) => {
       // If we have a historical snapshot on the shift, ALWAYS use that hardcoded value
       if (hasHistoricalSnapshot) {
-        return Number(s.effective_rate) || Number(s.base_hourly_rate) || 16.00;
+        // If it's a fixed shift historically, display the flat gross pay as the "rate"
+        if (isHistoricallyFixed) return historicalBasePay !== null ? historicalBasePay : historicalRateValue;
+        return historicalRateValue || 16.00;
       }
 
       if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
