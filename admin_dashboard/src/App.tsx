@@ -1343,6 +1343,47 @@ export default function App() {
     if (error) {
       alert("Failed to update shift: " + error.message);
     } else {
+      // 4. Recalculate and persist total_pay so the rate type is preserved correctly.
+      //    For Fixed Shift Rate drivers: total_pay = flat fixed amount (NOT hours × rate).
+      //    For Hourly drivers: total_pay = computed hours × rate.
+      if (updatePayload.end_time && updatePayload.status === 'completed') {
+        try {
+          const targetShift = shifts.find(s => s.id === shiftId);
+          if (targetShift) {
+            const drvRate = employeeRates[targetShift.driver_id];
+            const isFixed = drvRate && (
+              drvRate.rate_type === 'Fixed Shift Rate (Day Rate)' ||
+              (drvRate.rate_type && drvRate.rate_type.toLowerCase().includes('fixed'))
+            );
+
+            let newTotalPay: number;
+            if (isFixed) {
+              // Flat rate per shift — NEVER multiply by hours
+              const flatRate = Number(drvRate?.fixed_rate)
+                || Number((drvRate as any)?.hourly_rate)
+                || 0;
+              const noAmt = Number(targetShift.night_out_allowance ?? targetShift.night_out_amount) || 0;
+              const extras = Number(targetShift.extras_amount) || 0;
+              newTotalPay = flatRate + noAmt + extras;
+            } else {
+              // Compute hours from the newly edited times
+              const startMs = new Date(updatePayload.start_time).getTime();
+              const endMs   = new Date(updatePayload.end_time).getTime();
+              const computedHours = Math.max(0, (endMs - startMs) / (1000 * 60 * 60));
+              const baseRate = Number(drvRate?.mon_fri_rate) || 16.00;
+              const noAmt = Number(targetShift.night_out_allowance ?? targetShift.night_out_amount) || 0;
+              const extras = Number(targetShift.extras_amount) || 0;
+              newTotalPay = (computedHours * baseRate) + noAmt + extras;
+            }
+
+            await supabase!
+              .from('shifts')
+              .update({ total_pay: Number(newTotalPay.toFixed(2)) })
+              .eq('id', shiftId);
+          }
+        } catch (_) {}
+      }
+
       alert("Shift times updated successfully.");
       loadData(); // Refresh UI
     }
