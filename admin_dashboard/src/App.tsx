@@ -1649,8 +1649,8 @@ export default function App() {
     const getRateForDay = (date: Date) => {
       const day = date.getDay();
       if (!drvRates) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
-      if (day === 0) return Number(drvRates.sun_rate ?? drvRates.sunday_rate) || Number(drvRates.mon_fri_rate) || 18.00;
-      if (day === 6) return Number(drvRates.sat_rate ?? drvRates.saturday_rate) || Number(drvRates.mon_fri_rate) || 17.00;
+      if (day === 0) return Number(drvRates.sunday_rate ?? drvRates.sun_rate) || Number(drvRates.mon_fri_rate) || 18.00;
+      if (day === 6) return Number(drvRates.saturday_rate ?? drvRates.sat_rate) || Number(drvRates.mon_fri_rate) || 17.00;
       return Number(drvRates.mon_fri_rate) || 16.00;
     };
 
@@ -1708,8 +1708,8 @@ export default function App() {
       // Otherwise, fall back to live profile logic
       if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
       if (isFixedRate && drvRate.fixed_rate) return Number(drvRate.fixed_rate);
-      if (day === 0) return Number(drvRate.sun_rate ?? drvRate.sunday_rate) || Number(drvRate.mon_fri_rate) || 18.00;
-      if (day === 6) return Number(drvRate.sat_rate ?? drvRate.saturday_rate) || Number(drvRate.mon_fri_rate) || 17.00;
+      if (day === 0) return Number(drvRate.sunday_rate ?? drvRate.sun_rate) || Number(drvRate.mon_fri_rate) || 18.00;
+      if (day === 6) return Number(drvRate.saturday_rate ?? drvRate.sat_rate) || Number(drvRate.mon_fri_rate) || 17.00;
       return Number(drvRate.mon_fri_rate) || 16.00;
     };
 
