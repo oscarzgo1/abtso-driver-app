@@ -1745,31 +1745,34 @@ export default function App() {
   };
 
   const getShiftFinancials = (s: Shift) => {
-    // 1. Determine if this shift has a locked historical snapshot.
-    // ANY completed shift with stored pay data is frozen — live rate changes must NOT rewrite it.
+    // 1. Determine if this shift has a LOCKED historical snapshot.
+    // We only consider it historically locked if there's a custom explicit pay override, 
+    // NOT just because it has a generic base rate which might be stale.
     const hasStoredPay = s.total_pay !== null && s.total_pay !== undefined;
-    const hasStoredRate = Boolean(s.effective_rate || s.base_hourly_rate);
-    const hasHistoricalSnapshot = s.status === 'completed' && (hasStoredPay || hasStoredRate);
+    const hasHistoricalSnapshot = s.status === 'completed' && hasStoredPay;
 
+    // 2. Resolve the Rate Source
+    const drvRate = hasHistoricalSnapshot 
+      ? null 
+      : (employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver);
+
+    // Extract raw numbers safely
+    const historicalTotalPay = hasStoredPay ? Number(s.total_pay) : null;
     const storedNoAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
     const storedExtras = Number(s.extras_amount) || 0;
-    const historicalTotalPay = hasStoredPay ? Number(s.total_pay) : null;
     const historicalBasePay = historicalTotalPay !== null ? (historicalTotalPay - storedNoAmt - storedExtras) : null;
-    const historicalRateValue = Number(s.effective_rate) || Number(s.base_hourly_rate) || 0;
 
-    // 1. Is it historically fixed? (Check DB column explicitly, fallback to math logic to heal old shifts)
+    // Determine historical rate by reverse math if total pay exists
+    const reverseEngineeredRate = (historicalBasePay !== null && s.total_hours) ? (historicalBasePay / s.total_hours) : null;
+    const historicalRateValue = reverseEngineeredRate || Number(s.effective_rate) || Number(s.base_hourly_rate) || 0;
+
+    // SMART DETECTION: Is it fixed?
     const isHistoricallyFixed = hasHistoricalSnapshot && (
       (s as any).rate_type === 'Fixed Shift Rate (Day Rate)' || 
       (s as any).rate_type === 'Fixed' || 
       historicalRateValue > 35 ||
       (historicalBasePay !== null && s.total_hours && Math.abs(historicalBasePay - (Number(s.total_hours) * historicalRateValue)) > 5)
     );
-
-    // 2. Resolve the Rate Source
-    // Only active / ongoing shifts pick up the live driver profile.
-    const drvRate = hasHistoricalSnapshot 
-      ? null 
-      : (employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver);
 
     const isFixedRate = isHistoricallyFixed || Boolean(drvRate?.rate_type && (
       drvRate.rate_type.toLowerCase().includes('fixed') || 
@@ -1785,25 +1788,19 @@ export default function App() {
 
     // 3. Rate determination logic
     const getRateForDay = (day: number) => {
-      // If we have a historical snapshot on the shift, ALWAYS use that hardcoded value
-      if (hasHistoricalSnapshot) {
-        // If it's a fixed shift historically, display the flat gross pay as the "rate"
-        if (isHistoricallyFixed) return historicalBasePay !== null ? historicalBasePay : historicalRateValue;
-        return historicalRateValue || 16.00;
+      // If historically fixed, return the flat pay
+      if (hasHistoricalSnapshot && isHistoricallyFixed) return historicalBasePay !== null ? historicalBasePay : historicalRateValue;
+
+      // Use explicit profile rates based strictly on the day of the week
+      if (drvRate) {
+        if (isFixedRate) return Number(drvRate.fixed_rate) || Number((drvRate as any).hourly_rate) || Number(drvRate.mon_fri_rate) || 16.00;
+        if (day === 0) return Number(drvRate.sunday_rate)   || Number(drvRate.sun_rate)  || Number(drvRate.mon_fri_rate) || 18.00;
+        if (day === 6) return Number(drvRate.saturday_rate) || Number(drvRate.sat_rate)  || Number(drvRate.mon_fri_rate) || 17.00;
+        return Number(drvRate.mon_fri_rate) || 16.00;
       }
-
-      if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
-
-      // For Fixed rate type: ALWAYS return the flat shift amount — use hourly_rate as fallback
-      // if fixed_rate column was not saved due to schema cache (tier-3 saves hourly_rate)
-      if (isFixedRate) {
-        return Number(drvRate.fixed_rate) || Number((drvRate as any).hourly_rate) || Number(drvRate.mon_fri_rate) || 16.00;
-      }
-
-      // STRICTLY resolve from exact Supabase column names — sunday_rate / saturday_rate first
-      if (day === 0) return Number(drvRate.sunday_rate)   || Number(drvRate.sun_rate)  || Number(drvRate.mon_fri_rate) || 18.00;
-      if (day === 6) return Number(drvRate.saturday_rate) || Number(drvRate.sat_rate)  || Number(drvRate.mon_fri_rate) || 17.00;
-      return Number(drvRate.mon_fri_rate) || 16.00;
+      
+      // Fallback to absolute DB values only if no profile exists
+      return historicalRateValue || 16.00;
     };
 
     const startRateVal = getRateForDay(startDay);
