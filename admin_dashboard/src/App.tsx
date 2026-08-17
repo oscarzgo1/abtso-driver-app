@@ -1485,13 +1485,15 @@ export default function App() {
     const parsedSat = parseFloat(editSatRate) || 17.00;
     const parsedSun = parseFloat(editSunRate) || 18.00;
 
-    // CRITICAL: We update the 'drivers' table with specific overrides (Hourly and Fixed).
+    // CRITICAL: Update drivers table. Keep hourly cols populated (non-null)
+    // so the DB always has readable rate data regardless of schema cache state.
     const driverPayload: any = {
       rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
       fixed_rate: isFixed ? parsedFixed : null,
-      mon_fri_rate: isFixed ? null : parsedMonFri,
-      saturday_rate: isFixed ? null : parsedSat,
-      sunday_rate: isFixed ? null : parsedSun,
+      // Keep hourly fields populated always — display logic uses rate_type to decide rendering
+      mon_fri_rate: parsedMonFri,
+      saturday_rate: parsedSat,
+      sunday_rate: parsedSun,
       hourly_rate: isFixed ? parsedFixed : parsedMonFri,
       agency_name: editAgencyName || 'Direct'
     };
@@ -1550,18 +1552,17 @@ export default function App() {
 
       let { data, error } = await query.select();
 
-      // Progressive self-healing fallback if any column is missing from schema cache in drivers table
+      // Progressive self-healing fallback — never silently drop fixed_rate
       if (error && error.message.includes('schema cache')) {
-        console.warn("Schema cache error encountered on full payload:", error.message);
-        
-        // Clone payload and purge failing column(s)
+        console.warn("Schema cache error on full driver payload:", error.message);
+
         const resilientPayload = { ...driverPayload };
-        if (error.message.includes("'agency_name'")) delete resilientPayload.agency_name;
-        if (error.message.includes("'mon_fri_rate'")) delete resilientPayload.mon_fri_rate;
-        if (error.message.includes("'saturday_rate'")) delete resilientPayload.saturday_rate;
-        if (error.message.includes("'sunday_rate'")) delete resilientPayload.sunday_rate;
-        if (error.message.includes("'fixed_rate'")) delete resilientPayload.fixed_rate;
-        if (error.message.includes("'rate_type'")) delete resilientPayload.rate_type;
+        if (error.message.includes("'agency_name'"))    delete resilientPayload.agency_name;
+        if (error.message.includes("'mon_fri_rate'"))   delete resilientPayload.mon_fri_rate;
+        if (error.message.includes("'saturday_rate'"))  delete resilientPayload.saturday_rate;
+        if (error.message.includes("'sunday_rate'"))    delete resilientPayload.sunday_rate;
+        if (error.message.includes("'rate_type'"))      delete resilientPayload.rate_type;
+        // NOTE: fixed_rate is NEVER deleted from resilientPayload — it is the key data
 
         const retryRes = await supabase!
           .from('drivers')
@@ -1572,20 +1573,15 @@ export default function App() {
         data = retryRes.data;
         error = retryRes.error;
 
-        // Secondary fallback to basic rate payload (hourly_rate & rate_type) if still errored
-        if (error && error.message.includes('schema cache')) {
-          const basicPayload: any = {
-            rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
-            hourly_rate: isFixed ? parsedFixed : parsedMonFri
-          };
-          const basicRes = await supabase!
+        // If fixed_rate itself fails schema cache, do a dedicated single-column save
+        if (error && error.message.includes("'fixed_rate'") && isFixed) {
+          const fixedOnlyRes = await supabase!
             .from('drivers')
-            .update(basicPayload)
+            .update({ rate_type: 'Fixed Shift Rate (Day Rate)', hourly_rate: parsedFixed })
             .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
             .select();
-
-          data = basicRes.data;
-          error = basicRes.error;
+          data = fixedOnlyRes.data;
+          error = fixedOnlyRes.error;
         }
       }
 
@@ -1601,7 +1597,28 @@ export default function App() {
         return;
       }
 
-      // Recalculate shifts pay
+      // Snapshot current rate onto all COMPLETED shifts for this driver so history is preserved
+      // This ensures historical pay calculations are never altered by future rate changes
+      try {
+        const snapshotPayload: any = {
+          rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
+        };
+        if (isFixed) {
+          snapshotPayload.effective_rate = parsedFixed;
+        } else {
+          snapshotPayload.base_hourly_rate = parsedMonFri;
+        }
+        // Stamp all completed shifts for this driver that don't yet have a snapshot
+        await supabase!
+          .from('shifts')
+          .update(snapshotPayload)
+          .eq('driver_id', primaryId)
+          .eq('status', 'completed')
+          .is('effective_rate', null)
+          .is('base_hourly_rate', null);
+      } catch (_) {}
+
+      // Recalculate active/future shifts pay
       try {
         await supabase!.rpc('recalculate_driver_shifts', { p_driver_id: primaryId });
       } catch (_) {}
@@ -1683,12 +1700,14 @@ export default function App() {
   };
 
   const getShiftFinancials = (s: Shift) => {
-    // 1. Determine if this shift has historical snapshot data saved directly on the shift record
-    // If the shift is completed and has a stored effective rate/base rate or total pay, we use that to prevent historical rewriting.
-    const hasHistoricalSnapshot = s.status === 'completed' && Boolean(s.effective_rate || s.base_hourly_rate || (s.total_pay !== null && s.total_pay !== undefined));
+    // 1. Determine if this shift has a locked historical snapshot.
+    // ANY completed shift with stored pay data is frozen — live rate changes must NOT rewrite it.
+    const hasStoredPay = s.total_pay !== null && s.total_pay !== undefined;
+    const hasStoredRate = Boolean(s.effective_rate || s.base_hourly_rate);
+    const hasHistoricalSnapshot = s.status === 'completed' && (hasStoredPay || hasStoredRate);
 
     // 2. Resolve the Rate Source
-    // We use the live profile ONLY IF there's no snapshot, or if the shift is active
+    // Only active / ongoing shifts pick up the live driver profile.
     const drvRate = hasHistoricalSnapshot 
       ? null 
       : (employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver);
