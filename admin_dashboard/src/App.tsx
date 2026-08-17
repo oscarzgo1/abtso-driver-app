@@ -1601,6 +1601,9 @@ export default function App() {
           rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
           fixed_rate: isFixed ? parsedFixed : null,
           hourly_rate: isFixed ? parsedFixed : parsedMonFri,
+          mon_fri_rate: parsedMonFri,
+          saturday_rate: parsedSat,
+          sunday_rate: parsedSun
         };
 
         const tier2Res = await supabase!
@@ -1615,10 +1618,15 @@ export default function App() {
         if (error && error.message.includes('schema cache')) {
           console.warn('Tier-2 schema cache error:', error.message, '— retrying with absolute minimum');
 
-          // Tier 3: Absolute minimum — only hourly_rate (guaranteed legacy column)
+          // Tier 3: Absolute minimum fallback
           const tier3Res = await supabase!
             .from('drivers')
-            .update({ hourly_rate: isFixed ? parsedFixed : parsedMonFri })
+            .update({ 
+              hourly_rate: isFixed ? parsedFixed : parsedMonFri,
+              mon_fri_rate: parsedMonFri,
+              saturday_rate: parsedSat,
+              sunday_rate: parsedSun
+            })
             .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
             .select();
 
