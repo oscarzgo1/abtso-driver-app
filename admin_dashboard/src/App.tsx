@@ -456,34 +456,26 @@ export default function App() {
       if (drvs && activeRole === 'payroll_admin') {
         const ratesMap: Record<string, EmployeeRate> = {};
 
-        // 1. Fetch from employee_rates table if exists
-        try {
-          const { data: ratesRes } = await supabase!.from('employee_rates').select('*');
-          if (ratesRes) {
-            ratesRes.forEach((r: any) => { 
-              if (r.driver_id) {
-                ratesMap[r.driver_id] = r;
-              }
-            });
-          }
-        } catch (_) {}
-
-        // 2. Combine with drivers table (overriding with drivers fields if present)
         drvs.forEach((d: any) => {
-          const existing = ratesMap[d.id] || ratesMap[d.driver_id] || {};
-          const rateTypeVal = d.rate_type === 'Fixed Shift Rate (Day Rate)' ? d.rate_type : (d.rate_type === 'Hourly' ? 'Hourly' : (d.rate_type && d.rate_type.toLowerCase().includes('fixed') ? 'Fixed Shift Rate (Day Rate)' : 'Hourly'));
+          const rateTypeVal = d.rate_type === 'Fixed Shift Rate (Day Rate)' || (d.rate_type && d.rate_type.toLowerCase().includes('fixed'))
+            ? 'Fixed Shift Rate (Day Rate)' 
+            : 'Hourly';
+
+          const baseHourly = Number(d.mon_fri_rate ?? d.hourly_rate) || 16.00;
+          const satHourly = Number(d.saturday_rate ?? d.sat_rate) || (baseHourly + 1.00);
+          const sunHourly = Number(d.sunday_rate ?? d.sun_rate) || (baseHourly + 2.00);
 
           const mappedRate: EmployeeRate = {
             id: d.id,
             driver_id: d.id,
             rate_type: rateTypeVal,
-            fixed_rate: d.fixed_rate ?? existing.fixed_rate ?? null,
-            mon_fri_rate: Number(d.mon_fri_rate ?? d.hourly_rate ?? existing.mon_fri_rate) || 16.00,
-            sat_rate: Number(d.saturday_rate ?? d.sat_rate ?? existing.sat_rate) || 17.00,
-            sun_rate: Number(d.sunday_rate ?? d.sun_rate ?? existing.sun_rate) || 18.00,
-            saturday_rate: Number(d.saturday_rate ?? d.sat_rate ?? existing.sat_rate) || 17.00,
-            sunday_rate: Number(d.sunday_rate ?? d.sun_rate ?? existing.sun_rate) || 18.00,
-            agency_name: d.agency_name || existing.agency_name || 'Direct',
+            fixed_rate: d.fixed_rate ? Number(d.fixed_rate) : null,
+            mon_fri_rate: baseHourly,
+            sat_rate: satHourly,
+            sun_rate: sunHourly,
+            saturday_rate: satHourly,
+            sunday_rate: sunHourly,
+            agency_name: d.agency_name || 'Direct',
           };
           ratesMap[d.id] = mappedRate;
           if (d.driver_id) {
@@ -1438,6 +1430,7 @@ export default function App() {
       mon_fri_rate: isFixed ? null : parsedMonFri,
       saturday_rate: isFixed ? null : parsedSat,
       sunday_rate: isFixed ? null : parsedSun,
+      hourly_rate: isFixed ? parsedFixed : parsedMonFri,
       agency_name: editAgencyName || 'Direct'
     };
 
@@ -1495,11 +1488,20 @@ export default function App() {
 
       let { data, error } = await query.select();
 
-      // Progressive fallback if fixed_rate column is missing from schema cache in drivers table
+      // Progressive fallback if custom columns are missing from schema cache in drivers table
       if (error && error.message.includes('schema cache')) {
+        console.warn("Schema cache error on full payload, attempting standard payload fallback:", error.message);
+        const stdPayload: any = {
+          rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
+          hourly_rate: isFixed ? parsedFixed : parsedMonFri,
+          agency_name: editAgencyName || 'Direct'
+        };
+        if (isFixed) {
+          stdPayload.fixed_rate = parsedFixed;
+        }
         const fbRes = await supabase!
           .from('drivers')
-          .update({ rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly' })
+          .update(stdPayload)
           .or(`id.eq.${primaryId},driver_id.eq.${driverCode}`)
           .select();
         data = fbRes.data;
