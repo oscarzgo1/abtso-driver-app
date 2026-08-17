@@ -471,7 +471,8 @@ export default function App() {
         // 2. Combine with drivers table (overriding with drivers fields if present)
         drvs.forEach((d: any) => {
           const existing = ratesMap[d.id] || ratesMap[d.driver_id] || {};
-          const rateTypeVal = d.rate_type || existing.rate_type || 'Hourly';
+          const rateTypeVal = d.rate_type === 'Fixed Shift Rate (Day Rate)' ? d.rate_type : (d.rate_type === 'Hourly' ? 'Hourly' : (d.rate_type && d.rate_type.toLowerCase().includes('fixed') ? 'Fixed Shift Rate (Day Rate)' : 'Hourly'));
+
           const mappedRate: EmployeeRate = {
             id: d.id,
             driver_id: d.id,
@@ -1430,11 +1431,14 @@ export default function App() {
     const parsedSat = parseFloat(editSatRate) || 17.00;
     const parsedSun = parseFloat(editSunRate) || 18.00;
 
-    // CRITICAL: We only update the 'drivers' table with the specific overrides.
-    // DO NOT touch 'employee_rates' or 'rate_configurations' here.
+    // CRITICAL: We update the 'drivers' table with specific overrides (Hourly and Fixed).
     const driverPayload: any = {
       rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
-      fixed_rate: isFixed ? parsedFixed : null
+      fixed_rate: isFixed ? parsedFixed : null,
+      mon_fri_rate: isFixed ? null : parsedMonFri,
+      saturday_rate: isFixed ? null : parsedSat,
+      sunday_rate: isFixed ? null : parsedSun,
+      agency_name: editAgencyName || 'Direct'
     };
 
     const localDisplayRate: EmployeeRate = {
@@ -2488,23 +2492,23 @@ export default function App() {
                               className="select-field"
                               style={{ padding: '4px 8px', fontSize: '12px' }}
                               value={editRateType || 'Hourly'}
-                              onChange={(e) => setEditRateType(e.target.value as any)}
+                              onChange={(e) => setEditRateType(e.target.value)}
                             >
                               <option value="Hourly">Hourly</option>
-                              <option value="Fixed">Fixed Shift Rate (Day Rate)</option>
+                              <option value="Fixed Shift Rate (Day Rate)">Fixed Shift Rate (Day Rate)</option>
                             </select>
                           ) : isFixedRate ? (
                             <span className="badge badge-primary text-xs font-bold" style={{ backgroundColor: '#E0E7FF', color: '#3730A3', border: '1px solid #C7D2FE', padding: '4px 8px', borderRadius: '4px', fontSize: '12px' }}>
-                              Fixed Shift
+                              FIXED SHIFT
                             </span>
                           ) : (
-                            <span style={{ color: '#4B5563', fontSize: '13px' }}>
-                              {currentRate.rate_type || 'Hourly'}
+                            <span style={{ color: '#4B5563', fontSize: '13px', fontWeight: 'bold' }}>
+                              HOURLY
                             </span>
                           )}
                         </td>
                         {isEditing ? (
-                          editRateType === 'Fixed' ? (
+                          (editRateType === 'Fixed' || editRateType === 'Fixed Shift Rate (Day Rate)') ? (
                             <td colSpan={3} style={{ padding: '8px 12px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                 <label style={{ fontSize: '11px', fontWeight: 'bold', color: '#4338CA', whiteSpace: 'nowrap' }}>Flat Rate per Shift (£):</label>
