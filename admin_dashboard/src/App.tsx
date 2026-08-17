@@ -1605,9 +1605,15 @@ export default function App() {
     const startDay = startObj.getDay();
     const endDay = endObj ? endObj.getDay() : startDay;
 
+    const isFixedRate = Boolean(drvRate?.rate_type && (
+      drvRate.rate_type.toLowerCase().includes('fixed') || 
+      drvRate.rate_type.toLowerCase().includes('day') || 
+      drvRate.rate_type.toLowerCase().includes('flat')
+    ));
+
     const getRateForDay = (day: number) => {
       if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
-      if (drvRate.fixed_rate) return Number(drvRate.fixed_rate);
+      if (isFixedRate && drvRate.fixed_rate) return Number(drvRate.fixed_rate);
       if (day === 0) return Number(drvRate.sun_rate ?? drvRate.sunday_rate) || Number(drvRate.mon_fri_rate) || 18.00;
       if (day === 6) return Number(drvRate.sat_rate ?? drvRate.saturday_rate) || Number(drvRate.mon_fri_rate) || 17.00;
       return Number(drvRate.mon_fri_rate) || 16.00;
@@ -1616,16 +1622,10 @@ export default function App() {
     const startRateVal = getRateForDay(startDay);
     const endRateVal = getRateForDay(endDay);
 
-    const isFixedRate = Boolean(drvRate?.fixed_rate) || Boolean(drvRate?.rate_type && (
-      drvRate.rate_type.toLowerCase().includes('fixed') || 
-      drvRate.rate_type.toLowerCase().includes('day') || 
-      drvRate.rate_type.toLowerCase().includes('flat')
-    ));
-
     let basePay = 0;
 
     if (isFixedRate) {
-      // Flat rate per shift based on fixed_rate or start day, completely bypassing hourly multiplication
+      // Flat rate per shift based on fixed_rate OR fallback to start day rate if fixed_rate is accidentally null
       basePay = Number(drvRate?.fixed_rate) || startRateVal;
     } else {
       // Hourly Split Shift calculation
