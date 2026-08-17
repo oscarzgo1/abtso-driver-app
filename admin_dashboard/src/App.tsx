@@ -296,7 +296,6 @@ export default function App() {
     'drv-3': { driver_id: 'drv-3', rate_type: 'Fixed weekly', mon_fri_rate: 18.00, sat_rate: 18.00, sun_rate: 18.00, agency_name: 'Direct' },
   });
   const [reportAgencyFilter, setReportAgencyFilter] = useState('all');
-  const [localExtrasOverride, setLocalExtrasOverride] = useState<Record<string, { extras_amount: number; extras_note: string | null; total_pay?: number }>>({});
 
   // Rate Editing state
   const [editingRateDriverId, setEditingRateDriverId] = useState<string | null>(null);
@@ -502,18 +501,15 @@ export default function App() {
         .select('*, drivers(full_name, driver_id), depots(name)')
         .order('start_time', { ascending: false });
 
-      const mappedShifts = (sfts || []).map((s: any) => {
-        const localExtra = localExtrasOverride[s.id];
-        return {
-          ...s,
-          driver_name: s.drivers?.full_name || s.employee?.name || s.driver?.name || s.driver_name || 'Driver',
-          driver_code: s.drivers?.driver_id || s.driver_code || '',
-          depot_name: s.depots?.name,
-          extras_amount: s.extras_amount ?? localExtra?.extras_amount ?? null,
-          extras_note: s.extras_note ?? localExtra?.extras_note ?? null,
-          total_pay: s.total_pay ?? localExtra?.total_pay ?? null
-        };
-      });
+      const mappedShifts = (sfts || []).map((s: any) => ({
+        ...s,
+        driver_name: s.drivers?.full_name || s.employee?.name || s.driver?.name || s.driver_name || 'Driver',
+        driver_code: s.drivers?.driver_id || s.driver_code || '',
+        depot_name: s.depots?.name,
+        extras_amount: s.extras_amount ?? null,
+        extras_note: s.extras_note ?? null,
+        total_pay: s.total_pay ?? null
+      }));
       setShifts(mappedShifts);
 
       // Fetch Active Idle Alerts
@@ -1469,66 +1465,35 @@ export default function App() {
     }
 
     const targetShift = shifts.find(s => s.id === shiftId);
-    const { grossPay: calculatedGrossPay } = targetShift 
-      ? getShiftFinancials({ ...targetShift, extras_amount: amount })
-      : { grossPay: 0 };
+    if (!targetShift) return;
 
-    // 1. Prepare candidates
+    // Inject a hidden property so getShiftFinancials knows how to offset the historical total
+    const simulatedShift = { 
+        ...targetShift, 
+        extras_amount: amount,
+        _old_extras: targetShift.extras_amount || 0 
+    };
+
+    const { grossPay: calculatedGrossPay } = getShiftFinancials(simulatedShift as any);
+
     const extrasPayload: any = {
       extras_amount: amount,
       extras_note: noteInput,
       total_pay: calculatedGrossPay
     };
 
-    // 2. Persist in local React state and localExtrasOverride map for zero-loss UI rendering
-    setShifts(prev => prev.map(s => s.id === shiftId ? {
-      ...s,
-      extras_amount: amount,
-      extras_note: noteInput,
-      total_pay: calculatedGrossPay
-    } : s));
-
-    setLocalExtrasOverride(prev => ({
-      ...prev,
-      [shiftId]: { extras_amount: amount, extras_note: noteInput, total_pay: calculatedGrossPay }
-    }));
-
-    if (isMockMode) return;
-
-    // 3. Save to DB with self-healing fallback
-    let { error } = await supabase!
+    // Update DB explicitly. Do NOT silently drop columns. If they are missing, it should hard fail.
+    const { error } = await supabase!
       .from('shifts')
       .update(extrasPayload)
       .eq('id', shiftId);
 
-    // Dynamic self-healing fallback if any column is uncached in schema
-    if (error && error.message.includes('schema cache')) {
-      console.warn("Schema cache error on extras, attempting resilient fallback:", error.message);
-      const resilientPayload = { ...extrasPayload };
-      if (error.message.includes("'extras_note'")) delete resilientPayload.extras_note;
-      if (error.message.includes("'extras_amount'")) delete resilientPayload.extras_amount;
-
-      const retryRes = await supabase!
-        .from('shifts')
-        .update(resilientPayload)
-        .eq('id', shiftId);
-
-      error = retryRes.error;
-
-      // Secondary fallback to basic total_pay update if still errored
-      if (error && error.message.includes('schema cache')) {
-        const basicRes = await supabase!
-          .from('shifts')
-          .update({ total_pay: calculatedGrossPay })
-          .eq('id', shiftId);
-        error = basicRes.error;
-      }
-    }
-
     if (error) {
-       console.error("Failed to save extras to DB:", error.message);
+       alert("Database Error saving extras: " + error.message + "\n\nEnsure 'extras_amount' and 'extras_note' columns exist in the 'shifts' table.");
+    } else {
+       // Force a complete hard refresh from the server to guarantee UI sync
+       await loadData();
     }
-    await loadData();
   };
 
   // ── Rates & Night Out Handlers ────────────────────────────────
@@ -1836,10 +1801,18 @@ export default function App() {
     const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
     const extrasAmt = Number(s.extras_amount) || 0;
     
-    // Use historical total_pay if available and valid, otherwise calculate live
-    const grossPay = (hasHistoricalSnapshot && s.total_pay !== null && s.total_pay !== undefined)
-      ? Number(s.total_pay) 
-      : Number((basePay + noAmt + extrasAmt).toFixed(2));
+    // Use historical total_pay if available, BUT always ensure current extras are layered on top
+    // because extras can be edited independently of the locked historical base pay.
+    let grossPay = 0;
+    
+    if (hasHistoricalSnapshot && s.total_pay !== null && s.total_pay !== undefined) {
+        // If we are injecting a NEW extra amount during a simulation (like in handleEditExtras), 
+        // we must take the locked historical total, subtract the OLD extras, and add the NEW extras.
+        // For standard rendering, this just resolves to the stored total_pay.
+        grossPay = Number(s.total_pay) - (Number((s as any)._old_extras) || 0) + extrasAmt; 
+    } else {
+        grossPay = Number((basePay + noAmt + extrasAmt).toFixed(2));
+    }
 
     return { 
       rate: startRateVal, 
@@ -3044,8 +3017,21 @@ export default function App() {
                             (shift as any).has_requested_night_out === true || 
                             shift.night_out_status === 'pending';
 
+                          const hasNightOut = noAmount > 0 || isRequested;
+                          const hasExtras = Boolean(shift.extras_amount && shift.extras_amount !== 0);
+
+                          // Determine row background color based on priority
+                          let rowStyle: React.CSSProperties = {};
+                          if (isFlagged) {
+                            rowStyle = { backgroundColor: 'rgba(239, 68, 68, 0.08)' }; // Red tint
+                          } else if (hasNightOut) {
+                            rowStyle = { backgroundColor: 'rgba(245, 158, 11, 0.08)' }; // Orange tint
+                          } else if (hasExtras) {
+                            rowStyle = { backgroundColor: 'rgba(59, 130, 246, 0.08)' }; // Blue tint
+                          }
+
                           return (
-                            <tr key={shift.id}>
+                            <tr key={shift.id} style={rowStyle}>
                               <td className="font-bold text-primary">
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                   <span>{shift.driver_name} ({shift.driver_code})</span>
