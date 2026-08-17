@@ -553,15 +553,16 @@ export default function App() {
         .from('live_driver_locations')
         .select('*');
 
-      // 2. Fetch Active Shifts for fallback (drivers who haven't emitted telemetry pings yet)
+      // 2. Fetch Active Shifts without end_time for fallback
       const { data: activeShifts } = await supabase!
         .from('shifts')
         .select('*, drivers(full_name, driver_id)')
-        .eq('status', 'active');
+        .eq('status', 'active')
+        .is('end_time', null);
 
       const locsMap = new Map<string, LiveLocation>();
 
-      // Populate from live_driver_locations view
+      // Populate from live_driver_locations view (filtering out drivers who have clocked out with end_time)
       const parseUtcTimestamp = (ts: string | null | undefined): number => {
         if (!ts) return 0;
         const str = ts.toString().trim();
@@ -571,6 +572,16 @@ export default function App() {
 
       if (viewLocs && viewLocs.length > 0) {
         for (const item of viewLocs) {
+          // Check if driver has an active shift without end_time
+          const drvLatestShift = (mappedShifts || []).find((s: any) => 
+            s.driver_id === item.driver_id || s.driver_id === item.driver_code || s.driver_code === item.driver_code
+          );
+
+          // If latest shift has an end_time or status is completed, the driver IS CLOCKED OUT! Skip!
+          if (drvLatestShift && (drvLatestShift.end_time || drvLatestShift.status === 'completed')) {
+            continue;
+          }
+
           const pingTime = parseUtcTimestamp(item.recorded_at);
           const now = Date.now();
           const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
@@ -586,15 +597,16 @@ export default function App() {
             driver_code: item.emp_code || 'DRV',
             latitude: item.latitude,
             longitude: item.longitude,
-            speed_mph: (item.speed || 0) * 2.23694, // Convert m/s to mph
+            speed_mph: (item.speed || 0) * 2.23694,
             last_ping: item.recorded_at,
             status: currentStatus,
           });
         }
       }
 
-      // Fallback for any active drivers not captured by the view (e.g. initial clock-in prior to first ping)
+      // Fallback for active drivers without end_time not captured by view
       for (const shift of activeShifts || []) {
+        if (shift.end_time || shift.status === 'completed') continue;
         if (!locsMap.has(shift.driver_id)) {
           const { data: lastLoc } = await supabase!
             .from('gps_locations')
@@ -2455,9 +2467,9 @@ export default function App() {
                 <tbody>
                   {employees.map(drv => {
                     // Find latest shift for time tracking
-                    const driverShifts = shifts.filter(s => s.driver_id === drv.id);
+                    const driverShifts = shifts.filter(s => s.driver_id === drv.id || s.driver_id === drv.driver_id);
                     const latestShift = driverShifts.length > 0 ? driverShifts[0] : null;
-                    const activeShift = latestShift?.status === 'active' ? latestShift : null;
+                    const activeShift = (latestShift && !latestShift.end_time && latestShift.status !== 'completed') ? latestShift : null;
 
                     const formatTime = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                     const formatDate = (ts: string) => new Date(ts).toLocaleDateString([], { day: '2-digit', month: '2-digit' });
