@@ -1416,17 +1416,26 @@ export default function App() {
       newAllowance = amount;
     } // If 0 or invalid, it stays null (removes the allowance)
 
-    // Calculate updated total pay
     const targetShift = shifts.find(s => s.id === shiftId);
-    const baseHours = targetShift?.total_hours || 0;
-    const baseRate = targetShift?.effective_rate || targetShift?.base_hourly_rate || 16.00;
-    const newTotalPay = Number(((baseHours * baseRate) + (newAllowance || 0)).toFixed(2));
+    if (!targetShift) return;
 
-    // Update using established schema columns (night_out_amount & night_out_status)
+    let calculatedGrossPay = 0;
+    const hasStoredPay = targetShift.status === 'completed' && targetShift.total_pay !== null && targetShift.total_pay !== undefined;
+
+    if (hasStoredPay) {
+        // Pure Math: (Current Total) - (Old Allowance) + (New Allowance)
+        const oldNoAmt = Number(targetShift.night_out_allowance ?? targetShift.night_out_amount) || 0;
+        calculatedGrossPay = Number((Number(targetShift.total_pay) - oldNoAmt + (newAllowance || 0)).toFixed(2));
+    } else {
+        // For active shifts, let the engine calculate it
+        const simulatedShift = { ...targetShift, night_out_allowance: newAllowance, night_out_amount: newAllowance };
+        calculatedGrossPay = getShiftFinancials(simulatedShift as any).grossPay;
+    }
+
     const updatePayload: any = {
       night_out_amount: newAllowance ?? 0,
       night_out_status: newAllowance ? 'approved' : 'none',
-      total_pay: newTotalPay
+      total_pay: calculatedGrossPay
     };
 
     let { error } = await supabase!
@@ -1447,7 +1456,7 @@ export default function App() {
     if (error) {
       alert("Failed to update Night Out allowance: " + error.message);
     } else {
-      loadData(); // Refresh UI and recalculate payroll
+      await loadData(); // Refresh UI and recalculate payroll
     }
   };
 
@@ -1467,14 +1476,18 @@ export default function App() {
     const targetShift = shifts.find(s => s.id === shiftId);
     if (!targetShift) return;
 
-    // Inject a hidden property so getShiftFinancials knows how to offset the historical total
-    const simulatedShift = { 
-        ...targetShift, 
-        extras_amount: amount,
-        _old_extras: targetShift.extras_amount || 0 
-    };
+    let calculatedGrossPay = 0;
+    const hasStoredPay = targetShift.status === 'completed' && targetShift.total_pay !== null && targetShift.total_pay !== undefined;
 
-    const { grossPay: calculatedGrossPay } = getShiftFinancials(simulatedShift as any);
+    if (hasStoredPay) {
+        // Pure Math: (Current Total) - (Old Extras) + (New Extras)
+        const oldExtras = Number(targetShift.extras_amount) || 0;
+        calculatedGrossPay = Number((Number(targetShift.total_pay) - oldExtras + amount).toFixed(2));
+    } else {
+        // For active shifts, let the engine calculate it from scratch
+        const simulatedShift = { ...targetShift, extras_amount: amount };
+        calculatedGrossPay = getShiftFinancials(simulatedShift as any).grossPay;
+    }
 
     const extrasPayload: any = {
       extras_amount: amount,
@@ -1482,17 +1495,16 @@ export default function App() {
       total_pay: calculatedGrossPay
     };
 
-    // Update DB explicitly. Do NOT silently drop columns. If they are missing, it should hard fail.
+    // Update DB
     const { error } = await supabase!
       .from('shifts')
       .update(extrasPayload)
       .eq('id', shiftId);
 
     if (error) {
-       alert("Database Error saving extras: " + error.message + "\n\nEnsure 'extras_amount' and 'extras_note' columns exist in the 'shifts' table.");
+       alert("Database Error saving extras: " + error.message);
     } else {
-       // Force a complete hard refresh from the server to guarantee UI sync
-       await loadData();
+       await loadData(); // Hard refresh to sync UI perfectly
     }
   };
 
@@ -1801,15 +1813,10 @@ export default function App() {
     const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
     const extrasAmt = Number(s.extras_amount) || 0;
     
-    // Use historical total_pay if available, BUT always ensure current extras are layered on top
-    // because extras can be edited independently of the locked historical base pay.
     let grossPay = 0;
-    
     if (hasHistoricalSnapshot && s.total_pay !== null && s.total_pay !== undefined) {
-        // If we are injecting a NEW extra amount during a simulation (like in handleEditExtras), 
-        // we must take the locked historical total, subtract the OLD extras, and add the NEW extras.
-        // For standard rendering, this just resolves to the stored total_pay.
-        grossPay = Number(s.total_pay) - (Number((s as any)._old_extras) || 0) + extrasAmt; 
+        // Trust the database completely. The total_pay already includes all extras and allowances.
+        grossPay = Number(s.total_pay);
     } else {
         grossPay = Number((basePay + noAmt + extrasAmt).toFixed(2));
     }
