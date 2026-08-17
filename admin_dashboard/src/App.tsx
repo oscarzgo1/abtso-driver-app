@@ -462,18 +462,22 @@ export default function App() {
             ? 'Fixed Shift Rate (Day Rate)'
             : 'Hourly';
 
-          // FORCE hard-parse exact Supabase column names — no additive fallbacks
           const baseHourly  = Number(d.mon_fri_rate)   || Number(d.hourly_rate)   || 16.00;
           const satHourly   = Number(d.saturday_rate)  || Number(d.sat_rate)      || 17.00;
           const sunHourly   = Number(d.sunday_rate)    || Number(d.sun_rate)      || 18.00;
+
+          // When rate type is Fixed, fixed_rate may be null if schema cache dropped it.
+          // Fall back to hourly_rate which tier-3 always saves correctly.
+          const fixedRateVal = rateTypeVal === 'Fixed Shift Rate (Day Rate)'
+            ? (Number(d.fixed_rate) || Number(d.hourly_rate) || null)
+            : (d.fixed_rate ? Number(d.fixed_rate) : null);
 
           const mappedRate: EmployeeRate = {
             id: d.id,
             driver_id: d.id,
             rate_type: rateTypeVal,
-            fixed_rate: d.fixed_rate ? Number(d.fixed_rate) : null,
+            fixed_rate: fixedRateVal,
             mon_fri_rate: baseHourly,
-            // Populate BOTH naming conventions so legacy components still resolve
             saturday_rate: satHourly,
             sunday_rate: sunHourly,
             sat_rate: satHourly,
@@ -1755,8 +1759,11 @@ export default function App() {
 
       if (!drvRate) return day === 0 ? 18.00 : day === 6 ? 17.00 : 16.00;
 
-      // Only return fixed_rate when the rate type is STRICTLY fixed
-      if (isFixedRate && drvRate.fixed_rate) return Number(drvRate.fixed_rate);
+      // For Fixed rate type: ALWAYS return the flat shift amount — use hourly_rate as fallback
+      // if fixed_rate column was not saved due to schema cache (tier-3 saves hourly_rate)
+      if (isFixedRate) {
+        return Number(drvRate.fixed_rate) || Number((drvRate as any).hourly_rate) || Number(drvRate.mon_fri_rate) || 16.00;
+      }
 
       // STRICTLY resolve from exact Supabase column names — sunday_rate / saturday_rate first
       if (day === 0) return Number(drvRate.sunday_rate)   || Number(drvRate.sun_rate)  || Number(drvRate.mon_fri_rate) || 18.00;
@@ -1770,7 +1777,11 @@ export default function App() {
     let basePay = 0;
 
     if (isFixedRate) {
-      basePay = Number(drvRate?.fixed_rate) || startRateVal;
+      // FLAT rate per shift — NEVER multiply by hours.
+      // Use hourly_rate as fallback if fixed_rate was not persisted by schema-cache tier-3 save.
+      basePay = Number(drvRate?.fixed_rate)
+        || Number((drvRate as any)?.hourly_rate)
+        || startRateVal;
     } else {
       // If shift is completed and has a hardcoded total pay snapshot, use it (unless we are manually editing extras right now)
       if (hasHistoricalSnapshot && s.total_pay !== null && s.total_pay !== undefined && !isFixedRate) {
