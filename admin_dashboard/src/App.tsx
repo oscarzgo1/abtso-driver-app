@@ -1663,14 +1663,14 @@ export default function App() {
 
     const filteredShifts = getFilteredShifts();
 
-    // 1. Build the aggregated summary data
+    // 1. Build normalized summary dictionary
     const summaryData: any = {};
     filteredShifts.forEach(shift => {
        const { noAmt, extrasAmt, liveHours, rate } = getShiftFinancials(shift);
        const id = shift.driver_id;
        if (!summaryData[id]) {
            summaryData[id] = {
-               driver_name: shift.driver_name || 'Driver',
+               driver_name: shift.driver_name || '',
                total_hours: 0,
                total_extras: 0,
                night_out_val: 0,
@@ -1679,11 +1679,13 @@ export default function App() {
            };
        }
        
-       summaryData[id].total_hours += (liveHours || 0);
+       const isOngoing = !shift.end_time && shift.status !== 'completed';
+       const calculatedLiveHours = isOngoing ? ((Date.now() - new Date(shift.start_time).getTime()) / (1000 * 60 * 60)) : (shift.total_hours || 0);
+       
+       summaryData[id].total_hours += (liveHours ?? calculatedLiveHours);
        summaryData[id].total_extras += extrasAmt;
        summaryData[id].night_out_val += noAmt;
        
-       // Store rate to calculate average/most common rate later
        const rateToUse = Number(shift.effective_rate) || Number(shift.base_hourly_rate) || Number(rate) || 0;
        if (rateToUse > 0) summaryData[id].rates.push(rateToUse);
 
@@ -1692,67 +1694,76 @@ export default function App() {
        }
     });
 
-    // 2. Read and inject data into the Excel file
+    // Helper function for flexible fuzzy name matching
+    const normalize = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
+
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array' });
-        
-        // We assume the main data is on the first sheet
+        const workbook = XLSX.read(data, { type: 'array', cellStyles: true });
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
         
-        // Convert to array of arrays for easy column manipulation
-        const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1:Z200');
         let matchCount = 0;
 
-        rows.forEach((row) => {
-           const cellA = row[0]; // Column A: Employee Name
-           if (typeof cellA === 'string' && cellA.trim().length > 0) {
-              const cleanName = cellA.trim().toLowerCase();
-              
-              // Try to find the driver in our calculated summary
-              const match: any = Object.values(summaryData).find((d: any) => 
-                d.driver_name.toLowerCase() === cleanName || 
-                cleanName.includes(d.driver_name.toLowerCase()) || 
-                d.driver_name.toLowerCase().includes(cleanName)
-              );
-              
-              if (match) {
-                 // Get average or primary rate
-                 let avgRate = '';
-                 if (match.rates.length > 0) {
-                    avgRate = (match.rates.reduce((a: number, b: number) => a + b, 0) / match.rates.length).toFixed(2);
-                 }
+        // Scan Column A (R0 to R_max)
+        for (let R = range.s.r; R <= range.e.r; ++R) {
+          const cellA_address = XLSX.utils.encode_cell({ r: R, c: 0 }); // Column A
+          const cellA = worksheet[cellA_address];
 
-                 // Inject values based on the template structure:
-                 // Col C (index 2): Shifts
-                 row[2] = match.shift_count;
-                 // Col E (index 4): Time (Hours)
-                 row[4] = Number(match.total_hours.toFixed(2));
-                 // Col F (index 5): p/h (Rate)
-                 row[5] = avgRate ? Number(avgRate) : '';
-                 // Col G (index 6): Extra (Extras + Night Outs)
-                 const totalExtraMoney = match.total_extras + match.night_out_val;
-                 if (totalExtraMoney !== 0) {
-                    row[6] = Number(totalExtraMoney.toFixed(2));
-                 }
+          if (cellA && cellA.v && typeof cellA.v === 'string') {
+            const rawCellVal = cellA.v.trim();
+            const normCellVal = normalize(rawCellVal);
 
-                 matchCount++;
-              }
-           }
-        });
+            if (!normCellVal) continue;
 
-        // Convert back to worksheet
-        const newWorksheet = XLSX.utils.aoa_to_sheet(rows);
-        workbook.Sheets[firstSheetName] = newWorksheet;
-        
-        // Trigger download
+            // Search in calculated summary with flexible name check
+            const matchedDriver: any = Object.values(summaryData).find((d: any) => {
+               const normDriver = normalize(d.driver_name);
+               if (normDriver === normCellVal) return true;
+               
+               // Check reversed First/Last order
+               const parts = d.driver_name.trim().split(/\s+/);
+               if (parts.length >= 2) {
+                  const reversed = normalize(`${parts[parts.length - 1]} ${parts.slice(0, -1).join(' ')}`);
+                  if (reversed === normCellVal) return true;
+               }
+               return false;
+            });
+
+            if (matchedDriver) {
+               let avgRate = 0;
+               if (matchedDriver.rates.length > 0) {
+                  avgRate = Number((matchedDriver.rates.reduce((a: number, b: number) => a + b, 0) / matchedDriver.rates.length).toFixed(2));
+               }
+
+               const totalExtraMoney = Number((matchedDriver.total_extras + matchedDriver.night_out_val).toFixed(2));
+
+               // Safely update specific cell values directly without breaking worksheet structure
+               const updateCell = (cIdx: number, val: any) => {
+                  const addr = XLSX.utils.encode_cell({ r: R, c: cIdx });
+                  if (!worksheet[addr]) worksheet[addr] = { t: 'n', v: val };
+                  else {
+                     worksheet[addr].v = val;
+                     worksheet[addr].t = typeof val === 'number' ? 'n' : 's';
+                  }
+               };
+
+               updateCell(2, matchedDriver.shift_count); // Col C: Shifts
+               updateCell(4, Number(matchedDriver.total_hours.toFixed(2))); // Col E: Hours
+               if (avgRate > 0) updateCell(5, avgRate); // Col F: Rate
+               if (totalExtraMoney !== 0) updateCell(6, totalExtraMoney); // Col G: Extra
+
+               matchCount++;
+            }
+          }
+        }
+
         XLSX.writeFile(workbook, `Filled_Payment_List_${new Date().toISOString().split('T')[0]}.xlsx`);
-        
-        alert(`Template Injection Complete!\nSuccessfully matched and filled data for ${matchCount} employees.`);
-        
+        alert(`Template Injection Complete!\nSuccessfully matched and injected data for ${matchCount} employees.`);
+
       } catch (error: any) {
         alert("Error processing Excel file: " + error.message);
       } finally {
