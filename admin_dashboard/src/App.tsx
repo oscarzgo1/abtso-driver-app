@@ -1903,6 +1903,16 @@ export default function App() {
       ? null 
       : (employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver);
 
+    const startObj = new Date(s.start_time);
+    const endObj = s.end_time ? new Date(s.end_time) : null;
+    const isOngoing = !s.end_time && s.status !== 'completed';
+
+    // CALCULATE LIVE HOURS FOR ONGOING SHIFTS
+    let liveOrTotalHours = s.total_hours || 0;
+    if (isOngoing) {
+      liveOrTotalHours = Math.max(0, (Date.now() - startObj.getTime()) / (1000 * 60 * 60));
+    }
+
     // Extract raw numbers safely
     const historicalTotalPay = hasStoredPay ? Number(s.total_pay) : null;
     const storedNoAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
@@ -1926,9 +1936,6 @@ export default function App() {
       drvRate.rate_type.toLowerCase().includes('day') || 
       drvRate.rate_type.toLowerCase().includes('flat')
     ));
-
-    const startObj = new Date(s.start_time);
-    const endObj = s.end_time ? new Date(s.end_time) : null;
     
     const startDay = startObj.getDay();
     const endDay = endObj ? endObj.getDay() : startDay;
@@ -1977,7 +1984,7 @@ export default function App() {
       } else {
         basePay = s.end_time 
           ? calculateSplitShiftPay(s.start_time, s.end_time, drvRate)
-          : (s.total_hours || 0) * startRateVal;
+          : liveOrTotalHours * startRateVal;
       }
     }
 
@@ -2003,7 +2010,8 @@ export default function App() {
       extrasAmt,
       extrasNote: s.extras_note,
       grossPay, 
-      agency: drvRate?.agency_name || 'Direct' 
+      agency: drvRate?.agency_name || 'Direct',
+      liveHours: liveOrTotalHours
     };
   };
 
@@ -2973,7 +2981,10 @@ export default function App() {
             const { grossPay } = getShiftFinancials(shift);
             return sum + grossPay;
           }, 0);
-          const totalHours = filteredShifts.reduce((sum, s) => sum + (s.total_hours || 0), 0);
+          const totalHours = filteredShifts.reduce((sum, s) => {
+            const { liveHours } = getShiftFinancials(s);
+            return sum + (liveHours || 0);
+          }, 0);
           const totalNightOutAmount = filteredShifts.reduce((sum, shift) => sum + (Number(shift.night_out_allowance ?? shift.night_out_amount) || 0), 0);
           const nightOutCount = filteredShifts.filter(shift => (Number(shift.night_out_allowance ?? shift.night_out_amount) || 0) > 0).length;
 
@@ -3222,7 +3233,7 @@ export default function App() {
                       {(() => {
                         const summaryData: any = {};
                         filteredShifts.forEach(shift => {
-                           const { grossPay, noAmt, extrasAmt } = getShiftFinancials(shift);
+                           const { grossPay, noAmt, extrasAmt, liveHours } = getShiftFinancials(shift);
                            const id = shift.driver_id;
                            if (!summaryData[id]) {
                                summaryData[id] = {
@@ -3236,7 +3247,7 @@ export default function App() {
                                    shift_count: 0
                                };
                            }
-                           summaryData[id].total_hours += (shift.total_hours || 0);
+                           summaryData[id].total_hours += liveHours;
                            summaryData[id].total_gross += grossPay;
                            summaryData[id].total_extras += extrasAmt;
                            summaryData[id].total_night_outs += (noAmt > 0 ? 1 : 0);
@@ -3317,7 +3328,8 @@ export default function App() {
                               isFixedRate,
                               noAmt: noAmount, 
                               grossPay: shiftGrossPay, 
-                              agency 
+                              agency,
+                              liveHours 
                             } = getShiftFinancials(shift);
 
                             const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
@@ -3410,7 +3422,16 @@ export default function App() {
                                     }
                                   })()}
                                 </td>
-                                <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
+                                <td>
+                                  {shift.end_time ? (
+                                    `${(shift.total_hours || 0).toFixed(2)} hrs`
+                                  ) : (
+                                    <span className="text-success font-bold" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                      <span style={{ width: '6px', height: '6px', backgroundColor: '#10B981', borderRadius: '50%', display: 'inline-block', boxShadow: '0 0 6px #10B981' }}></span>
+                                      {liveHours.toFixed(2)} hrs
+                                    </span>
+                                  )}
+                                </td>
                                 <td className="font-semibold">
                                   {isFixedRate ? (
                                     <span style={{ fontWeight: 'bold', color: '#4F46E5' }}>
