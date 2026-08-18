@@ -326,7 +326,7 @@ class SupabaseService {
       final response = await client
           .from('drivers')
           .select('*')
-          .or('driver_id.eq.$driverCodeOrId,id.eq.$driverCodeOrId')
+          .or('driver_id.ilike.$driverCodeOrId,id.eq.$driverCodeOrId')
           .maybeSingle();
 
       if (response != null) {

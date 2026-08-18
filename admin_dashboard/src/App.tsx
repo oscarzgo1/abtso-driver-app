@@ -289,8 +289,24 @@ export default function App() {
   const [newEmployeeName, setNewEmployeeName] = useState('');
   const [newEmployeeCode, setNewEmployeeCode] = useState('');
   const [newEmployeePhone, setNewEmployeePhone] = useState('');
-  const [newEmployeePin, setNewEmployeePin] = useState('');
+  const [newEmployeePin, setNewEmployeePin] = useState('123456');
   const [crudError, setCrudError] = useState('');
+
+  const handleNewEmployeeNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newName = e.target.value;
+    setNewEmployeeName(newName);
+
+    // Auto-generate username: lowercase, replace spaces with dots, remove accents and special chars
+    const generatedUsername = newName
+      .toLowerCase()
+      .trim()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/\s+/g, '.')
+      .replace(/[^a-z0-9.]/g, '');
+
+    setNewEmployeeCode(generatedUsername);
+  };
 
   // Employee Rates & Agency state
   const [employeeRates, setEmployeeRates] = useState<{ [driverId: string]: EmployeeRate }>({
@@ -1084,10 +1100,10 @@ export default function App() {
       return;
     }
 
-    const cleanCode = newEmployeeCode.trim().toUpperCase();
+    const cleanCode = newEmployeeCode.trim();
     const cleanName = newEmployeeName.trim();
-    const cleanPhone = newEmployeePhone.trim();
-    const cleanPin = newEmployeePin.trim();
+    const cleanPhone = newEmployeePhone.trim() || 'N/A';
+    const cleanPin = newEmployeePin.trim() || '123456';
 
     try {
       const { data, error } = await supabase.functions.invoke('create-driver', {
@@ -1130,7 +1146,7 @@ export default function App() {
         setNewEmployeeName('');
         setNewEmployeeCode('');
         setNewEmployeePhone('');
-        setNewEmployeePin('');
+        setNewEmployeePin('123456');
         // Refresh from DB to get server-assigned fields
         loadData();
         return;
@@ -2852,15 +2868,15 @@ export default function App() {
                         className="input-field" 
                         placeholder="John Jones"
                         value={newEmployeeName} 
-                        onChange={(e) => setNewEmployeeName(e.target.value)}
+                        onChange={handleNewEmployeeNameChange}
                       />
                     </div>
                     <div className="input-group">
-                      <span className="input-label">EMPLOYEE ID (CODE)</span>
+                      <span className="input-label">USERNAME (AUTO-GENERATED)</span>
                       <input 
                         type="text" 
                         className="input-field" 
-                        placeholder="EMP-004"
+                        placeholder="john.jones"
                         value={newEmployeeCode} 
                         onChange={(e) => setNewEmployeeCode(e.target.value)}
                       />
@@ -2878,7 +2894,7 @@ export default function App() {
                     <div className="input-group">
                       <span className="input-label">DEFAULT PIN</span>
                       <input 
-                        type="password" 
+                        type="text" 
                         className="input-field" 
                         placeholder="6 digit PIN"
                         value={newEmployeePin} 

@@ -123,10 +123,11 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   Future<void> login(String driverId, String pin) async {
     // Validation
-    if (driverId.trim().isEmpty) {
+    final cleanId = driverId.trim();
+    if (cleanId.isEmpty) {
       state = const AuthState(
         status: AuthStatus.error,
-        errorMessage: 'Please enter your Employee ID',
+        errorMessage: 'Please enter your Username or Employee ID',
       );
       return;
     }
@@ -141,15 +142,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState(status: AuthStatus.loading);
 
     final result = await SupabaseService.driverLogin(
-      driverId: driverId.trim().toUpperCase(),
+      driverId: cleanId,
       pin: pin.trim(),
     );
 
     if (result['success'] == true) {
-      // Save 14-day persistent login session locally
+      // Save persistent login session locally
       try {
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('session_driver_id', driverId.trim().toUpperCase());
+        await prefs.setString('session_driver_id', cleanId);
         await prefs.setString('session_login_time', DateTime.now().toIso8601String());
       } catch (_) {
         // Safe to ignore, fallback to normal lifecycle if shared preferences fails

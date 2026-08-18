@@ -169,12 +169,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                     
                     const SizedBox(height: 16),
 
-                    // Driver ID Input
+                    // Driver ID / Username Input
                     TextFormField(
                       controller: _driverIdController,
                       style: const TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.bold),
                       decoration: InputDecoration(
-                        hintText: 'EMPLOYEE ID (e.g., EMP-001)',
+                        hintText: 'USERNAME OR ID (e.g. robert.bekas)',
                         counterText: '',
                         filled: true,
                         fillColor: const Color(0xFFF5F5F5),
@@ -187,11 +187,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                           borderSide: const BorderSide(color: Color(0xFF333333), width: 2),
                         ),
                       ),
-                      textCapitalization: TextCapitalization.characters,
-                      maxLength: 20,
+                      textCapitalization: TextCapitalization.none,
+                      autocorrect: false,
+                      maxLength: 40,
                       validator: (value) {
                         if (value == null || value.trim().isEmpty) {
-                          return 'EMPLOYEE ID REQUIRED';
+                          return 'USERNAME OR EMPLOYEE ID REQUIRED';
                         }
                         return null;
                       },
