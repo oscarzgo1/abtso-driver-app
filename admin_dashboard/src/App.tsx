@@ -1921,7 +1921,9 @@ export default function App() {
 
     // Determine historical rate by reverse math if total pay exists
     const reverseEngineeredRate = (historicalBasePay !== null && s.total_hours) ? (historicalBasePay / s.total_hours) : null;
-    const historicalRateValue = reverseEngineeredRate || Number(s.effective_rate) || Number(s.base_hourly_rate) || 0;
+
+    // STRICT PRECEDENCE: 1. Explicit Hourly Stamp -> 2. Explicit Fixed Stamp -> 3. Reverse Engineered Fallback
+    const historicalRateValue = Number(s.base_hourly_rate) || Number(s.effective_rate) || reverseEngineeredRate || 0;
 
     // SMART DETECTION: Is it fixed?
     const isHistoricallyFixed = hasHistoricalSnapshot && (
