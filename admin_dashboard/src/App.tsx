@@ -1741,19 +1741,39 @@ export default function App() {
           boundary_label: 'MON (Part 2)'
         };
 
-        // Proportionally split locked monetary values to preserve exact DB totals
+        const drvProfile = employeeRates[s.driver_id] || {};
+        const isFixed = s.rate_type?.toLowerCase().includes('fixed') || drvProfile?.rate_type?.toLowerCase().includes('fixed');
+
         if (s.total_pay !== null && s.total_pay !== undefined) {
-          part1.total_pay = Number((Number(s.total_pay) * (hours1 / totalHrs)).toFixed(2));
-          part2.total_pay = Number((Number(s.total_pay) - part1.total_pay).toFixed(2));
-          
-          if (s.extras_amount) {
-            part1.extras_amount = Number((Number(s.extras_amount) * (hours1 / totalHrs)).toFixed(2));
-            part2.extras_amount = Number((Number(s.extras_amount) - part1.extras_amount).toFixed(2));
-          }
-          if (s.night_out_allowance || s.night_out_amount) {
-            const noVal = Number(s.night_out_allowance ?? s.night_out_amount);
-            part1.night_out_amount = Number((noVal * (hours1 / totalHrs)).toFixed(2));
-            part2.night_out_amount = Number((noVal - part1.night_out_amount).toFixed(2));
+          if (isFixed) {
+            // Proportional split is correct for fixed flat rates
+            part1.total_pay = Number((Number(s.total_pay) * (hours1 / totalHrs)).toFixed(2));
+            part2.total_pay = Number((Number(s.total_pay) - part1.total_pay).toFixed(2));
+          } else {
+            // Exact mathematical split for hourly rates
+            const extraTotal = (Number(s.extras_amount) || 0) + (Number(s.night_out_allowance ?? s.night_out_amount) || 0);
+            const historicalBasePay = Number(s.total_pay) - extraTotal;
+            
+            const sunRate = Number(drvProfile?.sunday_rate) || Number(drvProfile?.sun_rate) || 18.00;
+            const basePart1 = hours1 * sunRate;
+            
+            // Safeguard: cap part 1 base pay at total available base pay
+            const actualBasePart1 = Math.min(basePart1, Math.max(0, historicalBasePay));
+            const actualBasePart2 = Math.max(0, historicalBasePay - actualBasePart1);
+
+            const extraPart1 = Number((extraTotal * (hours1 / totalHrs)).toFixed(2));
+            const extraPart2 = Number((extraTotal - extraPart1).toFixed(2));
+
+            part1.total_pay = Number((actualBasePart1 + extraPart1).toFixed(2));
+            part2.total_pay = Number((actualBasePart2 + extraPart2).toFixed(2));
+            
+            // Override rates so getShiftFinancials renders them explicitly in the UI
+            part1.base_hourly_rate = sunRate;
+            part1.effective_rate = sunRate;
+            
+            const impliedMonRate = hours2 > 0 ? (actualBasePart2 / hours2) : 16.00;
+            part2.base_hourly_rate = Number(impliedMonRate.toFixed(2));
+            part2.effective_rate = part2.base_hourly_rate;
           }
         }
 
@@ -3020,6 +3040,8 @@ export default function App() {
                   }
                 });
 
+                const weekBoundaryAlerts = filteredShifts.filter(shift => shift.is_week_boundary && shift.boundary_label?.includes('Part 1'));
+
                 return (
                   <>
                     {flaggedShifts.length > 0 && (
@@ -3043,6 +3065,20 @@ export default function App() {
                           {nightOutSuggestions.map((no, idx) => (
                             <li key={idx} style={{ marginBottom: '4px' }}>
                               <strong>{no.driverName}</strong> - Break between {new Date(no.prevEnd).toLocaleDateString()} {new Date(no.prevEnd).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} and {new Date(no.nextStart).toLocaleDateString()} {new Date(no.nextStart).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} | <em>Duration: {no.gapHours}h</em>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Render the Week Boundary Splits box */}
+                    {weekBoundaryAlerts.length > 0 && (
+                      <div className="alert-box alert-warning" style={{ marginBottom: '24px', backgroundColor: '#FFFBEB', border: '1px solid #FCD34D', color: '#92400E', padding: '16px', borderRadius: '8px' }}>
+                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>✂️ Week Boundary Splits (Sunday ➝ Monday)</h3>
+                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
+                          {weekBoundaryAlerts.map(fs => (
+                            <li key={fs.id} style={{ marginBottom: '4px' }}>
+                              <strong>{fs.driver_name}</strong> - Shift crossed Sunday midnight. <em>Automatically split for payroll processing.</em>
                             </li>
                           ))}
                         </ul>
@@ -3189,8 +3225,8 @@ export default function App() {
                               <td>
                                 <div className="flex align-center gap-6" style={{ flexWrap: 'wrap' }}>
                                   {shift.is_week_boundary && (
-                                    <span className="badge badge-warning text-xs" style={{ backgroundColor: '#FEF3C7', color: '#B45309', border: '1px solid #F59E0B', marginBottom: '4px', width: 'fit-content' }}>
-                                      ✂️ WEEK BOUNDARY ({shift.boundary_label})
+                                    <span className="badge text-xs" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', padding: '2px 6px', fontWeight: 'bold', marginRight: '6px' }}>
+                                      ✂️ SPLIT
                                     </span>
                                   )}
                                   {isFlagged && <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>⚠️ &gt;18h</span>}
