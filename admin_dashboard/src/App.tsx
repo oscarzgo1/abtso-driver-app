@@ -1638,8 +1638,6 @@ export default function App() {
 
           parsedShifts.push({
             driver_id: driver.id || driver.driver_id,
-            driver_code: driver.driver_id || driver.id,
-            driver_name: driver.full_name,
             start_time: startTime,
             end_time: endTime,
             total_hours: totalHours,
@@ -1653,11 +1651,11 @@ export default function App() {
           return;
         }
 
-        // De-duplicate against existing database shifts
+        // De-duplicate against existing database shifts (checking only driver_id)
         const newUploads = [];
         for (const pShift of parsedShifts) {
           const exists = shifts.some(existing => 
-            (existing.driver_id === pShift.driver_id || existing.driver_code === pShift.driver_code) && 
+            existing.driver_id === pShift.driver_id && 
             new Date(existing.start_time).getTime() === new Date(pShift.start_time).getTime()
           );
           if (!exists) {
