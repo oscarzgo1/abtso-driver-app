@@ -314,6 +314,8 @@ export default function App() {
   const [reportDateStart, setReportDateStart] = useState('');
   const [reportDateEnd, setReportDateEnd] = useState('');
   const [showOnlyNightOutRequested, setShowOnlyNightOutRequested] = useState(false);
+  const [reportViewMode, setReportViewMode] = useState<'detailed' | 'summary'>('detailed');
+  const [selectedShiftIds, setSelectedShiftIds] = useState<Set<string>>(new Set());
 
   // Leaflet Map Reference
   const mapRef = useRef<L.Map | null>(null);
@@ -1509,6 +1511,72 @@ export default function App() {
     } else {
        await loadData(); // Hard refresh to sync UI perfectly
     }
+  };
+
+  const handleBulkNightOut = async () => {
+    if (selectedShiftIds.size === 0) return;
+    const userInput = window.prompt(`Apply Night Out allowance (£) to ${selectedShiftIds.size} shift(s):\n(Enter 0 to remove)`, "30");
+    if (userInput === null) return;
+    const amount = parseFloat(userInput);
+    const newAllowance = (!isNaN(amount) && amount > 0) ? amount : null;
+
+    for (const shiftId of Array.from(selectedShiftIds)) {
+       const targetShift = shifts.find(s => s.id === shiftId);
+       if (!targetShift) continue;
+       
+       let calculatedGrossPay = 0;
+       const hasStoredPay = targetShift.status === 'completed' && targetShift.total_pay !== null && targetShift.total_pay !== undefined;
+
+       if (hasStoredPay) {
+           const oldNoAmt = Number(targetShift.night_out_allowance ?? targetShift.night_out_amount) || 0;
+           calculatedGrossPay = Number((Number(targetShift.total_pay) - oldNoAmt + (newAllowance || 0)).toFixed(2));
+       } else {
+           const simulatedShift = { ...targetShift, night_out_allowance: newAllowance, night_out_amount: newAllowance };
+           calculatedGrossPay = getShiftFinancials(simulatedShift as any).grossPay;
+       }
+
+       await supabase!.from('shifts').update({
+         night_out_amount: newAllowance ?? 0,
+         night_out_status: newAllowance ? 'approved' : 'none',
+         total_pay: calculatedGrossPay
+       }).eq('id', shiftId);
+    }
+    setSelectedShiftIds(new Set());
+    await loadData();
+  };
+
+  const handleBulkExtras = async () => {
+    if (selectedShiftIds.size === 0) return;
+    const noteInput = window.prompt("Enter note for Extras/Deductions for ALL selected shifts:");
+    if (noteInput === null) return;
+    const amountInput = window.prompt("Enter amount (£) for ALL selected shifts (use negative for deduction):", "0");
+    if (amountInput === null) return;
+    const amount = parseFloat(amountInput);
+    if (isNaN(amount)) { alert("Invalid amount."); return; }
+
+    for (const shiftId of Array.from(selectedShiftIds)) {
+       const targetShift = shifts.find(s => s.id === shiftId);
+       if (!targetShift) continue;
+
+       let calculatedGrossPay = 0;
+       const hasStoredPay = targetShift.status === 'completed' && targetShift.total_pay !== null && targetShift.total_pay !== undefined;
+
+       if (hasStoredPay) {
+           const oldExtras = Number(targetShift.extras_amount) || 0;
+           calculatedGrossPay = Number((Number(targetShift.total_pay) - oldExtras + amount).toFixed(2));
+       } else {
+           const simulatedShift = { ...targetShift, extras_amount: amount };
+           calculatedGrossPay = getShiftFinancials(simulatedShift as any).grossPay;
+       }
+
+       await supabase!.from('shifts').update({
+         extras_amount: amount,
+         extras_note: noteInput,
+         total_pay: calculatedGrossPay
+       }).eq('id', shiftId);
+    }
+    setSelectedShiftIds(new Set());
+    await loadData();
   };
 
   // ── Rates & Night Out Handlers ────────────────────────────────
@@ -3002,6 +3070,41 @@ export default function App() {
                 </div>
               </div>
 
+              {/* View Toggle & Bulk Actions Bar */}
+              <div className="glass-panel mb-16 flex align-center justify-between" style={{ padding: '12px 16px', borderRadius: '12px', marginTop: '16px' }}>
+                 <div className="flex gap-8">
+                    <button 
+                       className={`btn ${reportViewMode === 'detailed' ? 'btn-primary' : 'btn-secondary'}`}
+                       style={{ fontWeight: 'bold' }}
+                       onClick={() => setReportViewMode('detailed')}
+                    >
+                       ☰ DETAILED VIEW
+                    </button>
+                    <button 
+                       className={`btn ${reportViewMode === 'summary' ? 'btn-primary' : 'btn-secondary'}`}
+                       style={{ fontWeight: 'bold' }}
+                       onClick={() => setReportViewMode('summary')}
+                    >
+                       📊 WEEKLY SUMMARY
+                    </button>
+                 </div>
+                 
+                 {reportViewMode === 'detailed' && (
+                   <div className="flex align-center gap-12">
+                      {selectedShiftIds.size > 0 ? (
+                        <>
+                          <span className="text-sm font-black text-primary">{selectedShiftIds.size} SELECTED</span>
+                          <button className="btn btn-outline" style={{ borderColor: '#10B981', color: '#047857' }} onClick={handleBulkNightOut}>🌙 BULK N/O</button>
+                          <button className="btn btn-outline" style={{ borderColor: '#3B82F6', color: '#1D4ED8' }} onClick={handleBulkExtras}>✏️ BULK EXTRAS</button>
+                          <button className="btn btn-secondary text-xs" onClick={() => setSelectedShiftIds(new Set())}>CANCEL</button>
+                        </>
+                      ) : (
+                        <span className="text-xs text-muted">Use checkboxes to edit multiple shifts at once</span>
+                      )}
+                   </div>
+                 )}
+              </div>
+
               {/* Flagged Shifts & Night Out Alert Banners */}
               {(() => {
                 const flaggedShifts = filteredShifts.filter(shift => {
@@ -3100,218 +3203,316 @@ export default function App() {
                 );
               })()}
 
-              {/* Reports Payroll Data Table */}
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Employee</th>
-                      <th>Agency</th>
-                      <th>Shift Schedule</th>
-                      <th>Hours</th>
-                      <th>Hourly Rate</th>
-                      <th>Night Out Allowance</th>
-                      <th>Flags & Actions</th>
-                      <th>Gross Pay</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredShifts.length === 0 ? (
+              {/* Reports Payroll Data Table / Dual View */}
+              {reportViewMode === 'summary' ? (
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
                       <tr>
-                        <td colSpan={8} className="text-center text-muted">No completed shifts found matching active filters</td>
+                        <th>Employee</th>
+                        <th>Agency</th>
+                        <th>Shifts Logged</th>
+                        <th>Total Hours</th>
+                        <th>Night Outs</th>
+                        <th>Total Extras</th>
+                        <th>Total Gross Pay</th>
                       </tr>
-                    ) : (
-                      <>
-                        {filteredShifts.map(shift => {
-                          const { 
-                            startRateVal, 
-                            endRateVal, 
-                            startDay, 
-                            endDay, 
-                            isFixedRate,
-                            noAmt: noAmount, 
-                            grossPay: shiftGrossPay, 
-                            agency 
-                          } = getShiftFinancials(shift);
+                    </thead>
+                    <tbody>
+                      {(() => {
+                        const summaryData: any = {};
+                        filteredShifts.forEach(shift => {
+                           const { grossPay, noAmt, extrasAmt } = getShiftFinancials(shift);
+                           const id = shift.driver_id;
+                           if (!summaryData[id]) {
+                               summaryData[id] = {
+                                   driver_name: shift.driver_name,
+                                   driver_code: shift.driver_code,
+                                   agency: employeeRates[id]?.agency_name || 'Direct',
+                                   total_hours: 0,
+                                   total_gross: 0,
+                                   total_night_outs: 0,
+                                   total_extras: 0,
+                                   shift_count: 0
+                               };
+                           }
+                           summaryData[id].total_hours += (shift.total_hours || 0);
+                           summaryData[id].total_gross += grossPay;
+                           summaryData[id].total_extras += extrasAmt;
+                           summaryData[id].total_night_outs += (noAmt > 0 ? 1 : 0);
+                           // Prevent double counting split shifts
+                           if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) {
+                               summaryData[id].shift_count += 1;
+                           }
+                        });
+                        
+                        const rows = Object.values(summaryData);
+                        if (rows.length === 0) return <tr><td colSpan={7} className="text-center text-muted">No data available for summary</td></tr>;
 
-                          const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
-                          const shiftStartMs = new Date(shift.start_time).getTime();
-                          const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
-
-                          const isRequested = 
-                            shift.night_out_requested === true || 
-                            (shift as any).has_requested_night_out === true || 
-                            shift.night_out_status === 'pending';
-
-                          const hasNightOut = noAmount > 0 || isRequested;
-                          const hasExtras = Boolean(shift.extras_amount && shift.extras_amount !== 0);
-
-                          // Determine row background color based on priority
-                          let rowStyle: React.CSSProperties = {};
-                          if (isFlagged) {
-                            rowStyle = { backgroundColor: 'rgba(239, 68, 68, 0.08)' }; // Red tint
-                          } else if (hasNightOut) {
-                            rowStyle = { backgroundColor: 'rgba(245, 158, 11, 0.08)' }; // Orange tint
-                          } else if (hasExtras) {
-                            rowStyle = { backgroundColor: 'rgba(59, 130, 246, 0.08)' }; // Blue tint
-                          }
-
-                          return (
-                            <tr key={shift.id} style={rowStyle}>
-                              <td className="font-bold text-primary">
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                  <span>{shift.driver_name} ({shift.driver_code})</span>
-                                  {isRequested && (
-                                    <span className="badge text-xs font-bold" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', alignSelf: 'flex-start', padding: '2px 6px', fontSize: '10px' }}>
-                                      🔔 N/O REQUESTED
-                                    </span>
-                                  )}
-                                </div>
-                              </td>
-                              <td>
-                                <span className="badge badge-accent">{agency}</span>
-                              </td>
-                              <td>
-                                {(() => {
-                                  const startObj = new Date(shift.start_time);
-                                  const endObj = shift.end_time ? new Date(shift.end_time) : null;
-                                  
-                                  const startDateStr = startObj.toLocaleDateString();
-                                  const startTimeStr = startObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                                  
-                                  let endDateStr = '';
-                                  let endTimeStr = 'Ongoing';
-                                  
-                                  if (endObj) {
-                                    endDateStr = endObj.toLocaleDateString();
-                                    endTimeStr = endObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                                  }
-
-                                  if (endObj && startDateStr !== endDateStr) {
-                                    // Multi-day format rendering
-                                    return (
-                                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                        <span style={{ fontSize: '13px', fontWeight: '600' }}>
-                                          {startDateStr} <span style={{ fontWeight: 'normal', color: '#6B7280' }}>{startTimeStr}</span>
-                                        </span>
-                                        <span style={{ fontSize: '13px', fontWeight: '600' }}>
-                                          {endDateStr} <span style={{ fontWeight: 'normal', color: '#6B7280' }}>{endTimeStr}</span>
-                                        </span>
-                                      </div>
-                                    );
-                                  } else {
-                                    // Single-day format rendering
-                                    return (
-                                      <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                        <span style={{ fontWeight: 'bold' }}>{startDateStr}</span>
-                                        <span className="text-xs text-muted">{startTimeStr} - {endTimeStr}</span>
-                                      </div>
-                                    );
-                                  }
-                                })()}
-                              </td>
-                              <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
-                              <td className="font-semibold">
-                                {isFixedRate ? (
-                                  <span style={{ fontWeight: 'bold', color: '#4F46E5' }}>
-                                    £{startRateVal.toFixed(2)} <span style={{ fontSize: '11px', fontWeight: 'normal', color: '#6B7280' }}>(Fixed/Shift)</span>
-                                  </span>
-                                ) : startDay !== endDay && startRateVal !== endRateVal ? (
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                                     <span style={{ fontSize: '13px' }}>£{startRateVal.toFixed(2)}/hr</span>
-                                     <span style={{ fontSize: '11px', color: '#6B7280' }}>→ £{endRateVal.toFixed(2)}/hr</span>
-                                  </div>
-                                ) : (
-                                  <span>£{startRateVal.toFixed(2)}/hr</span>
-                                )}
-                              </td>
-                              <td>
-                                {noAmount > 0 ? (
-                                  <span className="badge badge-success font-bold">
-                                    +£{noAmount.toFixed(2)} N/O
-                                  </span>
-                                ) : (
-                                  <span className="text-muted text-xs">—</span>
-                                )}
-                              </td>
-                              <td>
-                                <div className="flex align-center gap-6" style={{ flexWrap: 'wrap' }}>
-                                  {shift.is_week_boundary && (
-                                    <span className="badge text-xs" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', padding: '2px 6px', fontWeight: 'bold', marginRight: '6px' }}>
-                                      ✂️ SPLIT
-                                    </span>
-                                  )}
-                                  {isFlagged && <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>⚠️ &gt;18h</span>}
-                                  <button 
-                                    className="btn btn-secondary flex align-center gap-2" 
-                                    style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 'bold' }}
-                                    onClick={() => handleEditShiftTime(shift.real_id || shift.id, shift.start_time, shift.end_time)}
-                                  >
-                                    ✏️ EDIT TIME
-                                  </button>
-
-                                  <button 
-                                    className="btn btn-outline flex align-center gap-2" 
-                                    style={{ 
-                                      padding: '4px 8px', 
-                                      fontSize: '11px', 
-                                      fontWeight: 'bold', 
-                                      borderColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#10B981' : '#D1D5DB',
-                                      color: (shift.night_out_allowance ?? shift.night_out_amount) ? '#047857' : '#4B5563',
-                                      backgroundColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#ECFDF5' : 'transparent'
-                                    }}
-                                    onClick={() => handleNightOutAmount(shift.real_id || shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
-                                  >
-                                    {(shift.night_out_allowance ?? shift.night_out_amount) ? `🌙 N/O: £${Number(shift.night_out_allowance ?? shift.night_out_amount).toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
-                                  </button>
-
-                                  <button 
-                                    className="btn btn-outline flex align-center gap-2" 
-                                    style={{ 
-                                      padding: '4px 8px', 
-                                      fontSize: '11px', 
-                                      fontWeight: 'bold', 
-                                      borderColor: shift.extras_amount ? '#3B82F6' : '#D1D5DB',
-                                      color: shift.extras_amount ? '#1D4ED8' : '#4B5563',
-                                      backgroundColor: shift.extras_amount ? '#EFF6FF' : 'transparent'
-                                    }}
-                                    onClick={() => handleEditExtras(shift.real_id || shift.id, shift.extras_amount ?? null, shift.extras_note ?? null)}
-                                  >
-                                    ✏️ Edit Extras {shift.extras_amount ? `(£${Number(shift.extras_amount).toFixed(2)})` : ''}
-                                  </button>
-                                  {shift.extras_note && (
-                                    <div className="text-xs text-gray-500 italic mt-1" style={{ fontSize: '11px', color: '#6B7280', fontStyle: 'italic', width: '100%' }}>
-                                      Note: {shift.extras_note}
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="font-bold text-success">
-                                £{shiftGrossPay.toFixed(2)}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                        {/* Summary Row */}
-                        <tr style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', fontWeight: 'bold', borderTop: '2px solid rgba(16, 185, 129, 0.2)' }}>
-                          <td colSpan={3} className="text-primary font-black" style={{ padding: '16px' }}>
-                            TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts | {nightOutCount} Night Outs: £{totalNightOutAmount.toFixed(2)})
-                          </td>
-                          <td className="text-primary font-bold" style={{ padding: '16px' }}>
-                            {(totalHours || 0).toFixed(2)} hrs
-                          </td>
-                          <td></td>
-                          <td></td>
-                          <td></td>
-                          <td className="text-success font-black" style={{ padding: '16px', fontSize: '15px' }}>
-                            £{totalEarnings.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </td>
+                        return rows.map((row: any) => (
+                           <tr key={row.driver_code}>
+                              <td className="font-bold text-primary">{row.driver_name} ({row.driver_code})</td>
+                              <td><span className="badge badge-accent">{row.agency}</span></td>
+                              <td className="font-semibold">{row.shift_count}</td>
+                              <td>{row.total_hours.toFixed(2)} hrs</td>
+                              <td>{row.total_night_outs > 0 ? <span className="text-success font-bold">+{row.total_night_outs} (N/O)</span> : '—'}</td>
+                              <td>{row.total_extras !== 0 ? <span className="text-primary font-bold">£{row.total_extras.toFixed(2)}</span> : '—'}</td>
+                              <td className="font-black text-success text-md">£{row.total_gross.toFixed(2)}</td>
+                           </tr>
+                        ));
+                      })()}
+                      {/* Global summary row */}
+                      <tr style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', fontWeight: 'bold', borderTop: '2px solid rgba(16, 185, 129, 0.2)' }}>
+                        <td colSpan={3} className="text-primary font-black" style={{ padding: '16px' }}>GRAND TOTAL</td>
+                        <td className="text-primary font-bold">{(totalHours || 0).toFixed(2)} hrs</td>
+                        <td className="text-success font-bold">{nightOutCount}</td>
+                        <td></td>
+                        <td className="text-success font-black" style={{ fontSize: '15px' }}>£{totalEarnings.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '40px' }}>
+                           <input 
+                              type="checkbox" 
+                              style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                              checked={filteredShifts.length > 0 && selectedShiftIds.size === new Set(filteredShifts.map(s => s.real_id || s.id)).size}
+                              onChange={(e) => {
+                                 if (e.target.checked) {
+                                     setSelectedShiftIds(new Set(filteredShifts.map(s => s.real_id || s.id)));
+                                 } else {
+                                     setSelectedShiftIds(new Set());
+                                 }
+                              }}
+                           />
+                        </th>
+                        <th>Employee</th>
+                        <th>Agency</th>
+                        <th>Shift Schedule</th>
+                        <th>Hours</th>
+                        <th>Hourly Rate</th>
+                        <th>Night Out Allowance</th>
+                        <th>Flags & Actions</th>
+                        <th>Gross Pay</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredShifts.length === 0 ? (
+                        <tr>
+                          <td colSpan={9} className="text-center text-muted">No completed shifts found matching active filters</td>
                         </tr>
-                      </>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                      ) : (
+                        <>
+                          {filteredShifts.map(shift => {
+                            const { 
+                              startRateVal, 
+                              endRateVal, 
+                              startDay, 
+                              endDay, 
+                              isFixedRate,
+                              noAmt: noAmount, 
+                              grossPay: shiftGrossPay, 
+                              agency 
+                            } = getShiftFinancials(shift);
+
+                            const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
+                            const shiftStartMs = new Date(shift.start_time).getTime();
+                            const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
+
+                            const isRequested = 
+                              shift.night_out_requested === true || 
+                              (shift as any).has_requested_night_out === true || 
+                              shift.night_out_status === 'pending';
+
+                            const hasNightOut = noAmount > 0 || isRequested;
+                            const hasExtras = Boolean(shift.extras_amount && shift.extras_amount !== 0);
+
+                            // Determine row background color based on priority
+                            let rowStyle: React.CSSProperties = {};
+                            if (isFlagged) {
+                              rowStyle = { backgroundColor: 'rgba(239, 68, 68, 0.08)' }; // Red tint
+                            } else if (hasNightOut) {
+                              rowStyle = { backgroundColor: 'rgba(245, 158, 11, 0.08)' }; // Orange tint
+                            } else if (hasExtras) {
+                              rowStyle = { backgroundColor: 'rgba(59, 130, 246, 0.08)' }; // Blue tint
+                            }
+
+                            return (
+                              <tr key={shift.id} style={rowStyle}>
+                                <td onClick={(e) => e.stopPropagation()}>
+                                  <input 
+                                    type="checkbox" 
+                                    style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                                    checked={selectedShiftIds.has(shift.real_id || shift.id)}
+                                    onChange={(e) => {
+                                        const newSet = new Set(selectedShiftIds);
+                                        const targetId = shift.real_id || shift.id;
+                                        if (e.target.checked) newSet.add(targetId);
+                                        else newSet.delete(targetId);
+                                        setSelectedShiftIds(newSet);
+                                    }}
+                                  />
+                                </td>
+                                <td className="font-bold text-primary">
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                    <span>{shift.driver_name} ({shift.driver_code})</span>
+                                    {isRequested && (
+                                      <span className="badge text-xs font-bold" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', alignSelf: 'flex-start', padding: '2px 6px', fontSize: '10px' }}>
+                                        🔔 N/O REQUESTED
+                                      </span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td>
+                                  <span className="badge badge-accent">{agency}</span>
+                                </td>
+                                <td>
+                                  {(() => {
+                                    const startObj = new Date(shift.start_time);
+                                    const endObj = shift.end_time ? new Date(shift.end_time) : null;
+                                    
+                                    const startDateStr = startObj.toLocaleDateString();
+                                    const startTimeStr = startObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                    
+                                    let endDateStr = '';
+                                    let endTimeStr = 'Ongoing';
+                                    
+                                    if (endObj) {
+                                      endDateStr = endObj.toLocaleDateString();
+                                      endTimeStr = endObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                                    }
+
+                                    if (endObj && startDateStr !== endDateStr) {
+                                      // Multi-day format rendering
+                                      return (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                          <span style={{ fontSize: '13px', fontWeight: '600' }}>
+                                            {startDateStr} <span style={{ fontWeight: 'normal', color: '#6B7280' }}>{startTimeStr}</span>
+                                          </span>
+                                          <span style={{ fontSize: '13px', fontWeight: '600' }}>
+                                            {endDateStr} <span style={{ fontWeight: 'normal', color: '#6B7280' }}>{endTimeStr}</span>
+                                          </span>
+                                        </div>
+                                      );
+                                    } else {
+                                      // Single-day format rendering
+                                      return (
+                                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                          <span style={{ fontWeight: 'bold' }}>{startDateStr}</span>
+                                          <span className="text-xs text-muted">{startTimeStr} - {endTimeStr}</span>
+                                        </div>
+                                      );
+                                    }
+                                  })()}
+                                </td>
+                                <td>{(shift.total_hours || 0).toFixed(2)} hrs</td>
+                                <td className="font-semibold">
+                                  {isFixedRate ? (
+                                    <span style={{ fontWeight: 'bold', color: '#4F46E5' }}>
+                                      £{startRateVal.toFixed(2)} <span style={{ fontSize: '11px', fontWeight: 'normal', color: '#6B7280' }}>(Fixed/Shift)</span>
+                                    </span>
+                                  ) : startDay !== endDay && startRateVal !== endRateVal ? (
+                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                       <span style={{ fontSize: '13px' }}>£{startRateVal.toFixed(2)}/hr</span>
+                                       <span style={{ fontSize: '11px', color: '#6B7280' }}>→ £{endRateVal.toFixed(2)}/hr</span>
+                                    </div>
+                                  ) : (
+                                    <span>£{startRateVal.toFixed(2)}/hr</span>
+                                  )}
+                                </td>
+                                <td>
+                                  {noAmount > 0 ? (
+                                    <span className="badge badge-success font-bold">
+                                      +£{noAmount.toFixed(2)} N/O
+                                    </span>
+                                  ) : (
+                                    <span className="text-muted text-xs">—</span>
+                                  )}
+                                </td>
+                                <td>
+                                  <div className="flex align-center gap-6" style={{ flexWrap: 'wrap' }}>
+                                    {shift.is_week_boundary && (
+                                      <span className="badge text-xs" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', padding: '2px 6px', fontWeight: 'bold', marginRight: '6px' }}>
+                                        ✂️ SPLIT
+                                      </span>
+                                    )}
+                                    {isFlagged && <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>⚠️ &gt;18h</span>}
+                                    <button 
+                                      className="btn btn-secondary flex align-center gap-2" 
+                                      style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 'bold' }}
+                                      onClick={() => handleEditShiftTime(shift.real_id || shift.id, shift.start_time, shift.end_time)}
+                                    >
+                                      ✏️ EDIT TIME
+                                    </button>
+
+                                    <button 
+                                      className="btn btn-outline flex align-center gap-2" 
+                                      style={{ 
+                                        padding: '4px 8px', 
+                                        fontSize: '11px', 
+                                        fontWeight: 'bold', 
+                                        borderColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#10B981' : '#D1D5DB',
+                                        color: (shift.night_out_allowance ?? shift.night_out_amount) ? '#047857' : '#4B5563',
+                                        backgroundColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#ECFDF5' : 'transparent'
+                                      }}
+                                      onClick={() => handleNightOutAmount(shift.real_id || shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
+                                    >
+                                      {(shift.night_out_allowance ?? shift.night_out_amount) ? `🌙 N/O: £${Number(shift.night_out_allowance ?? shift.night_out_amount).toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
+                                    </button>
+
+                                    <button 
+                                      className="btn btn-outline flex align-center gap-2" 
+                                      style={{ 
+                                        padding: '4px 8px', 
+                                        fontSize: '11px', 
+                                        fontWeight: 'bold', 
+                                        borderColor: shift.extras_amount ? '#3B82F6' : '#D1D5DB',
+                                        color: shift.extras_amount ? '#1D4ED8' : '#4B5563',
+                                        backgroundColor: shift.extras_amount ? '#EFF6FF' : 'transparent'
+                                      }}
+                                      onClick={() => handleEditExtras(shift.real_id || shift.id, shift.extras_amount ?? null, shift.extras_note ?? null)}
+                                    >
+                                      ✏️ Edit Extras {shift.extras_amount ? `(£${Number(shift.extras_amount).toFixed(2)})` : ''}
+                                    </button>
+                                    {shift.extras_note && (
+                                      <div className="text-xs text-gray-500 italic mt-1" style={{ fontSize: '11px', color: '#6B7280', fontStyle: 'italic', width: '100%' }}>
+                                        Note: {shift.extras_note}
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="font-bold text-success">
+                                  £{shiftGrossPay.toFixed(2)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                          {/* Summary Row */}
+                          <tr style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', fontWeight: 'bold', borderTop: '2px solid rgba(16, 185, 129, 0.2)' }}>
+                            <td colSpan={4} className="text-primary font-black" style={{ padding: '16px' }}>
+                              TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts | {nightOutCount} Night Outs: £{totalNightOutAmount.toFixed(2)})
+                            </td>
+                            <td className="text-primary font-bold" style={{ padding: '16px' }}>
+                              {(totalHours || 0).toFixed(2)} hrs
+                            </td>
+                            <td></td>
+                            <td></td>
+                            <td></td>
+                            <td className="text-success font-black" style={{ padding: '16px', fontSize: '15px' }}>
+                              £{totalEarnings.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        </>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           );
         })()}
