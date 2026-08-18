@@ -320,6 +320,7 @@ export default function App() {
   // Leaflet Map Reference
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<{ [key: string]: L.Marker }>({});
+  const csvInputRef = useRef<HTMLInputElement | null>(null);
 
   // ── MOCK DATA SEED ──────────────────────────────────────────
   const mockEmployees: Employee[] = [
@@ -1577,6 +1578,114 @@ export default function App() {
     }
     setSelectedShiftIds(new Set());
     await loadData();
+  };
+
+  const handleImportCSV = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const text = e.target?.result as string;
+        const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+        
+        // Handle the "Note:" trap row
+        let headerIdx = 0;
+        if (lines[0].toLowerCase().startsWith('note:')) {
+          headerIdx = 1;
+        }
+        
+        const headers = lines[headerIdx].split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
+        const fnIdx = headers.indexOf('First Name');
+        const lnIdx = headers.indexOf('Last Name');
+        const ciDateIdx = headers.indexOf('Clock In Date');
+        const ciTimeIdx = headers.indexOf('Clock In Time');
+        const coDateIdx = headers.indexOf('Clock Out Date');
+        const coTimeIdx = headers.indexOf('Clock Out Time');
+
+        if (fnIdx === -1 || ciDateIdx === -1) {
+          alert("Invalid CSV format. Missing required columns.");
+          return;
+        }
+
+        const parsedShifts = [];
+        let missingDrivers = new Set();
+
+        for (let i = headerIdx + 1; i < lines.length; i++) {
+          // Simple CSV split
+          const cols = lines[i].split(',').map(c => c.trim().replace(/^["']|["']$/g, ''));
+          if (cols.length < headers.length) continue;
+
+          const fullName = `${cols[fnIdx].trim()} ${cols[lnIdx].trim()}`.trim();
+          const driver = employees.find(emp => emp.full_name?.toLowerCase() === fullName.toLowerCase());
+          
+          if (!driver) {
+            missingDrivers.add(fullName);
+            continue;
+          }
+
+          const ciDate = cols[ciDateIdx].trim();
+          const ciTime = cols[ciTimeIdx].trim();
+          const coDate = cols[coDateIdx].trim();
+          const coTime = cols[coTimeIdx].trim();
+
+          if (!ciDate || !ciTime || !coDate || !coTime) continue;
+
+          const startTime = new Date(`${ciDate}T${ciTime}`).toISOString();
+          const endTime = new Date(`${coDate}T${coTime}`).toISOString();
+          const totalHours = Number(((new Date(endTime).getTime() - new Date(startTime).getTime()) / (1000 * 60 * 60)).toFixed(2));
+
+          parsedShifts.push({
+            driver_id: driver.id || driver.driver_id,
+            driver_code: driver.driver_id || driver.id,
+            driver_name: driver.full_name,
+            start_time: startTime,
+            end_time: endTime,
+            total_hours: totalHours,
+            status: 'completed' as const,
+            night_out_status: 'none' as const
+          });
+        }
+
+        if (parsedShifts.length === 0) {
+          alert("No valid shifts found to import. Check if driver names in CSV match the system exactly.");
+          return;
+        }
+
+        // De-duplicate against existing database shifts
+        const newUploads = [];
+        for (const pShift of parsedShifts) {
+          const exists = shifts.some(existing => 
+            (existing.driver_id === pShift.driver_id || existing.driver_code === pShift.driver_code) && 
+            new Date(existing.start_time).getTime() === new Date(pShift.start_time).getTime()
+          );
+          if (!exists) {
+            newUploads.push(pShift);
+          }
+        }
+
+        if (newUploads.length > 0) {
+          const { error } = await supabase!.from('shifts').insert(newUploads);
+          if (error) throw error;
+          alert(`Successfully imported ${newUploads.length} new shift(s) from Blip!`);
+          await loadData();
+        } else {
+          alert("All shifts in this CSV are already in the database. No duplicates were added.");
+        }
+
+        if (missingDrivers.size > 0) {
+          console.warn("Drivers in CSV not found in system:", Array.from(missingDrivers));
+        }
+      } catch (err: any) {
+        alert("Error parsing CSV: " + err.message);
+      } finally {
+        if (event.target) {
+          event.target.value = '';
+        }
+      }
+    };
+    reader.readAsText(file);
   };
 
   // ── Rates & Night Out Handlers ────────────────────────────────
@@ -3085,7 +3194,7 @@ export default function App() {
 
               {/* View Toggle & Bulk Actions Bar */}
               <div className="glass-panel mb-16 flex align-center justify-between" style={{ padding: '12px 16px', borderRadius: '12px', marginTop: '16px' }}>
-                 <div className="flex gap-8">
+                 <div className="flex gap-8 align-center">
                     <button 
                        className={`btn ${reportViewMode === 'detailed' ? 'btn-primary' : 'btn-secondary'}`}
                        style={{ fontWeight: 'bold' }}
@@ -3099,6 +3208,21 @@ export default function App() {
                        onClick={() => setReportViewMode('summary')}
                     >
                        📊 WEEKLY SUMMARY
+                    </button>
+
+                    <input 
+                      type="file" 
+                      accept=".csv" 
+                      ref={csvInputRef} 
+                      style={{ display: 'none' }} 
+                      onChange={handleImportCSV} 
+                    />
+                    <button 
+                      className="btn btn-outline flex align-center gap-6"
+                      style={{ borderColor: '#6366F1', color: '#4F46E5', fontWeight: 'bold' }}
+                      onClick={() => csvInputRef.current?.click()}
+                    >
+                      📥 IMPORT BLIP CSV
                     </button>
                  </div>
                  
