@@ -442,11 +442,36 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
                           itemCount: _shifts.length,
                           itemBuilder: (context, index) {
                             final s = _shifts[index];
-                            final startTime = DateTime.parse(s['start_time']);
+                            final startTime = DateTime.parse(s['start_time']).toLocal();
+                            final endTime = s['end_time'] != null ? DateTime.parse(s['end_time']).toLocal() : null;
                             final dayName = DateFormat('EEEE').format(startTime);
+
+                            final startTimeStr = DateFormat('HH:mm').format(startTime);
+                            final endTimeStr = endTime != null ? DateFormat('HH:mm').format(endTime) : 'Ongoing';
+                            final timeRangeStr = '$startTimeStr - $endTimeStr';
+
                             final pay = (s['total_pay'] as num?)?.toDouble() ?? 0.0;
-                            final hours = (s['total_hours'] as num?)?.toDouble() ?? 0.0;
+                            final hours = (s['total_hours'] as num?)?.toDouble() ?? (endTime != null ? (endTime.difference(startTime).inMinutes / 60.0) : 0.0);
                             final hasOverride = s['override_rate'] != null;
+
+                            // Financial breakdown calculation
+                            final double shiftEffRate = (s['effective_rate'] as num?)?.toDouble() 
+                                ?? (s['base_hourly_rate'] as num?)?.toDouble() 
+                                ?? rateValue;
+
+                            final double nightOut = (s['night_out_amount'] as num?)?.toDouble() 
+                                ?? (s['night_out_allowance'] as num?)?.toDouble() 
+                                ?? (s['night_out_status'] == 'approved' ? 25.0 : 0.0);
+
+                            final double extraAmt = (s['extra_amount'] as num?)?.toDouble() 
+                                ?? (s['extras_amount'] as num?)?.toDouble() 
+                                ?? (s['extras'] as num?)?.toDouble() 
+                                ?? 0.0;
+
+                            final double extraPay = nightOut + extraAmt;
+                            final double basePay = isFixed 
+                                ? rateValue 
+                                : (extraPay > 0 ? (pay - extraPay) : (hours * shiftEffRate));
 
                             return Container(
                               margin: const EdgeInsets.only(bottom: 10),
@@ -458,42 +483,58 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
                               ),
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                crossAxisAlignment: CrossAxisAlignment.center,
                                 children: [
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        dayName.toUpperCase(),
-                                        style: theme.textTheme.titleMedium?.copyWith(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w900,
-                                          color: const Color(0xFF333333),
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        shiftDateFormat.format(startTime),
-                                        style: theme.textTheme.bodyMedium?.copyWith(fontSize: 11),
-                                      ),
-                                      if (hasOverride) ...[
-                                        const SizedBox(height: 6),
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                          decoration: BoxDecoration(
-                                            border: Border.all(color: const Color(0xFFCC0000), width: 1),
-                                            borderRadius: BorderRadius.circular(6),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          dayName.toUpperCase(),
+                                          style: theme.textTheme.titleMedium?.copyWith(
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w900,
+                                            color: const Color(0xFF333333),
                                           ),
-                                          child: const Text(
-                                            'RATE OVERRIDE',
-                                            style: TextStyle(
-                                              color: Color(0xFFCC0000),
-                                              fontSize: 8,
-                                              fontWeight: FontWeight.w900,
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          shiftDateFormat.format(startTime),
+                                          style: theme.textTheme.bodyMedium?.copyWith(
+                                            fontSize: 11,
+                                            color: const Color(0xFF666666),
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          timeRangeStr,
+                                          style: theme.textTheme.bodyMedium?.copyWith(
+                                            fontSize: 11,
+                                            color: const Color(0xFF888888),
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                        if (hasOverride) ...[
+                                          const SizedBox(height: 6),
+                                          Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                            decoration: BoxDecoration(
+                                              border: Border.all(color: const Color(0xFFCC0000), width: 1),
+                                              borderRadius: BorderRadius.circular(6),
+                                            ),
+                                            child: const Text(
+                                              'RATE OVERRIDE',
+                                              style: TextStyle(
+                                                color: Color(0xFFCC0000),
+                                                fontSize: 8,
+                                                fontWeight: FontWeight.w900,
+                                              ),
                                             ),
                                           ),
-                                        ),
+                                        ],
                                       ],
-                                    ],
+                                    ),
                                   ),
                                   Column(
                                     crossAxisAlignment: CrossAxisAlignment.end,
@@ -506,10 +547,25 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
                                           color: const Color(0xFFCC0000),
                                         ),
                                       ),
+                                      if (extraPay > 0) ...[
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '(£${basePay.toStringAsFixed(2)} Base + £${extraPay.toStringAsFixed(2)} Extra)',
+                                          style: theme.textTheme.bodySmall?.copyWith(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w700,
+                                            color: const Color(0xFF666666),
+                                          ),
+                                        ),
+                                      ],
                                       const SizedBox(height: 2),
                                       Text(
                                         '${hours.toStringAsFixed(1)} Hrs',
-                                        style: theme.textTheme.bodyMedium?.copyWith(fontSize: 11),
+                                        style: theme.textTheme.bodyMedium?.copyWith(
+                                          fontSize: 11,
+                                          color: const Color(0xFF888888),
+                                          fontWeight: FontWeight.w600,
+                                        ),
                                       ),
                                     ],
                                   ),
