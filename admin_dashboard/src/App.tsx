@@ -121,6 +121,9 @@ interface Shift {
   extras_amount?: number | null;
   extras_note?: string | null;
   rate_type?: string | null;
+  real_id?: string;
+  is_week_boundary?: boolean;
+  boundary_label?: string;
   created_at?: string;
 }
 
@@ -1669,7 +1672,7 @@ export default function App() {
 
   // ── CSV & Excel Export Functions ────────────────────────────
   const getFilteredShifts = () => {
-    return shifts.filter(s => {
+    const rawFiltered = shifts.filter(s => {
       // Night Out Requested Filter
       if (showOnlyNightOutRequested) {
         const isReq = s.night_out_requested === true || 
@@ -1702,6 +1705,66 @@ export default function App() {
 
       return true;
     });
+
+    const expandedShifts: Shift[] = [];
+
+    rawFiltered.forEach(s => {
+      const startObj = new Date(s.start_time);
+      const endObj = s.end_time ? new Date(s.end_time) : null;
+
+      // Detect cross-week boundary: Starts Sunday (0), Ends Monday (1)
+      if (endObj && startObj.getDay() === 0 && endObj.getDay() === 1) {
+        const midnight = new Date(startObj);
+        midnight.setHours(24, 0, 0, 0); // Monday 00:00:00
+
+        const hours1 = (midnight.getTime() - startObj.getTime()) / (1000 * 60 * 60);
+        const hours2 = (endObj.getTime() - midnight.getTime()) / (1000 * 60 * 60);
+        const totalHrs = hours1 + hours2;
+
+        const part1: Shift = {
+          ...s,
+          id: `${s.id}-P1`, // Virtual ID for React key
+          real_id: s.id,    // Original DB ID for editing
+          end_time: midnight.toISOString(),
+          total_hours: hours1,
+          is_week_boundary: true,
+          boundary_label: 'SUN (Part 1)'
+        };
+
+        const part2: Shift = {
+          ...s,
+          id: `${s.id}-P2`,
+          real_id: s.id,
+          start_time: midnight.toISOString(),
+          total_hours: hours2,
+          is_week_boundary: true,
+          boundary_label: 'MON (Part 2)'
+        };
+
+        // Proportionally split locked monetary values to preserve exact DB totals
+        if (s.total_pay !== null && s.total_pay !== undefined) {
+          part1.total_pay = Number((Number(s.total_pay) * (hours1 / totalHrs)).toFixed(2));
+          part2.total_pay = Number((Number(s.total_pay) - part1.total_pay).toFixed(2));
+          
+          if (s.extras_amount) {
+            part1.extras_amount = Number((Number(s.extras_amount) * (hours1 / totalHrs)).toFixed(2));
+            part2.extras_amount = Number((Number(s.extras_amount) - part1.extras_amount).toFixed(2));
+          }
+          if (s.night_out_allowance || s.night_out_amount) {
+            const noVal = Number(s.night_out_allowance ?? s.night_out_amount);
+            part1.night_out_amount = Number((noVal * (hours1 / totalHrs)).toFixed(2));
+            part2.night_out_amount = Number((noVal - part1.night_out_amount).toFixed(2));
+          }
+        }
+
+        expandedShifts.push(part1, part2);
+      } else {
+        // Normal shift
+        expandedShifts.push({ ...s, real_id: s.id });
+      }
+    });
+
+    return expandedShifts;
   };
 
   const calculateSplitShiftPay = (startTimeIso: string, endTimeIso: string, drvRates: any) => {
@@ -3125,11 +3188,16 @@ export default function App() {
                               </td>
                               <td>
                                 <div className="flex align-center gap-6" style={{ flexWrap: 'wrap' }}>
+                                  {shift.is_week_boundary && (
+                                    <span className="badge badge-warning text-xs" style={{ backgroundColor: '#FEF3C7', color: '#B45309', border: '1px solid #F59E0B', marginBottom: '4px', width: 'fit-content' }}>
+                                      ✂️ WEEK BOUNDARY ({shift.boundary_label})
+                                    </span>
+                                  )}
                                   {isFlagged && <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>⚠️ &gt;18h</span>}
                                   <button 
                                     className="btn btn-secondary flex align-center gap-2" 
                                     style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 'bold' }}
-                                    onClick={() => handleEditShiftTime(shift.id, shift.start_time, shift.end_time)}
+                                    onClick={() => handleEditShiftTime(shift.real_id || shift.id, shift.start_time, shift.end_time)}
                                   >
                                     ✏️ EDIT TIME
                                   </button>
@@ -3144,7 +3212,7 @@ export default function App() {
                                       color: (shift.night_out_allowance ?? shift.night_out_amount) ? '#047857' : '#4B5563',
                                       backgroundColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#ECFDF5' : 'transparent'
                                     }}
-                                    onClick={() => handleNightOutAmount(shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
+                                    onClick={() => handleNightOutAmount(shift.real_id || shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
                                   >
                                     {(shift.night_out_allowance ?? shift.night_out_amount) ? `🌙 N/O: £${Number(shift.night_out_allowance ?? shift.night_out_amount).toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
                                   </button>
@@ -3159,7 +3227,7 @@ export default function App() {
                                       color: shift.extras_amount ? '#1D4ED8' : '#4B5563',
                                       backgroundColor: shift.extras_amount ? '#EFF6FF' : 'transparent'
                                     }}
-                                    onClick={() => handleEditExtras(shift.id, shift.extras_amount ?? null, shift.extras_note ?? null)}
+                                    onClick={() => handleEditExtras(shift.real_id || shift.id, shift.extras_amount ?? null, shift.extras_note ?? null)}
                                   >
                                     ✏️ Edit Extras {shift.extras_amount ? `(£${Number(shift.extras_amount).toFixed(2)})` : ''}
                                   </button>
