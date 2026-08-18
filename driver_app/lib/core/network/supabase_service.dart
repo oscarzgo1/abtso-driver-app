@@ -68,12 +68,20 @@ class SupabaseService {
             .eq('id', driverUuid)
             .single();
 
-        // Fetch rate breakdown from employee_rates (set by admin panel)
-        double monFriRate = profile['hourly_rate'] != null
-            ? (profile['hourly_rate'] as num).toDouble()
-            : 16.00;
-        double satRate = monFriRate + 1.0;
-        double sunRate = monFriRate + 2.0;
+        final String rateType = (profile['rate_type'] != null && profile['rate_type'].toString().isNotEmpty)
+            ? profile['rate_type'].toString()
+            : 'Hourly';
+        final double? fixedRate = (profile['fixed_rate'] as num?)?.toDouble();
+        final double hourlyRate = (profile['hourly_rate'] as num?)?.toDouble()
+            ?? (profile['mon_fri_rate'] as num?)?.toDouble()
+            ?? 16.00;
+        double monFriRate = (profile['mon_fri_rate'] as num?)?.toDouble() ?? hourlyRate;
+        double satRate = (profile['saturday_rate'] as num?)?.toDouble()
+            ?? (profile['sat_rate'] as num?)?.toDouble()
+            ?? (monFriRate + 1.0);
+        double sunRate = (profile['sunday_rate'] as num?)?.toDouble()
+            ?? (profile['sun_rate'] as num?)?.toDouble()
+            ?? (monFriRate + 2.0);
 
         try {
           final rateRow = await client
@@ -97,10 +105,14 @@ class SupabaseService {
             'id': driverUuid,
             'driver_id': profile['driver_id'],
             'name': profile['full_name'],
-            'hourly_rate': monFriRate,
+            'full_name': profile['full_name'],
+            'rate_type': rateType,
+            'fixed_rate': fixedRate,
+            'hourly_rate': hourlyRate,
             'mon_fri_rate': monFriRate,
             'sat_rate': satRate,
             'sun_rate': sunRate,
+            'agency_name': profile['agency_name'],
             'rate_profile': profile['rate_profile'] ?? 'LWR',
           },
         };
@@ -288,16 +300,23 @@ class SupabaseService {
     final week2 = d2.difference(DateTime(d2.year, 1, 1)).inDays ~/ 7;
     return d1.year == d2.year && week1 == week2;
   }
-  static Future<Map<String, dynamic>> fetchDriverProfile(String driverCode) async {
+  static Future<Map<String, dynamic>> fetchDriverProfile(String driverCodeOrId) async {
     if (isMockMode) {
-      _mockDriverId = driverCode;
+      _mockDriverId = driverCodeOrId;
       _mockDriverName = 'John Smith';
       return {
         'success': true,
         'driver': {
           'id': 'drv-1',
-          'driver_id': driverCode,
+          'driver_id': driverCodeOrId,
+          'name': 'John Smith',
           'full_name': 'John Smith',
+          'rate_type': 'Hourly',
+          'fixed_rate': null,
+          'hourly_rate': 16.00,
+          'mon_fri_rate': 16.00,
+          'sat_rate': 17.00,
+          'sun_rate': 18.00,
           'rate_profile': _mockRateProfile,
         },
       };
@@ -307,17 +326,39 @@ class SupabaseService {
       final response = await client
           .from('drivers')
           .select('*')
-          .eq('driver_id', driverCode)
+          .or('driver_id.eq.$driverCodeOrId,id.eq.$driverCodeOrId')
           .maybeSingle();
 
       if (response != null) {
+        final String rateType = (response['rate_type'] != null && response['rate_type'].toString().isNotEmpty)
+            ? response['rate_type'].toString()
+            : 'Hourly';
+        final double? fixedRate = (response['fixed_rate'] as num?)?.toDouble();
+        final double hourlyRate = (response['hourly_rate'] as num?)?.toDouble()
+            ?? (response['mon_fri_rate'] as num?)?.toDouble()
+            ?? 16.00;
+        final double monFriRate = (response['mon_fri_rate'] as num?)?.toDouble() ?? hourlyRate;
+        final double satRate = (response['saturday_rate'] as num?)?.toDouble()
+            ?? (response['sat_rate'] as num?)?.toDouble()
+            ?? (monFriRate + 1.0);
+        final double sunRate = (response['sunday_rate'] as num?)?.toDouble()
+            ?? (response['sun_rate'] as num?)?.toDouble()
+            ?? (monFriRate + 2.0);
+
         return {
           'success': true,
           'driver': {
             'id': response['id'],
             'driver_id': response['driver_id'],
             'name': response['full_name'],
-            'hourly_rate': response['hourly_rate'] != null ? (response['hourly_rate'] as num).toDouble() : null,
+            'full_name': response['full_name'],
+            'rate_type': rateType,
+            'fixed_rate': fixedRate,
+            'hourly_rate': hourlyRate,
+            'mon_fri_rate': monFriRate,
+            'sat_rate': satRate,
+            'sun_rate': sunRate,
+            'agency_name': response['agency_name'],
             'rate_profile': response['rate_profile'] ?? 'LWR',
           },
         };
@@ -329,7 +370,7 @@ class SupabaseService {
     } catch (e) {
       return {
         'success': false,
-        'error': 'Database profile connection failed.',
+        'error': 'Database profile connection failed: $e',
       };
     }
   }

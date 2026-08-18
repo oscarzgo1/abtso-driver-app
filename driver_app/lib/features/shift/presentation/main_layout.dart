@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import '../../../core/network/supabase_service.dart';
 import 'home_screen.dart';
 import '../../auth/presentation/auth_provider.dart';
@@ -113,6 +114,7 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
   late DateTime _endDate;
   List<Map<String, dynamic>> _shifts = [];
   bool _isLoading = false;
+  RealtimeChannel? _historyShiftsChannel;
 
   @override
   void initState() {
@@ -123,6 +125,44 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
     _startDate = DateTime(now.year, now.month, now.day).subtract(Duration(days: daysToSubtract));
     _endDate = _startDate.add(const Duration(days: 6));
     _loadShifts();
+    _setupHistoryRealtime();
+  }
+
+  void _setupHistoryRealtime() {
+    final driverId = SupabaseService.currentDriverId;
+    if (driverId == null || SupabaseService.isMockMode) return;
+
+    try {
+      _historyShiftsChannel = SupabaseService.client
+          .channel('history_tab_shifts_$driverId')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'shifts',
+            filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'driver_id',
+              value: driverId,
+            ),
+            callback: (_) {
+              debugPrint('⚡ Shifts updated via Realtime in HistoryTab. Refreshing...');
+              if (mounted) {
+                _loadShifts();
+                ref.read(authProvider.notifier).refreshProfile();
+              }
+            },
+          )
+          ..subscribe();
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    if (_historyShiftsChannel != null) {
+      SupabaseService.client.removeChannel(_historyShiftsChannel!);
+      _historyShiftsChannel = null;
+    }
+    super.dispose();
   }
 
   Future<void> _loadShifts() async {
@@ -197,19 +237,22 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
     final double totalHours = _shifts.fold(0.0, (sum, s) => sum + ((s['total_hours'] as num?)?.toDouble() ?? 0.0));
     final double totalPay = _shifts.fold(0.0, (sum, s) => sum + ((s['total_pay'] as num?)?.toDouble() ?? 0.0));
     
-    // Derive rate from admin-set employee_rates (fetched at login from Supabase)
+    // Derive dynamic rate from driver profile
     final authState = ref.watch(authProvider);
     final driverMap = authState.driver;
-    final monFriRate = (driverMap?['mon_fri_rate'] as num?)?.toDouble()
-        ?? (driverMap?['hourly_rate'] as num?)?.toDouble()
-        ?? 16.00;
+    final isFixed = driverMap?['rate_type'] == 'Fixed Shift Rate (Day Rate)' || driverMap?['rate_type'] == 'Fixed';
+    final double rateValue = isFixed
+        ? ((driverMap?['fixed_rate'] as num?)?.toDouble() ?? 0.0)
+        : ((driverMap?['hourly_rate'] as num?)?.toDouble() ?? (driverMap?['mon_fri_rate'] as num?)?.toDouble() ?? 16.0);
 
     final rates = _shifts
-        .map((s) => (s['effective_rate'] as num?)?.toDouble() ?? (s['base_hourly_rate'] as num?)?.toDouble() ?? monFriRate)
+        .map((s) => (s['effective_rate'] as num?)?.toDouble() ?? (s['base_hourly_rate'] as num?)?.toDouble() ?? rateValue)
         .toSet()
         .toList();
     rates.sort();
-    final ratesString = rates.isNotEmpty ? rates.map((r) => '£${r.toStringAsFixed(2)}/HR').join(', ') : '£${monFriRate.toStringAsFixed(2)}/HR';
+    final ratesString = isFixed
+        ? '£${rateValue.toStringAsFixed(2)}/SHIFT'
+        : (rates.isNotEmpty ? rates.map((r) => '£${r.toStringAsFixed(2)}/HR').join(', ') : '£${rateValue.toStringAsFixed(2)}/HR');
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -494,8 +537,14 @@ class SettingsTab extends ConsumerWidget {
     final authState = ref.watch(authProvider);
     final theme = Theme.of(context);
 
-    final driverName = authState.driver?['full_name'] ?? 'Driver';
+    final driverName = authState.driver?['full_name'] ?? authState.driver?['name'] ?? 'Driver';
     final driverCode = authState.driver?['driver_id'] ?? 'DRV-001';
+
+    final isFixed = authState.driver?['rate_type'] == 'Fixed Shift Rate (Day Rate)' || authState.driver?['rate_type'] == 'Fixed';
+    final double rateValue = isFixed
+        ? ((authState.driver?['fixed_rate'] as num?)?.toDouble() ?? 0.0)
+        : ((authState.driver?['hourly_rate'] as num?)?.toDouble() ?? (authState.driver?['mon_fri_rate'] as num?)?.toDouble() ?? 16.0);
+    final String rateSuffix = isFixed ? '/shift' : '/hr';
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -551,7 +600,7 @@ class SettingsTab extends ConsumerWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'ID: $driverCode',
+                          'ID: $driverCode • Base Rate: £${rateValue.toStringAsFixed(2)}$rateSuffix',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             fontSize: 12, color: const Color(0xFF888888),
                           ),

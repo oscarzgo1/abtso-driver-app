@@ -109,6 +109,22 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState(status: AuthStatus.initial);
   }
 
+  /// Force fresh read of driver profile from database (bypassing cache and triggering UI re-render)
+  Future<void> refreshProfile() async {
+    final driverUuid = state.driver?['id'] ?? SupabaseService.currentDriverId;
+    final driverCode = state.driver?['driver_id'];
+    final lookupKey = driverUuid ?? driverCode;
+    if (lookupKey == null) return;
+    try {
+      final result = await SupabaseService.fetchDriverProfile(lookupKey.toString());
+      if (result['success'] == true && result['driver'] != null) {
+        state = state.copyWith(
+          driver: result['driver'],
+        );
+      }
+    } catch (_) {}
+  }
+
   Future<void> login(String driverId, String pin) async {
     // Validation
     if (driverId.trim().isEmpty) {

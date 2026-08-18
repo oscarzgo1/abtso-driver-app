@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import '../../../config/theme.dart';
 import '../../auth/presentation/auth_provider.dart';
 import 'shift_provider.dart';
@@ -26,6 +27,79 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   final MapController _mapController = MapController();
   late AnimationController _iconAnimationController;
 
+  RealtimeChannel? _driverProfileChannel;
+  RealtimeChannel? _shiftsChannel;
+
+  /// Aggressive fresh read of driver profile, active shift, and depots from database
+  Future<void> fetchDashboardData() async {
+    final driverId = SupabaseService.currentDriverId;
+    if (driverId == null) return;
+    debugPrint('🔄 Aggressively fetching fresh dashboard data for driver $driverId...');
+    await ref.read(authProvider.notifier).refreshProfile();
+    await ref.read(shiftProvider.notifier).loadActiveShift();
+    await ref.read(shiftProvider.notifier).fetchDepots();
+  }
+
+  void _setupRealtimeListeners(String driverId) {
+    _cleanupRealtimeListeners();
+    if (SupabaseService.isMockMode) return;
+
+    try {
+      debugPrint('📡 Setting up Realtime channels for driver: $driverId');
+      
+      // 1. Driver Profile Realtime (Rates, Agency, Rate Type, etc.)
+      _driverProfileChannel = SupabaseService.client
+          .channel('driver_profile_updates_$driverId')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'drivers',
+            filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'id',
+              value: driverId,
+            ),
+            callback: (PostgresChangePayload payload) {
+              debugPrint('⚡ Profile updated via Realtime: ${payload.newRecord}. Refreshing data...');
+              fetchDashboardData();
+            },
+          )
+          ..subscribe();
+
+      // 2. Driver Shifts Realtime (Clock in/out, Admin manual edits, Flags, Night Out, Extras)
+      _shiftsChannel = SupabaseService.client
+          .channel('driver_shifts_updates_$driverId')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'shifts',
+            filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'driver_id',
+              value: driverId,
+            ),
+            callback: (PostgresChangePayload payload) {
+              debugPrint('⚡ Shifts updated via Realtime: ${payload.newRecord}. Refreshing data...');
+              fetchDashboardData();
+            },
+          )
+          ..subscribe();
+    } catch (e) {
+      debugPrint('Realtime channel subscription error: $e');
+    }
+  }
+
+  void _cleanupRealtimeListeners() {
+    if (_driverProfileChannel != null) {
+      SupabaseService.client.removeChannel(_driverProfileChannel!);
+      _driverProfileChannel = null;
+    }
+    if (_shiftsChannel != null) {
+      SupabaseService.client.removeChannel(_shiftsChannel!);
+      _shiftsChannel = null;
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -35,13 +109,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       vsync: this,
     );
 
-    // Check authentication on launch
-    Future.microtask(() {
+    // Check authentication on launch and initialize realtime subscriptions
+    Future.microtask(() async {
       if (!mounted) return;
       if (!SupabaseService.isAuthenticated) {
         context.goNamed('login');
       } else {
-        ref.read(shiftProvider.notifier).initialize();
+        await ref.read(shiftProvider.notifier).initialize();
+        await fetchDashboardData();
+        final driverId = SupabaseService.currentDriverId;
+        if (driverId != null) {
+          _setupRealtimeListeners(driverId);
+        }
       }
 
       if (ref.read(shiftProvider).activeShift != null) {
@@ -78,6 +157,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
   @override
   void dispose() {
+    _cleanupRealtimeListeners();
     _shiftDurationTimer?.cancel();
     _mapController.dispose();
     _iconAnimationController.dispose();
@@ -98,6 +178,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     final dateFormat = DateFormat('EEEE, d MMM yyyy');
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+
+    final authState = ref.read(authProvider);
+    final driverMap = authState.driver;
+    final isFixed = driverMap?['rate_type'] == 'Fixed Shift Rate (Day Rate)' || driverMap?['rate_type'] == 'Fixed';
+    final double rateValue = isFixed
+        ? ((driverMap?['fixed_rate'] as num?)?.toDouble() ?? 0.0)
+        : ((driverMap?['hourly_rate'] as num?)?.toDouble() ?? (driverMap?['mon_fri_rate'] as num?)?.toDouble() ?? 16.0);
+    final rateSuffix = isFixed ? '/SHIFT' : '/HR';
+    final double effRate = (completedShift.effectiveRate as num?)?.toDouble() ?? (completedShift.baseHourlyRate as num?)?.toDouble() ?? rateValue;
 
     showModalBottomSheet(
       context: context,
@@ -138,7 +227,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               const SizedBox(height: 24),
               
               // Shift Info Grid
-              _buildSummaryRow(context, 'BASE RATE', '${currencyFormat.format(completedShift.effectiveRate ?? 16.00)}/HR'),
+              _buildSummaryRow(context, 'BASE RATE', '£${effRate.toStringAsFixed(2)}$rateSuffix'),
               const Divider(height: 24, thickness: 1),
               _buildSummaryRow(context, 'TOTAL HOURS', '${completedShift.totalHours?.toStringAsFixed(2) ?? '0.00'} HRS'),
               if (completedShift.nightOutAmount > 0 || completedShift.nightOutStatus == 'approved') ...[
@@ -299,9 +388,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     final authState = ref.watch(authProvider);
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-
     final isClockedIn = state.activeShift != null;
     final driverName = authState.driver?['name'] ?? authState.driver?['full_name'] ?? 'Driver';
+    final driverMap = authState.driver;
+
+    // Dynamic rate display logic based on driver's profile rate_type
+    final isFixed = driverMap?['rate_type'] == 'Fixed Shift Rate (Day Rate)' || driverMap?['rate_type'] == 'Fixed';
+    final double rateValue = isFixed
+        ? ((driverMap?['fixed_rate'] as num?)?.toDouble() ?? 0.0)
+        : ((driverMap?['hourly_rate'] as num?)?.toDouble() ?? (driverMap?['mon_fri_rate'] as num?)?.toDouble() ?? 16.0);
+    final String rateSuffix = isFixed ? '/shift' : '/hr';
 
     // Hook logic to open completed shift summary sheet and trigger icon morph
     ref.listen<ShiftState>(shiftProvider, (previous, next) {
@@ -333,12 +429,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     // Listen for dispatcher manual logout / session termination
     ref.listen<AuthState>(authProvider, (previous, next) {
       if (next.status == AuthStatus.initial) {
+        _cleanupRealtimeListeners();
         context.goNamed('login');
+      } else if (next.status == AuthStatus.authenticated && previous?.driver?['id'] != next.driver?['id']) {
+        final newDriverId = next.driver?['id'];
+        if (newDriverId != null) {
+          _setupRealtimeListeners(newDriverId.toString());
+        }
       }
     });
-
-
-
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -355,6 +454,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
           IconButton(
             icon: const Icon(Icons.logout, size: 18, color: Color(0xFF333333)),
             onPressed: () {
+              _cleanupRealtimeListeners();
               ref.read(authProvider.notifier).logout();
               context.goNamed('login');
             },
@@ -366,7 +466,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Driver Profile Header Card (Minimalist)
+            // Driver Profile Header Card (Minimalist & Dynamic Rate Display)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
               decoration: const BoxDecoration(
@@ -378,22 +478,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: Color(0xFF2E7D32), // Green online indicator
-                          shape: BoxShape.circle,
-                        ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 8,
+                            height: 8,
+                            decoration: const BoxDecoration(
+                              color: Color(0xFF2E7D32), // Green online indicator
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            driverName.toUpperCase(),
+                            style: theme.textTheme.bodyLarge?.copyWith(
+                              fontWeight: FontWeight.w900, color: const Color(0xFF333333),
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(height: 2),
                       Text(
-                        driverName.toUpperCase(),
-                        style: theme.textTheme.bodyLarge?.copyWith(
-                          fontWeight: FontWeight.w900, color: const Color(0xFF333333),
+                        'Base Rate: £${rateValue.toStringAsFixed(2)}$rateSuffix',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFF666666),
                         ),
                       ),
                     ],
@@ -562,7 +677,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     _buildShiftStat(
                       context,
                       'ACCRUED PAY',
-                      '£${(_elapsedTime.inSeconds <= 0 ? 0.0 : ((_elapsedTime.inSeconds / 3600.0) * (state.activeShift?.baseHourlyRate ?? 16.00))).toStringAsFixed(2)}',
+                      isFixed
+                          ? '£${rateValue.toStringAsFixed(2)}'
+                          : '£${(_elapsedTime.inSeconds <= 0 ? 0.0 : ((_elapsedTime.inSeconds / 3600.0) * (state.activeShift?.baseHourlyRate ?? rateValue))).toStringAsFixed(2)}',
                     ),
                   ],
                 ),
