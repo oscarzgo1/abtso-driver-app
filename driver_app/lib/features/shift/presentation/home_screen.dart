@@ -134,19 +134,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     });
   }
 
-  DateTime? _localClockInTime;
-
   void _updateTimerTick() {
     if (!mounted) return;
     final activeShift = ref.read(shiftProvider).activeShift;
     if (activeShift != null) {
-      _localClockInTime ??= activeShift.startTime.toLocal();
-      final elapsed = DateTime.now().difference(_localClockInTime!);
+      final now = DateTime.now().toUtc();
+      final start = activeShift.startTime.toUtc();
+      final diff = now.difference(start);
+      final elapsed = diff.isNegative ? Duration.zero : diff;
       setState(() {
-        _elapsedTime = elapsed.isNegative ? Duration.zero : elapsed;
+        _elapsedTime = elapsed;
       });
     } else {
-      _localClockInTime = null;
       if (_elapsedTime != Duration.zero) {
         setState(() {
           _elapsedTime = Duration.zero;
@@ -387,10 +386,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     final state = ref.watch(shiftProvider);
     final authState = ref.watch(authProvider);
     final theme = Theme.of(context);
+    final activeShift = state.activeShift;
+    final isClockedIn = activeShift != null;
+
+    // Absolute dynamic calculation based strictly on activeShift.startTime
+    final Duration liveDuration;
+    if (isClockedIn) {
+      final diff = DateTime.now().toUtc().difference(activeShift.startTime.toUtc());
+      liveDuration = diff.isNegative ? Duration.zero : diff;
+    } else {
+      liveDuration = Duration.zero;
+    }
+    final effectiveDuration = isClockedIn ? (_elapsedTime.inSeconds > 0 ? _elapsedTime : liveDuration) : Duration.zero;
+    final double liveHoursDecimal = effectiveDuration.inMilliseconds / (1000.0 * 60.0 * 60.0);
+
     final isDark = theme.brightness == Brightness.dark;
-    final isClockedIn = state.activeShift != null;
-    final driverName = authState.driver?['name'] ?? authState.driver?['full_name'] ?? 'Driver';
     final driverMap = authState.driver;
+    final driverName = driverMap?['name'] ?? driverMap?['full_name'] ?? 'Driver';
 
     // Dynamic rate display logic based on driver's profile rate_type
     final isFixed = driverMap?['rate_type'] == 'Fixed Shift Rate (Day Rate)' || driverMap?['rate_type'] == 'Fixed';
@@ -398,6 +410,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         ? ((driverMap?['fixed_rate'] as num?)?.toDouble() ?? 0.0)
         : ((driverMap?['hourly_rate'] as num?)?.toDouble() ?? (driverMap?['mon_fri_rate'] as num?)?.toDouble() ?? 16.0);
     final String rateSuffix = isFixed ? '/shift' : '/hr';
+
+    final double calculatedAccruedEarnings = isFixed
+        ? rateValue
+        : (liveHoursDecimal * (activeShift?.baseHourlyRate ?? rateValue));
 
     // Hook logic to open completed shift summary sheet and trigger icon morph
     ref.listen<ShiftState>(shiftProvider, (previous, next) {
@@ -411,13 +427,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       final wasClockedIn = previous?.activeShift != null;
       final isNowClockedIn = next.activeShift != null;
       if (wasClockedIn != isNowClockedIn) {
+        _updateTimerTick();
         if (isNowClockedIn) {
-          _localClockInTime = DateTime.now();
-          _updateTimerTick();
           _iconAnimationController.forward();
         } else {
-          _localClockInTime = null;
-          _updateTimerTick();
           _iconAnimationController.reverse();
           setState(() {
             _elapsedTime = Duration.zero;
@@ -673,13 +686,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                           ? DateFormat('HH:mm').format(state.activeShift!.startTime.toLocal())
                           : '--:--',
                     ),
-                    _buildShiftStat(context, 'ELAPSED', _formatDuration(_elapsedTime)),
+                    _buildShiftStat(context, 'ELAPSED', _formatDuration(effectiveDuration)),
                     _buildShiftStat(
                       context,
                       'ACCRUED PAY',
-                      isFixed
-                          ? '£${rateValue.toStringAsFixed(2)}'
-                          : '£${(_elapsedTime.inSeconds <= 0 ? 0.0 : ((_elapsedTime.inSeconds / 3600.0) * (state.activeShift?.baseHourlyRate ?? rateValue))).toStringAsFixed(2)}',
+                      '£${calculatedAccruedEarnings.toStringAsFixed(2)}',
                     ),
                   ],
                 ),

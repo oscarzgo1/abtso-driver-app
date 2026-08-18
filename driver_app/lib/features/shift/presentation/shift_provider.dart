@@ -484,11 +484,13 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
             .from('shifts')
             .select()
             .eq('driver_id', driverId)
-            .eq('status', 'active')
+            .or('status.eq.active,status.eq.in_progress,end_time.is.null')
+            .order('start_time', ascending: false)
+            .limit(1)
             .maybeSingle();
       }
 
-      if (response != null) {
+      if (response != null && response['status'] != 'completed' && response['end_time'] == null) {
         final activeShift = DriverShift.fromJson(response);
         state = state.copyWith(activeShift: activeShift);
         await _startBackgroundTrackingService(driverId, activeShift.id);
@@ -873,7 +875,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
           debugPrint('REALTIME SHIFTS RECEIVED: ${shiftsList.length} rows');
           
           final activeShiftMap = shiftsList.firstWhere(
-            (s) => s['status'] == 'active',
+            (s) => (s['status'] == 'active' || s['status'] == 'in_progress') && s['end_time'] == null,
             orElse: () => <String, dynamic>{},
           );
 
