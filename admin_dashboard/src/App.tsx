@@ -1686,6 +1686,67 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  const handleExportSummaryCSV = () => {
+    const filteredShifts = getFilteredShifts();
+    if (filteredShifts.length === 0) {
+      alert("No data available to export.");
+      return;
+    }
+
+    // 1. Safely aggregate data (identical logic to the Weekly Summary UI)
+    const summaryData: any = {};
+    filteredShifts.forEach(shift => {
+       const { grossPay, noAmt, extrasAmt, liveHours } = getShiftFinancials(shift);
+       const id = shift.driver_id;
+       if (!summaryData[id]) {
+           summaryData[id] = {
+               driver_name: shift.driver_name,
+               agency: employeeRates[id]?.agency_name || 'Direct',
+               total_hours: 0,
+               total_gross: 0,
+               total_night_outs: 0,
+               total_extras: 0,
+               shift_count: 0
+           };
+       }
+       summaryData[id].total_hours += (liveHours || 0);
+       summaryData[id].total_gross += grossPay;
+       summaryData[id].total_extras += extrasAmt;
+       summaryData[id].total_night_outs += (noAmt > 0 ? 1 : 0);
+       
+       if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) {
+           summaryData[id].shift_count += 1;
+       }
+    });
+
+    // 2. Construct CSV Content
+    const headers = ["Employee Name", "Agency", "Shifts Logged", "Total Hours", "Night Outs", "Extras (£)", "Gross Pay (£)"];
+    const rows = Object.values(summaryData).map((row: any) => [
+       `"${row.driver_name}"`,
+       `"${row.agency}"`,
+       row.shift_count,
+       row.total_hours.toFixed(2),
+       row.total_night_outs,
+       row.total_extras.toFixed(2),
+       row.total_gross.toFixed(2)
+    ]);
+
+    const csvContent = [
+       headers.join(","), 
+       ...rows.map(r => r.join(","))
+    ].join("\n");
+
+    // 3. Trigger Download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `Payroll_Summary_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
     console.log("Saving rate profile overrides directly to drivers table for driver ID:", driverId);
@@ -3206,6 +3267,14 @@ export default function App() {
                        onClick={() => setReportViewMode('summary')}
                     >
                        📊 WEEKLY SUMMARY
+                    </button>
+
+                    <button 
+                       className="btn btn-primary flex align-center gap-6" 
+                       style={{ backgroundColor: '#10B981', borderColor: '#059669', color: 'white', fontWeight: 'bold' }}
+                       onClick={handleExportSummaryCSV}
+                    >
+                       📤 EXPORT SUMMARY
                     </button>
 
                     <input 
