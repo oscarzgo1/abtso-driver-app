@@ -458,12 +458,21 @@ export default function App() {
 
       // Fetch Drivers directly from Supabase — single source of truth
       const { data: drvs } = await supabase!.from('drivers').select('*').order('created_at', { ascending: false });
-      setEmployees(drvs || []);
+      
+      const mappedDrivers = (drvs || []).map((d: any) => {
+        const agencyVal = d.agency_name || d.agency || 'Direct';
+        return {
+          ...d,
+          agency_name: agencyVal,
+          agency: agencyVal
+        };
+      });
+      setEmployees(mappedDrivers);
 
-      if (drvs && activeRole === 'payroll_admin') {
+      if (mappedDrivers.length > 0 && activeRole === 'payroll_admin') {
         const ratesMap: Record<string, EmployeeRate> = {};
 
-        drvs.forEach((d: any) => {
+        mappedDrivers.forEach((d: any) => {
           const rateTypeVal = d.rate_type === 'Fixed Shift Rate (Day Rate)'
             ? 'Fixed Shift Rate (Day Rate)'
             : 'Hourly';
@@ -478,9 +487,11 @@ export default function App() {
             ? (Number(d.fixed_rate) || Number(d.hourly_rate) || null)
             : (d.fixed_rate ? Number(d.fixed_rate) : null);
 
+          const agencyVal = d.agency_name || d.agency || 'Direct';
+
           const mappedRate: EmployeeRate = {
             id: d.id,
-            driver_id: d.id,
+            driver_id: d.driver_id || d.id,
             rate_type: rateTypeVal,
             fixed_rate: fixedRateVal,
             mon_fri_rate: baseHourly,
@@ -488,12 +499,12 @@ export default function App() {
             sunday_rate: sunHourly,
             sat_rate: satHourly,
             sun_rate: sunHourly,
-            agency_name: d.agency_name || 'Direct',
+            agency_name: agencyVal,
           };
-          ratesMap[d.id] = mappedRate;
-          if (d.driver_id) {
-            ratesMap[d.driver_id] = mappedRate;
-          }
+          if (d.id) ratesMap[d.id] = mappedRate;
+          if (d.driver_id) ratesMap[d.driver_id] = mappedRate;
+          if (d.employee_id) ratesMap[d.employee_id] = mappedRate;
+          if (d.driver_code) ratesMap[d.driver_code] = mappedRate;
         });
 
         setEmployeeRates(ratesMap);
@@ -1761,17 +1772,23 @@ export default function App() {
     const parsedSat = parseFloat(editSatRate) || 17.00;
     const parsedSun = parseFloat(editSunRate) || 18.00;
 
+    const targetAgency = editAgencyName || 'Direct';
+    const agencyFields = {
+      agency_name: targetAgency,
+      agency: targetAgency
+    };
+
     // CRITICAL: Update drivers table. Keep hourly cols populated (non-null)
     // so the DB always has readable rate data regardless of schema cache state.
     const driverPayload: any = {
+      ...agencyFields,
       rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
       fixed_rate: isFixed ? parsedFixed : null,
       // Keep hourly fields populated always — display logic uses rate_type to decide rendering
       mon_fri_rate: parsedMonFri,
       saturday_rate: parsedSat,
       sunday_rate: parsedSun,
-      hourly_rate: isFixed ? parsedFixed : parsedMonFri,
-      agency_name: editAgencyName || 'Direct'
+      hourly_rate: isFixed ? parsedFixed : parsedMonFri
     };
 
     const localDisplayRate: EmployeeRate = {
@@ -1783,7 +1800,7 @@ export default function App() {
       sunday_rate: isFixed ? parsedFixed : parsedSun,
       sat_rate: isFixed ? parsedFixed : parsedSat,
       sun_rate: isFixed ? parsedFixed : parsedSun,
-      agency_name: editAgencyName || 'Direct',
+      agency_name: targetAgency,
     };
 
     // Optimistically update local state for all key variations (UUID & code)
@@ -1804,7 +1821,8 @@ export default function App() {
       sat_rate: localDisplayRate.sat_rate,
       sun_rate: localDisplayRate.sun_rate,
       hourly_rate: localDisplayRate.mon_fri_rate,
-      agency_name: localDisplayRate.agency_name
+      agency_name: localDisplayRate.agency_name,
+      agency: localDisplayRate.agency_name
     } : e));
 
     setEditingRateDriverId(null);
@@ -1837,7 +1855,7 @@ export default function App() {
 
         // Tier 2: Drop all potentially uncached extended columns, keep essentials
         const tier2Payload: any = {
-          agency_name: editAgencyName || 'Direct',
+          ...agencyFields,
           rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
           fixed_rate: isFixed ? parsedFixed : null,
           hourly_rate: isFixed ? parsedFixed : parsedMonFri,
@@ -1862,7 +1880,7 @@ export default function App() {
           const tier3Res = await supabase!
             .from('drivers')
             .update({ 
-              agency_name: editAgencyName || 'Direct',
+              ...agencyFields,
               hourly_rate: isFixed ? parsedFixed : parsedMonFri,
               mon_fri_rate: parsedMonFri,
               saturday_rate: parsedSat,
@@ -2991,16 +3009,17 @@ export default function App() {
                 </thead>
                 <tbody>
                   {employees.map(emp => {
-                    const currentRate = employeeRates[emp.id] || employeeRates[emp.driver_id] || {
+                    const currentRate = employeeRates[emp.id] || employeeRates[emp.driver_id] || ((emp as any).employee_id ? employeeRates[(emp as any).employee_id] : null) || {
                       driver_id: emp.id,
                       rate_type: (emp as any).rate_type || 'Hourly',
                       mon_fri_rate: Number((emp as any).mon_fri_rate ?? emp.hourly_rate) || 16.00,
                       sat_rate: Number((emp as any).saturday_rate) || 17.00,
                       sun_rate: Number((emp as any).sunday_rate) || 18.00,
-                      agency_name: (emp as any).agency_name || 'Direct',
+                      agency_name: (emp as any).agency_name || (emp as any).agency || 'Direct',
                     };
                     const isEditing = editingRateDriverId === emp.id;
                     const isFixedRate = currentRate.rate_type === 'Fixed' || Boolean(currentRate.rate_type && currentRate.rate_type.toLowerCase().includes('fixed'));
+                    const displayAgency = (emp as any).agency_name || (emp as any).agency || currentRate.agency_name || employeeRates[emp.id]?.agency_name || employeeRates[emp.driver_id]?.agency_name || 'Direct';
 
                     return (
                       <tr key={emp.id}>
@@ -3017,7 +3036,7 @@ export default function App() {
                               onChange={(e) => setEditAgencyName(e.target.value)}
                             />
                           ) : (
-                            <span className="badge badge-accent">{currentRate.agency_name}</span>
+                            <span className="badge badge-accent">{displayAgency}</span>
                           )}
                         </td>
                         <td>
