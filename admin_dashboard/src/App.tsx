@@ -1774,8 +1774,7 @@ export default function App() {
 
     const targetAgency = editAgencyName || 'Direct';
     const agencyFields = {
-      agency_name: targetAgency,
-      agency: targetAgency
+      agency_name: targetAgency
     };
 
     // CRITICAL: Update drivers table. Keep hourly cols populated (non-null)
