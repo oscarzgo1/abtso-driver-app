@@ -1749,6 +1749,13 @@ export default function App() {
             // Proportional split is correct for fixed flat rates
             part1.total_pay = Number((Number(s.total_pay) * (hours1 / totalHrs)).toFixed(2));
             part2.total_pay = Number((Number(s.total_pay) - part1.total_pay).toFixed(2));
+            
+            // Preserve the original full fixed rate explicitly for UI rendering
+            const fullFixedRate = Number(s.effective_rate) || Number(s.base_hourly_rate) || 150.00;
+            part1.effective_rate = fullFixedRate;
+            part1.base_hourly_rate = fullFixedRate;
+            part2.effective_rate = fullFixedRate;
+            part2.base_hourly_rate = fullFixedRate;
           } else {
             // Exact mathematical split for hourly rates
             const extraTotal = (Number(s.extras_amount) || 0) + (Number(s.night_out_allowance ?? s.night_out_amount) || 0);
@@ -1860,8 +1867,13 @@ export default function App() {
 
     // 3. Rate determination logic
     const getRateForDay = (day: number) => {
-      // If historically fixed, return the flat pay
-      if (hasHistoricalSnapshot && isHistoricallyFixed) return historicalBasePay !== null ? historicalBasePay : historicalRateValue;
+      // If historically fixed, return the flat pay, BUT if it's a split boundary, show the full original rate
+      if (hasHistoricalSnapshot && isHistoricallyFixed) {
+        if ((s as any).is_week_boundary) {
+          return Number(s.effective_rate) || Number(s.base_hourly_rate) || 150.00;
+        }
+        return historicalBasePay !== null ? historicalBasePay : historicalRateValue;
+      }
 
       // Use explicit profile rates based strictly on the day of the week
       if (drvRate) {
