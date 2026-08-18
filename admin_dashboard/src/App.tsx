@@ -292,6 +292,24 @@ export default function App() {
   const [newEmployeePin, setNewEmployeePin] = useState('123456');
   const [crudError, setCrudError] = useState('');
 
+  // Edit Employee State
+  const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
+  const [editFullName, setEditFullName] = useState('');
+  const [editUsername, setEditUsername] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editNewPin, setEditNewPin] = useState('');
+  const [editEmployeeError, setEditEmployeeError] = useState('');
+  const [isSavingEmployee, setIsSavingEmployee] = useState(false);
+
+  const openEditEmployeeModal = (emp: Employee) => {
+    setEditingEmployee(emp);
+    setEditFullName(emp.full_name || '');
+    setEditUsername(emp.driver_id || '');
+    setEditPhone(emp.phone || '');
+    setEditNewPin('');
+    setEditEmployeeError('');
+  };
+
   const handleNewEmployeeNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newName = e.target.value;
     setNewEmployeeName(newName);
@@ -1224,6 +1242,96 @@ export default function App() {
     }
   };
 
+
+  const handleUpdateEmployee = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingEmployee) return;
+    setEditEmployeeError('');
+    setIsSavingEmployee(true);
+
+    const cleanName = editFullName.trim();
+    const cleanUsername = editUsername.trim();
+    const cleanPhone = editPhone.trim();
+    const cleanPin = editNewPin.trim();
+
+    if (!cleanName || !cleanUsername) {
+      setEditEmployeeError('Full Name and Username are required.');
+      setIsSavingEmployee(false);
+      return;
+    }
+
+    if (cleanPin && cleanPin.length < 4) {
+      setEditEmployeeError('New PIN must be at least 4 characters if provided.');
+      setIsSavingEmployee(false);
+      return;
+    }
+
+    if (isMockMode || !supabase) {
+      setEmployees(prev =>
+        prev.map(emp =>
+          emp.id === editingEmployee.id
+            ? { ...emp, full_name: cleanName, driver_id: cleanUsername, phone: cleanPhone }
+            : emp
+        )
+      );
+      setEditingEmployee(null);
+      setIsSavingEmployee(false);
+      return;
+    }
+
+    try {
+      // 1. Direct update on drivers table for instant database synchronization
+      const dbPayload: any = {
+        full_name: cleanName,
+        driver_id: cleanUsername,
+        phone: cleanPhone,
+      };
+
+      const { error: dbError } = await supabase
+        .from('drivers')
+        .update(dbPayload)
+        .eq('id', editingEmployee.id);
+
+      if (dbError) {
+        setEditEmployeeError(`Failed to update employee: ${dbError.message}`);
+        setIsSavingEmployee(false);
+        return;
+      }
+
+      // 2. Invoke create-driver edge function to update Auth credentials if PIN or username changed
+      if (cleanPin || cleanUsername !== editingEmployee.driver_id) {
+        try {
+          await supabase.functions.invoke('create-driver', {
+            body: {
+              action: 'update',
+              id: editingEmployee.id,
+              driver_id: cleanUsername,
+              full_name: cleanName,
+              phone: cleanPhone,
+              pin: cleanPin || undefined,
+            },
+          });
+        } catch (fnErr) {
+          console.warn('Edge function auth sync warning:', fnErr);
+        }
+      }
+
+      // 3. Update local state immediately
+      setEmployees(prev =>
+        prev.map(emp =>
+          emp.id === editingEmployee.id
+            ? { ...emp, full_name: cleanName, driver_id: cleanUsername, phone: cleanPhone }
+            : emp
+        )
+      );
+      setEditingEmployee(null);
+      setIsSavingEmployee(false);
+      loadData();
+    } catch (err: any) {
+      setEditEmployeeError(`Update failed: ${err?.message ?? 'Unknown error'}`);
+      setIsSavingEmployee(false);
+    }
+  };
 
   const handleManualClockIn = async (driverId: string) => {
     if (isMockMode) {
@@ -2992,6 +3100,13 @@ export default function App() {
                               </button>
                             )}
                             <button 
+                              className="btn btn-secondary"
+                              style={{ padding: '6px 12px', fontSize: '12px', color: '#2563EB', borderColor: 'rgba(37, 99, 235, 0.3)', backgroundColor: '#EFF6FF', fontWeight: 'bold' }}
+                              onClick={() => openEditEmployeeModal(drv)}
+                            >
+                              EDIT
+                            </button>
+                            <button 
                               className={`btn ${drv.is_active ? 'btn-danger' : 'btn-success'}`}
                               style={{ padding: '6px 12px', fontSize: '12px' }}
                               onClick={() => toggleEmployeeStatus(drv.id, drv.is_active)}
@@ -3855,6 +3970,104 @@ export default function App() {
                 💾 SAVE CHANGES
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Edit Employee Profile Modal */}
+      {editingEmployee && (
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div className="modal-content glass-panel" style={{ width: '480px', padding: '28px', borderRadius: '16px', backgroundColor: '#ffffff', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', border: '1px solid #E5E7EB' }}>
+            <div className="flex justify-between align-center mb-6" style={{ borderBottom: '2px solid #F3F4F6', paddingBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h2 className="text-xl font-black text-primary m-0" style={{ margin: 0, fontSize: '18px', color: '#111827' }}>Edit Employee Profile</h2>
+                <p className="text-xs text-muted mt-1" style={{ fontSize: '12px', color: '#6B7280', margin: '4px 0 0 0' }}>Update details or reset login PIN for {editingEmployee.full_name}</p>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setEditingEmployee(null)}
+                style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#9CA3AF' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateEmployee}>
+              <div className="form-group mb-4" style={{ marginBottom: '14px' }}>
+                <label className="text-xs font-bold text-muted block mb-1" style={{ display: 'block', marginBottom: '4px', fontSize: '11px', color: '#4B5563', fontWeight: 'bold' }}>EMPLOYEE FULL NAME</label>
+                <input 
+                  type="text" 
+                  className="input-field" 
+                  value={editFullName}
+                  onChange={(e) => setEditFullName(e.target.value)}
+                  required
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div className="form-group mb-4" style={{ marginBottom: '14px' }}>
+                <label className="text-xs font-bold text-muted block mb-1" style={{ display: 'block', marginBottom: '4px', fontSize: '11px', color: '#4B5563', fontWeight: 'bold' }}>USERNAME / EMPLOYEE ID</label>
+                <input 
+                  type="text" 
+                  className="input-field" 
+                  value={editUsername}
+                  onChange={(e) => setEditUsername(e.target.value)}
+                  required
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div className="form-group mb-4" style={{ marginBottom: '14px' }}>
+                <label className="text-xs font-bold text-muted block mb-1" style={{ display: 'block', marginBottom: '4px', fontSize: '11px', color: '#4B5563', fontWeight: 'bold' }}>PHONE NUMBER</label>
+                <input 
+                  type="text" 
+                  className="input-field" 
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="+44 7700 900100"
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div className="form-group mb-6" style={{ marginBottom: '20px' }}>
+                <label className="text-xs font-bold text-muted block mb-1" style={{ display: 'block', marginBottom: '4px', fontSize: '11px', color: '#4B5563', fontWeight: 'bold' }}>NEW PIN / PASSWORD (OPTIONAL)</label>
+                <input 
+                  type="text" 
+                  className="input-field" 
+                  value={editNewPin}
+                  onChange={(e) => setEditNewPin(e.target.value)}
+                  placeholder="Enter new PIN to reset, or leave blank to keep current"
+                  maxLength={6}
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', boxSizing: 'border-box' }}
+                />
+                <p className="text-xs text-muted mt-1" style={{ color: '#6B7280', fontSize: '11px', marginTop: '4px' }}>Leave blank to keep existing PIN unchanged.</p>
+              </div>
+
+              {editEmployeeError && (
+                <div className="text-error text-sm font-semibold mb-4" style={{ color: '#EF4444', marginBottom: '16px', fontSize: '13px' }}>
+                  ⚠️ {editEmployeeError}
+                </div>
+              )}
+
+              <div className="flex gap-12 justify-end" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button 
+                  type="button" 
+                  className="btn btn-secondary" 
+                  onClick={() => setEditingEmployee(null)}
+                  disabled={isSavingEmployee}
+                  style={{ padding: '10px 18px', borderRadius: '8px', fontWeight: 'bold' }}
+                >
+                  CANCEL
+                </button>
+                <button 
+                  type="submit" 
+                  className="btn btn-primary" 
+                  disabled={isSavingEmployee}
+                  style={{ padding: '10px 20px', borderRadius: '8px', backgroundColor: '#2563EB', borderColor: '#2563EB', color: 'white', fontWeight: 'bold' }}
+                >
+                  {isSavingEmployee ? 'SAVING...' : '💾 SAVE CHANGES'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

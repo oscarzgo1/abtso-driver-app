@@ -102,6 +102,60 @@ serve(async (req: Request) => {
     }
 
     // ──────────────────────────────────────────────────────────
+    // UPDATE action
+    // ──────────────────────────────────────────────────────────
+    if (action === "update") {
+      if (!targetId) {
+        return new Response(
+          JSON.stringify({ error: "id is required to update an employee profile" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      const updatePayload: Record<string, any> = {};
+      if (full_name) updatePayload.full_name = full_name.trim();
+      if (driver_id) updatePayload.driver_id = driver_id.trim();
+      if (phone !== undefined) updatePayload.phone = phone.trim();
+
+      const { data: updatedDriver, error: updateError } = await supabaseAdmin
+        .from("drivers")
+        .update(updatePayload)
+        .eq("id", targetId)
+        .select()
+        .single();
+
+      if (updateError) {
+        console.error("Update error:", updateError.message);
+        return new Response(
+          JSON.stringify({ error: `Update failed: ${updateError.message}` }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
+      // If PIN is provided or username changed, update Auth user credentials
+      const authUpdates: Record<string, any> = {};
+      if (pin && pin.trim().length >= 4) {
+        authUpdates.password = pin.trim();
+      }
+      if (driver_id) {
+        const cleanEmail = `${driver_id.trim().toLowerCase()}@driver.abtso`;
+        authUpdates.email = cleanEmail;
+      }
+
+      if (Object.keys(authUpdates).length > 0) {
+        const { error: authErr } = await supabaseAdmin.auth.admin.updateUserById(targetId, authUpdates);
+        if (authErr) {
+          console.warn("Auth user update (non-fatal):", authErr.message);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, driver: updatedDriver }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // ──────────────────────────────────────────────────────────
     // CREATE action (default)
     // ──────────────────────────────────────────────────────────
     if (!driver_id || !full_name || !pin) {
