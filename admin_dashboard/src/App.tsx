@@ -1837,6 +1837,7 @@ export default function App() {
 
         // Tier 2: Drop all potentially uncached extended columns, keep essentials
         const tier2Payload: any = {
+          agency_name: editAgencyName || 'Direct',
           rate_type: isFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly',
           fixed_rate: isFixed ? parsedFixed : null,
           hourly_rate: isFixed ? parsedFixed : parsedMonFri,
@@ -1861,6 +1862,7 @@ export default function App() {
           const tier3Res = await supabase!
             .from('drivers')
             .update({ 
+              agency_name: editAgencyName || 'Direct',
               hourly_rate: isFixed ? parsedFixed : parsedMonFri,
               mon_fri_rate: parsedMonFri,
               saturday_rate: parsedSat,
