@@ -317,6 +317,17 @@ export default function App() {
   const [reportViewMode, setReportViewMode] = useState<'detailed' | 'summary'>('detailed');
   const [selectedShiftIds, setSelectedShiftIds] = useState<Set<string>>(new Set());
 
+  // Unified Payroll Action Modal (N/O & Extras)
+  const [actionModal, setActionModal] = useState<{
+    isOpen: boolean;
+    type: 'single' | 'bulk';
+    shiftIds: string[];
+    driverName: string;
+    currentExtras: number;
+    currentNote: string;
+    currentNO: number;
+  } | null>(null);
+
   // Leaflet Map Reference
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<{ [key: string]: L.Marker }>({});
@@ -1417,177 +1428,65 @@ export default function App() {
     }
   };
 
-  const handleNightOutAmount = async (shiftId: string, currentAllowance: number | null | undefined) => {
-    const defaultAmount = (currentAllowance && currentAllowance > 0) ? currentAllowance.toString() : "30";
-    const userInput = window.prompt(
-      "Enter the Night Out allowance amount (£) for this shift:\n(Enter 0 or leave empty to remove it)", 
-      defaultAmount
-    );
 
-    if (userInput === null) return; // User cancelled
 
-    const amount = parseFloat(userInput);
-    let newAllowance: number | null = null;
-
-    if (!isNaN(amount) && amount > 0) {
-      newAllowance = amount;
-    } // If 0 or invalid, it stays null (removes the allowance)
-
-    const targetShift = shifts.find(s => s.id === shiftId);
-    if (!targetShift) return;
-
-    let calculatedGrossPay = 0;
-    const hasStoredPay = targetShift.status === 'completed' && targetShift.total_pay !== null && targetShift.total_pay !== undefined;
-
-    if (hasStoredPay) {
-        // Pure Math: (Current Total) - (Old Allowance) + (New Allowance)
-        const oldNoAmt = Number(targetShift.night_out_allowance ?? targetShift.night_out_amount) || 0;
-        calculatedGrossPay = Number((Number(targetShift.total_pay) - oldNoAmt + (newAllowance || 0)).toFixed(2));
-    } else {
-        // For active shifts, let the engine calculate it
-        const simulatedShift = { ...targetShift, night_out_allowance: newAllowance, night_out_amount: newAllowance };
-        calculatedGrossPay = getShiftFinancials(simulatedShift as any).grossPay;
-    }
-
-    const updatePayload: any = {
-      night_out_amount: newAllowance ?? 0,
-      night_out_status: newAllowance ? 'approved' : 'none',
-      total_pay: calculatedGrossPay
-    };
-
-    let { error } = await supabase!
-      .from('shifts')
-      .update(updatePayload)
-      .eq('id', shiftId);
-
-    if (!error) {
-      // Safely try updating night_out_allowance column if migration 024 was executed
-      try {
-        await supabase!
-          .from('shifts')
-          .update({ night_out_allowance: newAllowance })
-          .eq('id', shiftId);
-      } catch (_) {}
-    }
-
-    if (error) {
-      alert("Failed to update Night Out allowance: " + error.message);
-    } else {
-      await loadData(); // Refresh UI and recalculate payroll
-    }
+  const openActionModal = (type: 'single' | 'bulk', shiftIds: string[], driverName: string, defaultExtras = 0, defaultNote = '', defaultNO = 0) => {
+    setActionModal({
+      isOpen: true,
+      type,
+      shiftIds,
+      driverName: type === 'bulk' ? `${shiftIds.length} Selected Shifts` : driverName,
+      currentExtras: defaultExtras,
+      currentNote: defaultNote,
+      currentNO: defaultNO
+    });
   };
 
-  const handleEditExtras = async (shiftId: string, currentAmount: number | null, currentNote: string | null) => {
-    const noteInput = window.prompt("Enter a note for this extra charge/bonus (e.g., 'Tolls', 'Damage'):", currentNote || "");
-    if (noteInput === null) return; // Cancelled
-
-    const amountInput = window.prompt("Enter the amount (£). Use negative numbers for deductions:", currentAmount?.toString() || "0");
-    if (amountInput === null) return; // Cancelled
-
-    const amount = parseFloat(amountInput);
-    if (isNaN(amount)) {
-       alert("Invalid amount.");
-       return;
-    }
-
-    const targetShift = shifts.find(s => s.id === shiftId);
-    if (!targetShift) return;
-
-    let calculatedGrossPay = 0;
-    const hasStoredPay = targetShift.status === 'completed' && targetShift.total_pay !== null && targetShift.total_pay !== undefined;
-
-    if (hasStoredPay) {
-        // Pure Math: (Current Total) - (Old Extras) + (New Extras)
-        const oldExtras = Number(targetShift.extras_amount) || 0;
-        calculatedGrossPay = Number((Number(targetShift.total_pay) - oldExtras + amount).toFixed(2));
-    } else {
-        // For active shifts, let the engine calculate it from scratch
-        const simulatedShift = { ...targetShift, extras_amount: amount };
-        calculatedGrossPay = getShiftFinancials(simulatedShift as any).grossPay;
-    }
-
-    const extrasPayload: any = {
-      extras_amount: amount,
-      extras_note: noteInput,
-      total_pay: calculatedGrossPay
-    };
-
-    // Update DB
-    const { error } = await supabase!
-      .from('shifts')
-      .update(extrasPayload)
-      .eq('id', shiftId);
-
-    if (error) {
-       alert("Database Error saving extras: " + error.message);
-    } else {
-       await loadData(); // Hard refresh to sync UI perfectly
-    }
-  };
-
-  const handleBulkNightOut = async () => {
-    if (selectedShiftIds.size === 0) return;
-    const userInput = window.prompt(`Apply Night Out allowance (£) to ${selectedShiftIds.size} shift(s):\n(Enter 0 to remove)`, "30");
-    if (userInput === null) return;
-    const amount = parseFloat(userInput);
-    const newAllowance = (!isNaN(amount) && amount > 0) ? amount : null;
-
-    for (const shiftId of Array.from(selectedShiftIds)) {
-       const targetShift = shifts.find(s => s.id === shiftId);
+  const handleSaveModalAction = async (newNO: number, newExtras: number, newNote: string) => {
+    if (!actionModal) return;
+    
+    for (const shiftId of actionModal.shiftIds) {
+       const targetShift = shifts.find(s => s.id === shiftId || s.real_id === shiftId);
        if (!targetShift) continue;
-       
-       let calculatedGrossPay = 0;
-       const hasStoredPay = targetShift.status === 'completed' && targetShift.total_pay !== null && targetShift.total_pay !== undefined;
-
-       if (hasStoredPay) {
-           const oldNoAmt = Number(targetShift.night_out_allowance ?? targetShift.night_out_amount) || 0;
-           calculatedGrossPay = Number((Number(targetShift.total_pay) - oldNoAmt + (newAllowance || 0)).toFixed(2));
-       } else {
-           const simulatedShift = { ...targetShift, night_out_allowance: newAllowance, night_out_amount: newAllowance };
-           calculatedGrossPay = getShiftFinancials(simulatedShift as any).grossPay;
-       }
-
-       await supabase!.from('shifts').update({
-         night_out_amount: newAllowance ?? 0,
-         night_out_status: newAllowance ? 'approved' : 'none',
-         total_pay: calculatedGrossPay
-       }).eq('id', shiftId);
-    }
-    setSelectedShiftIds(new Set());
-    await loadData();
-  };
-
-  const handleBulkExtras = async () => {
-    if (selectedShiftIds.size === 0) return;
-    const noteInput = window.prompt("Enter note for Extras/Deductions for ALL selected shifts:");
-    if (noteInput === null) return;
-    const amountInput = window.prompt("Enter amount (£) for ALL selected shifts (use negative for deduction):", "0");
-    if (amountInput === null) return;
-    const amount = parseFloat(amountInput);
-    if (isNaN(amount)) { alert("Invalid amount."); return; }
-
-    for (const shiftId of Array.from(selectedShiftIds)) {
-       const targetShift = shifts.find(s => s.id === shiftId);
-       if (!targetShift) continue;
+       const realId = targetShift.real_id || targetShift.id;
 
        let calculatedGrossPay = 0;
        const hasStoredPay = targetShift.status === 'completed' && targetShift.total_pay !== null && targetShift.total_pay !== undefined;
 
        if (hasStoredPay) {
            const oldExtras = Number(targetShift.extras_amount) || 0;
-           calculatedGrossPay = Number((Number(targetShift.total_pay) - oldExtras + amount).toFixed(2));
+           const oldNoAmt = Number(targetShift.night_out_allowance ?? targetShift.night_out_amount) || 0;
+           
+           // Mathematical precision: remove old modifiers, apply new ones
+           calculatedGrossPay = Number((Number(targetShift.total_pay) - oldExtras - oldNoAmt + newExtras + newNO).toFixed(2));
        } else {
-           const simulatedShift = { ...targetShift, extras_amount: amount };
+           const simulatedShift = { 
+             ...targetShift, 
+             extras_amount: newExtras, 
+             night_out_allowance: newNO, 
+             night_out_amount: newNO 
+           };
            calculatedGrossPay = getShiftFinancials(simulatedShift as any).grossPay;
        }
 
        await supabase!.from('shifts').update({
-         extras_amount: amount,
-         extras_note: noteInput,
+         extras_amount: newExtras,
+         extras_note: newNote,
+         night_out_amount: newNO,
+         night_out_status: newNO > 0 ? 'approved' : 'none',
          total_pay: calculatedGrossPay
-       }).eq('id', shiftId);
+       }).eq('id', realId);
+
+       try {
+         await supabase!
+           .from('shifts')
+           .update({ night_out_allowance: newNO })
+           .eq('id', realId);
+       } catch (_) {}
     }
-    setSelectedShiftIds(new Set());
+    
+    setActionModal(null);
+    if (actionModal.type === 'bulk') setSelectedShiftIds(new Set());
     await loadData();
   };
 
@@ -3318,8 +3217,13 @@ export default function App() {
                       {selectedShiftIds.size > 0 ? (
                         <>
                           <span className="text-sm font-black text-primary">{selectedShiftIds.size} SELECTED</span>
-                          <button className="btn btn-outline" style={{ borderColor: '#10B981', color: '#047857' }} onClick={handleBulkNightOut}>🌙 BULK N/O</button>
-                          <button className="btn btn-outline" style={{ borderColor: '#3B82F6', color: '#1D4ED8' }} onClick={handleBulkExtras}>✏️ BULK EXTRAS</button>
+                          <button 
+                            className="btn btn-outline" 
+                            style={{ borderColor: '#10B981', color: '#047857', fontWeight: 'bold' }} 
+                            onClick={() => openActionModal('bulk', Array.from(selectedShiftIds), 'Bulk Update')}
+                          >
+                            ✏️ EDIT SELECTED
+                          </button>
                           <button className="btn btn-secondary text-xs" onClick={() => setSelectedShiftIds(new Set())}>CANCEL</button>
                         </>
                       ) : (
@@ -3681,37 +3585,22 @@ export default function App() {
                                       style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 'bold' }}
                                       onClick={() => handleEditShiftTime(shift.real_id || shift.id, shift.start_time, shift.end_time)}
                                     >
-                                      ✏️ EDIT TIME
+                                      ✏️ TIME
                                     </button>
 
                                     <button 
-                                      className="btn btn-outline flex align-center gap-2" 
-                                      style={{ 
-                                        padding: '4px 8px', 
-                                        fontSize: '11px', 
-                                        fontWeight: 'bold', 
-                                        borderColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#10B981' : '#D1D5DB',
-                                        color: (shift.night_out_allowance ?? shift.night_out_amount) ? '#047857' : '#4B5563',
-                                        backgroundColor: (shift.night_out_allowance ?? shift.night_out_amount) ? '#ECFDF5' : 'transparent'
-                                      }}
-                                      onClick={() => handleNightOutAmount(shift.real_id || shift.id, shift.night_out_allowance ?? shift.night_out_amount)}
+                                      className="btn btn-secondary flex align-center gap-2" 
+                                      style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 'bold' }}
+                                      onClick={() => openActionModal(
+                                        'single', 
+                                        [shift.real_id || shift.id], 
+                                        shift.driver_name || 'Driver', 
+                                        Number(shift.extras_amount) || 0, 
+                                        shift.extras_note || '', 
+                                        Number(shift.night_out_allowance ?? shift.night_out_amount ?? 0)
+                                      )}
                                     >
-                                      {(shift.night_out_allowance ?? shift.night_out_amount) ? `🌙 N/O: £${Number(shift.night_out_allowance ?? shift.night_out_amount).toFixed(2)} (EDIT)` : `🌙 + ADD N/O (£30)`}
-                                    </button>
-
-                                    <button 
-                                      className="btn btn-outline flex align-center gap-2" 
-                                      style={{ 
-                                        padding: '4px 8px', 
-                                        fontSize: '11px', 
-                                        fontWeight: 'bold', 
-                                        borderColor: shift.extras_amount ? '#3B82F6' : '#D1D5DB',
-                                        color: shift.extras_amount ? '#1D4ED8' : '#4B5563',
-                                        backgroundColor: shift.extras_amount ? '#EFF6FF' : 'transparent'
-                                      }}
-                                      onClick={() => handleEditExtras(shift.real_id || shift.id, shift.extras_amount ?? null, shift.extras_note ?? null)}
-                                    >
-                                      ✏️ Edit Extras {shift.extras_amount ? `(£${Number(shift.extras_amount).toFixed(2)})` : ''}
+                                      ✏️ EDIT PAYROLL
                                     </button>
                                     {shift.extras_note && (
                                       <div className="text-xs text-gray-500 italic mt-1" style={{ fontSize: '11px', color: '#6B7280', fontStyle: 'italic', width: '100%' }}>
@@ -3752,6 +3641,74 @@ export default function App() {
         })()}
 
       </div>
+
+      {/* Unified Edit Payroll Modal (N/O & Extras) */}
+      {actionModal && actionModal.isOpen && (
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div className="modal-content glass-panel" style={{ width: '450px', padding: '28px', borderRadius: '16px', backgroundColor: '#ffffff', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', border: '1px solid #E5E7EB' }}>
+            <h2 className="text-xl font-black text-primary mb-6" style={{ borderBottom: '2px solid #F3F4F6', paddingBottom: '12px' }}>
+              Edit Payroll - {actionModal.driverName}
+            </h2>
+            
+            <div className="form-group mb-5" style={{ marginBottom: '16px' }}>
+              <label className="text-sm font-bold text-muted block mb-2" style={{ display: 'block', marginBottom: '6px' }}>🌙 Night Out Allowance (£)</label>
+              <input 
+                type="number" 
+                className="input-field" 
+                defaultValue={actionModal.currentNO}
+                id="modal-no-input"
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '15px' }}
+              />
+            </div>
+
+            <div className="form-group mb-5" style={{ marginBottom: '16px' }}>
+              <label className="text-sm font-bold text-muted block mb-2" style={{ display: 'block', marginBottom: '6px' }}>✏️ Extras / Deductions (£)</label>
+              <input 
+                type="number" 
+                className="input-field" 
+                defaultValue={actionModal.currentExtras}
+                id="modal-extras-input"
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '15px' }}
+              />
+              <p className="text-xs text-muted mt-1" style={{ color: '#6B7280', fontSize: '12px', marginTop: '4px' }}>Use negative numbers for deductions (e.g., -20).</p>
+            </div>
+
+            <div className="form-group mb-8" style={{ marginBottom: '24px' }}>
+              <label className="text-sm font-bold text-muted block mb-2" style={{ display: 'block', marginBottom: '6px' }}>📝 Note for Extras</label>
+              <input 
+                type="text" 
+                className="input-field" 
+                defaultValue={actionModal.currentNote}
+                id="modal-note-input"
+                placeholder="e.g., Tolls, Damages, Bonus..."
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '15px' }}
+              />
+            </div>
+
+            <div className="flex gap-12 justify-end" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => setActionModal(null)}
+                style={{ padding: '10px 20px', borderRadius: '8px', fontWeight: 'bold' }}
+              >
+                CANCEL
+              </button>
+              <button 
+                className="btn btn-primary" 
+                style={{ padding: '10px 20px', borderRadius: '8px', backgroundColor: '#4F46E5', color: 'white', fontWeight: 'bold' }}
+                onClick={() => {
+                  const noVal = parseFloat((document.getElementById('modal-no-input') as HTMLInputElement)?.value) || 0;
+                  const extrasVal = parseFloat((document.getElementById('modal-extras-input') as HTMLInputElement)?.value) || 0;
+                  const noteVal = (document.getElementById('modal-note-input') as HTMLInputElement)?.value || '';
+                  handleSaveModalAction(noVal, extrasVal, noteVal);
+                }}
+              >
+                💾 SAVE CHANGES
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
