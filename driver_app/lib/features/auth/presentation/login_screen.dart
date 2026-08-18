@@ -47,6 +47,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
           _shakeController.reset();
         }
       });
+
+    // Handle immediate redirect if already authenticated on launch
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && ref.read(authProvider).status == AuthStatus.authenticated) {
+        context.goNamed('home');
+      }
+    });
   }
 
   @override
@@ -80,6 +87,29 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
         _shakeController.forward();
       }
     });
+
+    if (authState.status == AuthStatus.loading) {
+      return Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset('assets/images/abtso_logo_transparent.png', height: 48, fit: BoxFit.contain),
+              const SizedBox(height: 24),
+              const SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFCC0000)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return Scaffold(
       backgroundColor: Colors.white,

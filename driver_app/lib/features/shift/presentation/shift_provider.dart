@@ -106,9 +106,6 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   StreamSubscription<tl.Location>? _traceletSubscription;
   DateTime? _lastUploadTime;
   
-  // Track if clock-out action was initiated by driver client
-  bool _isInternalClockOut = false;
-  
   // Filter to reject stale active shift stream updates on successful completion
   String? _lastCompletedShiftId;
   List<Map<String, dynamic>> _offlineQueue = [];
@@ -554,7 +551,6 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
       if (result['success'] == true) {
         _lastCompletedShiftId = null;
-        _isInternalClockOut = false;
         await loadActiveShift();
 
         // Capture IDs immediately after loadActiveShift — do NOT rely on state later
@@ -602,11 +598,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     if (activeShift == null) return;
 
     state = state.copyWith(isLoading: true, clearErrorMessage: true);
-    _isInternalClockOut = true; // Set flag to indicate internal clock-out action
 
     final pos = state.currentPosition;
     if (pos == null) {
-      _isInternalClockOut = false;
       state = state.copyWith(
         isLoading: false,
         errorMessage: 'Unable to clock out. GPS location is required.',
@@ -615,7 +609,6 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     }
 
     if (!state.isNearDepot) {
-      _isInternalClockOut = false;
       final radius = state.nearestDepot?.geofenceRadiusM ?? 15;
       state = state.copyWith(
         isLoading: false,
@@ -665,11 +658,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         await _stopBackgroundTrackingService();
         _stopGpsPingTimer();
       } else {
-        _isInternalClockOut = false;
         state = state.copyWith(errorMessage: result['error'] ?? 'Clock out failed');
       }
     } catch (e) {
-      _isInternalClockOut = false;
       state = state.copyWith(errorMessage: 'Connection error during clock out.');
     } finally {
       state = state.copyWith(isLoading: false);
@@ -891,29 +882,15 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
                 completedShift = DriverShift.fromJson(completedShiftMap);
               }
 
-              if (_isInternalClockOut) {
-                debugPrint('Internal clock-out stream ping received. Bypassing logout.');
-                _isInternalClockOut = false; // Reset the flag
-                
-                if (state.isPlaybackRunning) {
-                  stopRoutePlayback();
-                }
-                state = state.copyWith(
-                  clearActiveShift: true,
-                  lastCompletedShift: completedShift ?? state.lastCompletedShift,
-                );
-              } else {
-                debugPrint('Active shift was terminated by dispatcher. Logging driver out...');
-                
-                if (state.isPlaybackRunning) {
-                  stopRoutePlayback();
-                }
-                state = state.copyWith(
-                  clearActiveShift: true,
-                  lastCompletedShift: completedShift ?? state.lastCompletedShift,
-                );
-                _ref.read(authProvider.notifier).logout();
+              debugPrint('Shift ended (clocked out or closed by dispatcher). Resetting active shift while maintaining persistent auth session.');
+              if (state.isPlaybackRunning) {
+                stopRoutePlayback();
               }
+              state = state.copyWith(
+                clearActiveShift: true,
+                lastCompletedShift: completedShift ?? state.lastCompletedShift,
+              );
+              _stopGpsPingTimer();
             }
           } else {
             final activeShift = DriverShift.fromJson(activeShiftMap);
@@ -995,7 +972,6 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _playbackTimer?.cancel();
     _playbackTimer = null;
     _lastCompletedShiftId = null;
-    _isInternalClockOut = false;
     _lastUploadTime = null;
     state = const ShiftState();
     debugPrint('ShiftNotifier state reset completed on logout.');

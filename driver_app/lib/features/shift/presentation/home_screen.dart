@@ -112,14 +112,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     // Check authentication on launch and initialize realtime subscriptions
     Future.microtask(() async {
       if (!mounted) return;
-      if (!SupabaseService.isAuthenticated) {
+      final auth = ref.read(authProvider);
+      if (auth.status != AuthStatus.authenticated && !SupabaseService.isAuthenticated) {
         context.goNamed('login');
       } else {
         await ref.read(shiftProvider.notifier).initialize();
         await fetchDashboardData();
-        final driverId = SupabaseService.currentDriverId;
+        final driverId = SupabaseService.currentDriverId ?? auth.driver?['id'];
         if (driverId != null) {
-          _setupRealtimeListeners(driverId);
+          _setupRealtimeListeners(driverId.toString());
         }
       }
 

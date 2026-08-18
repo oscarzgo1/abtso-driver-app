@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -41,7 +42,6 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   /// Listens to cross-tab & real-time Supabase Auth state changes.
-  /// Prevents "Ghost UI" bugs where Tab B login overwrites session for Tab A.
   void _initAuthListener() {
     if (SupabaseService.isMockMode) return;
 
@@ -50,24 +50,24 @@ class AuthNotifier extends StateNotifier<AuthState> {
         final AuthChangeEvent event = data.event;
         final Session? session = data.session;
 
-        if (event == AuthChangeEvent.signedOut || session == null) {
-          // Underlying session was signed out or cleared (e.g. from another tab)
+        if (event == AuthChangeEvent.signedOut) {
+          // Explicit sign out triggered
           if (state.status == AuthStatus.authenticated) {
             logout();
           }
         } else if (event == AuthChangeEvent.signedIn ||
                    event == AuthChangeEvent.tokenRefreshed ||
                    event == AuthChangeEvent.userUpdated) {
-          // Re-verify if session user ID matches the currently loaded Driver Profile
-          final sessionUserId = session.user.id;
-          final loadedDriverUuid = state.driver?['id'];
+          if (session != null) {
+            final sessionUserId = session.user.id;
+            final loadedDriverUuid = state.driver?['id'];
 
-          if (state.status == AuthStatus.authenticated &&
-              loadedDriverUuid != null &&
-              loadedDriverUuid != sessionUserId) {
-            // Identity mismatch detected (cross-tab session overwrite)!
-            // Instantly force logout to prevent Ghost UI
-            logout();
+            if (state.status == AuthStatus.authenticated &&
+                loadedDriverUuid != null &&
+                loadedDriverUuid != sessionUserId) {
+              // Identity mismatch detected (cross-tab overwrite)
+              logout();
+            }
           }
         }
       });
@@ -80,31 +80,27 @@ class AuthNotifier extends StateNotifier<AuthState> {
     super.dispose();
   }
 
-  /// Verifies if there is a cached login session under 14 days old
+  /// Verifies persistent session indefinitely on boot (no arbitrary expiration)
   Future<void> checkSession() async {
+    state = const AuthState(status: AuthStatus.loading);
     try {
       final prefs = await SharedPreferences.getInstance();
-      final driverId = prefs.getString('session_driver_id');
-      final loginTimeStr = prefs.getString('session_login_time');
+      final savedDriverId = prefs.getString('session_driver_id');
+      final currentAuthUser = SupabaseService.client.auth.currentUser;
+      final lookupId = savedDriverId ?? currentAuthUser?.id;
 
-      if (driverId != null && loginTimeStr != null) {
-        final loginTime = DateTime.parse(loginTimeStr);
-        final differenceInDays = DateTime.now().difference(loginTime).inDays;
-
-        if (differenceInDays < 14) {
-          state = const AuthState(status: AuthStatus.loading);
-          final result = await SupabaseService.fetchDriverProfile(driverId);
-          if (result['success'] == true) {
-            state = AuthState(
-              status: AuthStatus.authenticated,
-              driver: result['driver'],
-            );
-            return;
-          }
+      if (lookupId != null && lookupId.isNotEmpty) {
+        final result = await SupabaseService.fetchDriverProfile(lookupId);
+        if (result['success'] == true && result['driver'] != null) {
+          state = AuthState(
+            status: AuthStatus.authenticated,
+            driver: result['driver'],
+          );
+          return;
         }
       }
-    } catch (_) {
-      // Storage error or profile loading failed; fall back to credentials prompt
+    } catch (e) {
+      debugPrint('Error restoring persistent auth session: $e');
     }
     state = const AuthState(status: AuthStatus.initial);
   }
