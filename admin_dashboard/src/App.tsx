@@ -1657,6 +1657,113 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  const handleFillExcelTemplate = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const filteredShifts = getFilteredShifts();
+
+    // 1. Build the aggregated summary data
+    const summaryData: any = {};
+    filteredShifts.forEach(shift => {
+       const { noAmt, extrasAmt, liveHours, rate } = getShiftFinancials(shift);
+       const id = shift.driver_id;
+       if (!summaryData[id]) {
+           summaryData[id] = {
+               driver_name: shift.driver_name || 'Driver',
+               total_hours: 0,
+               total_extras: 0,
+               night_out_val: 0,
+               shift_count: 0,
+               rates: []
+           };
+       }
+       
+       summaryData[id].total_hours += (liveHours || 0);
+       summaryData[id].total_extras += extrasAmt;
+       summaryData[id].night_out_val += noAmt;
+       
+       // Store rate to calculate average/most common rate later
+       const rateToUse = Number(shift.effective_rate) || Number(shift.base_hourly_rate) || Number(rate) || 0;
+       if (rateToUse > 0) summaryData[id].rates.push(rateToUse);
+
+       if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) {
+           summaryData[id].shift_count += 1;
+       }
+    });
+
+    // 2. Read and inject data into the Excel file
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        
+        // We assume the main data is on the first sheet
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        
+        // Convert to array of arrays for easy column manipulation
+        const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        let matchCount = 0;
+
+        rows.forEach((row) => {
+           const cellA = row[0]; // Column A: Employee Name
+           if (typeof cellA === 'string' && cellA.trim().length > 0) {
+              const cleanName = cellA.trim().toLowerCase();
+              
+              // Try to find the driver in our calculated summary
+              const match: any = Object.values(summaryData).find((d: any) => 
+                d.driver_name.toLowerCase() === cleanName || 
+                cleanName.includes(d.driver_name.toLowerCase()) || 
+                d.driver_name.toLowerCase().includes(cleanName)
+              );
+              
+              if (match) {
+                 // Get average or primary rate
+                 let avgRate = '';
+                 if (match.rates.length > 0) {
+                    avgRate = (match.rates.reduce((a: number, b: number) => a + b, 0) / match.rates.length).toFixed(2);
+                 }
+
+                 // Inject values based on the template structure:
+                 // Col C (index 2): Shifts
+                 row[2] = match.shift_count;
+                 // Col E (index 4): Time (Hours)
+                 row[4] = Number(match.total_hours.toFixed(2));
+                 // Col F (index 5): p/h (Rate)
+                 row[5] = avgRate ? Number(avgRate) : '';
+                 // Col G (index 6): Extra (Extras + Night Outs)
+                 const totalExtraMoney = match.total_extras + match.night_out_val;
+                 if (totalExtraMoney !== 0) {
+                    row[6] = Number(totalExtraMoney.toFixed(2));
+                 }
+
+                 matchCount++;
+              }
+           }
+        });
+
+        // Convert back to worksheet
+        const newWorksheet = XLSX.utils.aoa_to_sheet(rows);
+        workbook.Sheets[firstSheetName] = newWorksheet;
+        
+        // Trigger download
+        XLSX.writeFile(workbook, `Filled_Payment_List_${new Date().toISOString().split('T')[0]}.xlsx`);
+        
+        alert(`Template Injection Complete!\nSuccessfully matched and filled data for ${matchCount} employees.`);
+        
+      } catch (error: any) {
+        alert("Error processing Excel file: " + error.message);
+      } finally {
+        if (event.target) {
+          event.target.value = '';
+        }
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
   // ── Rates & Night Out Handlers ────────────────────────────────
   const handleSaveRate = async (driverId: string) => {
     console.log("Saving rate profile overrides directly to drivers table for driver ID:", driverId);
@@ -3210,6 +3317,21 @@ export default function App() {
                     >
                       📥 IMPORT BLIP CSV
                     </button>
+
+                    {/* EXCEL TEMPLATE INJECTION */}
+                    <div style={{ position: 'relative' }}>
+                       <input 
+                          type="file" 
+                          accept=".xlsx, .xls" 
+                          onChange={handleFillExcelTemplate} 
+                          style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', cursor: 'pointer', zIndex: 10, left: 0, top: 0 }} 
+                          title="Upload Payment Template (Step 2)"
+                          onClick={(e) => { (e.target as HTMLInputElement).value = '' }}
+                       />
+                       <button className="btn btn-primary flex align-center gap-6" style={{ backgroundColor: '#F59E0B', borderColor: '#D97706', color: 'white', fontWeight: 'bold' }}>
+                          🪄 FILL EXCEL TEMPLATE
+                       </button>
+                    </div>
                  </div>
                  
                  {reportViewMode === 'detailed' && (
