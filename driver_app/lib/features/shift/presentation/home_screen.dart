@@ -829,7 +829,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                             const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 18),
                             const SizedBox(width: 8),
                             Text(
-                              'NIGHT OUT ALLOWANCE ACTIVE (£25.00)',
+                              'NIGHT OUT APPROVED',
                               style: GoogleFonts.outfit(
                                 fontWeight: FontWeight.w800,
                                 fontSize: 11,
