@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
@@ -20,12 +21,13 @@ class MainLayout extends ConsumerStatefulWidget {
 
 class _MainLayoutState extends ConsumerState<MainLayout> {
   int _currentIndex = 0;
-
+  late final PageController _pageController;
   late final List<Widget> _screens;
 
   @override
   void initState() {
     super.initState();
+    _pageController = PageController(initialPage: _currentIndex);
     _screens = [
       const HomeScreen(),
       const HistoryTab(),
@@ -44,69 +46,213 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
 
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _currentIndex,
+      body: PageView(
+        controller: _pageController,
+        physics: const NeverScrollableScrollPhysics(),
         children: _screens,
       ),
-      bottomNavigationBar: Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          border: Border(
-            top: BorderSide(color: Color(0xFFE0E0E0), width: 1),
-          ),
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: (index) {
+      bottomNavigationBar: AnimatedCustomTabBar(
+        currentIndex: _currentIndex,
+        onTap: (index) {
+          if (_currentIndex != index) {
             setState(() {
               _currentIndex = index;
             });
-          },
-          backgroundColor: Colors.white,
-          selectedItemColor: const Color(0xFFCC0000),   // Brand red
-          unselectedItemColor: const Color(0xFF888888),  // Charcoal light
-          selectedLabelStyle: GoogleFonts.outfit(fontWeight: FontWeight.w700, fontSize: 11),
-          unselectedLabelStyle: GoogleFonts.outfit(fontWeight: FontWeight.w500, fontSize: 11),
-          type: BottomNavigationBarType.fixed,
-          elevation: 0,
-          items: const [
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 3),
-                child: Icon(Icons.navigation_outlined, size: 18),
+            _pageController.animateToPage(
+              index,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+            );
+          }
+        },
+        items: const [
+          AnimatedTabItem(
+            title: 'Home',
+            icon: Icons.explore_outlined,
+            activeIcon: Icons.explore_rounded,
+          ),
+          AnimatedTabItem(
+            title: 'History',
+            icon: Icons.receipt_long_outlined,
+            activeIcon: Icons.receipt_long_rounded,
+          ),
+          AnimatedTabItem(
+            title: 'Settings',
+            icon: Icons.tune_outlined,
+            activeIcon: Icons.tune_rounded,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Custom Fluid Animated Bottom Tab Bar with Micro-interactions
+// ─────────────────────────────────────────────────────────────────────────────
+class AnimatedTabItem {
+  final String title;
+  final IconData icon;
+  final IconData activeIcon;
+
+  const AnimatedTabItem({
+    required this.title,
+    required this.icon,
+    required this.activeIcon,
+  });
+}
+
+class AnimatedCustomTabBar extends StatelessWidget {
+  final int currentIndex;
+  final ValueChanged<int> onTap;
+  final List<AnimatedTabItem> items;
+
+  const AnimatedCustomTabBar({
+    super.key,
+    required this.currentIndex,
+    required this.onTap,
+    required this.items,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final totalTabs = items.length;
+    final alignX = -1.0 + (2.0 / (totalTabs - 1)) * currentIndex;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: isDark ? const Color(0xFF161B26) : Colors.white,
+        border: Border(
+          top: BorderSide(
+            color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE5E7EB),
+            width: 1,
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.35 : 0.06),
+            blurRadius: 12,
+            offset: const Offset(0, -3),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 64,
+          child: Stack(
+            children: [
+              // 1. Sliding Bubble / Pill Indicator
+              AnimatedAlign(
+                alignment: Alignment(alignX, 0),
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeOutBack,
+                child: FractionallySizedBox(
+                  widthFactor: 1.0 / totalTabs,
+                  child: Center(
+                    child: Container(
+                      height: 44,
+                      width: 76,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFCC0000).withValues(alpha: isDark ? 0.16 : 0.08),
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(
+                          color: const Color(0xFFCC0000).withValues(alpha: isDark ? 0.28 : 0.14),
+                          width: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              activeIcon: Padding(
-                padding: EdgeInsets.only(bottom: 3),
-                child: Icon(Icons.navigation, size: 18),
+
+              // 2. Sliding top red accent line
+              AnimatedAlign(
+                alignment: Alignment(alignX, -1.0),
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeOutCubic,
+                child: FractionallySizedBox(
+                  widthFactor: 1.0 / totalTabs,
+                  child: Center(
+                    child: Container(
+                      height: 3,
+                      width: 28,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFCC0000),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                ),
               ),
-              label: 'Home',
-            ),
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 3),
-                child: Icon(Icons.history_outlined, size: 18),
+
+              // 3. Tab Buttons with Springing / Popping Icons
+              Row(
+                children: List.generate(totalTabs, (index) {
+                  final item = items[index];
+                  final isSelected = index == currentIndex;
+
+                  return Expanded(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        onTap(index);
+                      },
+                      child: Center(
+                        child: AnimatedSlide(
+                          offset: isSelected ? const Offset(0, -0.06) : Offset.zero,
+                          duration: const Duration(milliseconds: 280),
+                          curve: Curves.easeOutBack,
+                          child: AnimatedScale(
+                            scale: isSelected ? 1.10 : 1.0,
+                            duration: const Duration(milliseconds: 280),
+                            curve: Curves.easeOutBack,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  isSelected ? item.activeIcon : item.icon,
+                                  size: 20,
+                                  color: isSelected
+                                      ? const Color(0xFFCC0000)
+                                      : (isDark ? const Color(0xFF888888) : const Color(0xFF6B7280)),
+                                ),
+                                const SizedBox(height: 3),
+                                AnimatedDefaultTextStyle(
+                                  duration: const Duration(milliseconds: 200),
+                                  style: GoogleFonts.outfit(
+                                    fontSize: 11,
+                                    fontWeight: isSelected ? FontWeight.w800 : FontWeight.w500,
+                                    color: isSelected
+                                        ? const Color(0xFFCC0000)
+                                        : (isDark ? const Color(0xFF888888) : const Color(0xFF6B7280)),
+                                    letterSpacing: 0.2,
+                                  ),
+                                  child: Text(item.title),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
               ),
-              activeIcon: Padding(
-                padding: EdgeInsets.only(bottom: 3),
-                child: Icon(Icons.history, size: 18),
-              ),
-              label: 'History',
-            ),
-            BottomNavigationBarItem(
-              icon: Padding(
-                padding: EdgeInsets.only(bottom: 3),
-                child: Icon(Icons.settings_outlined, size: 18),
-              ),
-              activeIcon: Padding(
-                padding: EdgeInsets.only(bottom: 3),
-                child: Icon(Icons.settings, size: 18),
-              ),
-              label: 'Settings',
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
