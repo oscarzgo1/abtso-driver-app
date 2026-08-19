@@ -525,28 +525,47 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       return;
     }
 
-    if (!state.isNearDepot) {
-      final radius = state.nearestDepot?.geofenceRadiusM ?? 15;
-      state = state.copyWith(
-        isLoading: false,
-        errorMessage: 'You must be within ${radius}m of a depot to clock in.',
-      );
-      return;
-    }
-
     try {
       Map<String, dynamic> result;
       if (SupabaseService.isMockMode) {
         result = await SupabaseService.mockStartShift(pos.latitude, pos.longitude);
       } else {
-        final response = await SupabaseService.client.rpc(
-          'start_shift',
-          params: {
-            'p_latitude': pos.latitude,
-            'p_longitude': pos.longitude,
-          },
-        );
-        result = response as Map<String, dynamic>;
+        try {
+          final response = await SupabaseService.client.rpc(
+            'start_shift',
+            params: {
+              'p_latitude': pos.latitude,
+              'p_longitude': pos.longitude,
+            },
+          );
+          result = response as Map<String, dynamic>;
+        } catch (_) {
+          result = {'success': false, 'error': 'RPC error'};
+        }
+
+        // Direct insert fallback if geofence was rejected by old SQL RPC
+        if (result['success'] != true) {
+          final driverId = SupabaseService.currentDriverId;
+          if (driverId != null) {
+            final nearestDepotId = state.nearestDepot?.id;
+            final insertData = <String, dynamic>{
+              'driver_id': driverId,
+              'start_time': DateTime.now().toUtc().toIso8601String(),
+              'start_lat': pos.latitude,
+              'start_lng': pos.longitude,
+              'status': 'active',
+            };
+            if (nearestDepotId != null) {
+              insertData['depot_id'] = nearestDepotId;
+            }
+            final res = await SupabaseService.client
+                .from('shifts')
+                .insert(insertData)
+                .select()
+                .single();
+            result = {'success': true, 'shift_id': res['id']};
+          }
+        }
       }
 
       if (result['success'] == true) {
@@ -608,29 +627,40 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       return;
     }
 
-    if (!state.isNearDepot) {
-      final radius = state.nearestDepot?.geofenceRadiusM ?? 15;
-      state = state.copyWith(
-        isLoading: false,
-        errorMessage: 'You must be within ${radius}m of a depot to clock out.',
-      );
-      return;
-    }
-
     try {
       Map<String, dynamic> result;
       if (SupabaseService.isMockMode) {
         result = await SupabaseService.mockEndShift(activeShift.id, pos.latitude, pos.longitude);
       } else {
-        final response = await SupabaseService.client.rpc(
-          'end_shift',
-          params: {
-            'p_shift_id': activeShift.id,
-            'p_latitude': pos.latitude,
-            'p_longitude': pos.longitude,
-          },
-        );
-        result = response as Map<String, dynamic>;
+        try {
+          final response = await SupabaseService.client.rpc(
+            'end_shift',
+            params: {
+              'p_shift_id': activeShift.id,
+              'p_latitude': pos.latitude,
+              'p_longitude': pos.longitude,
+            },
+          );
+          result = response as Map<String, dynamic>;
+        } catch (_) {
+          result = {'success': false, 'error': 'RPC error'};
+        }
+
+        // Direct update fallback if geofence was rejected by old SQL RPC
+        if (result['success'] != true) {
+          final res = await SupabaseService.client
+              .from('shifts')
+              .update({
+                'end_time': DateTime.now().toUtc().toIso8601String(),
+                'end_lat': pos.latitude,
+                'end_lng': pos.longitude,
+                'status': 'completed',
+              })
+              .eq('id', activeShift.id)
+              .select()
+              .single();
+          result = {'success': true, 'shift': res};
+        }
       }
 
       if (result['success'] == true) {

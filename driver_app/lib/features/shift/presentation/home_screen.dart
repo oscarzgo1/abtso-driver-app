@@ -772,13 +772,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         ),
                       ),
                       Text(
-                        state.isNearDepot
-                            ? 'INSIDE RANGE (10M GEOFENCE)'
-                            : 'OUTSIDE DEPOT RANGE',
+                        'GPS ACTIVE (READY)',
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontSize: 9,
                           fontWeight: FontWeight.w900,
-                          color: state.isNearDepot ? ABTSOTheme.success : theme.colorScheme.error,
+                          color: ABTSOTheme.success,
                           letterSpacing: 0.5,
                         ),
                       ),
@@ -820,21 +818,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         decoration: BoxDecoration(
-                          color: isDark ? const Color(0xFF064E3B) : const Color(0xFFDCFCE7),
+                          color: isDark ? const Color(0xFF064E3B) : const Color(0xFFD1FAE5),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFF22C55E), width: 1.5),
+                          border: Border.all(color: const Color(0xFF10B981), width: 1.5),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.check_circle_rounded, color: Color(0xFF22C55E), size: 18),
+                            const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 18),
                             const SizedBox(width: 8),
                             Text(
-                              'NIGHT OUT APPROVED',
+                              'NIGHT OUT ALLOWANCE ACTIVE (£25.00)',
                               style: GoogleFonts.outfit(
                                 fontWeight: FontWeight.w800,
                                 fontSize: 11,
-                                color: isDark ? const Color(0xFFA7F3D0) : const Color(0xFF15803D),
+                                color: isDark ? const Color(0xFFA7F3D0) : const Color(0xFF065F46),
                                 letterSpacing: 0.5,
                               ),
                             ),
@@ -846,7 +844,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         decoration: BoxDecoration(
-                          color: isDark ? const Color(0xFF451212) : const Color(0xFFFEE2E2),
+                          color: isDark ? const Color(0xFF7F1D1D) : const Color(0xFFFEE2E2),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: const Color(0xFFEF4444), width: 1.5),
                         ),
@@ -856,11 +854,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                             const Icon(Icons.cancel_rounded, color: Color(0xFFEF4444), size: 18),
                             const SizedBox(width: 8),
                             Text(
-                              'NIGHT OUT DECLINED BY PAYROLL',
+                              'NIGHT OUT REQUEST REJECTED',
                               style: GoogleFonts.outfit(
                                 fontWeight: FontWeight.w800,
                                 fontSize: 11,
-                                color: isDark ? const Color(0xFFFCA5A5) : const Color(0xFFB91C1C),
+                                color: isDark ? const Color(0xFFFECACA) : const Color(0xFF991B1B),
                                 letterSpacing: 0.5,
                               ),
                             ),
@@ -946,36 +944,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     ),
                   ] else ...[
                     // ── Inactive Shift Controls (Clock In Only) ──
-                    if (!state.isNearDepot) ...[
-                      Container(
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
-                            width: 1.5,
-                          ),
-                        ),
-                        alignment: Alignment.center,
-                        child: Text(
-                          'OUTSIDE DEPOT RANGE',
-                          style: GoogleFonts.outfit(
-                            color: isDark ? Colors.white30 : Colors.black38,
-                            fontWeight: FontWeight.w900,
-                            fontSize: 12,
-                            letterSpacing: 1.0,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
                     ElevatedButton(
-                      onPressed: (state.isLoading || !state.isNearDepot)
+                      onPressed: state.isLoading
                           ? null
                           : () => ref.read(shiftProvider.notifier).clockIn(),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: state.isNearDepot ? const Color(0xFF2E7D32) : const Color(0xFF9CA3AF),
+                        backgroundColor: const Color(0xFF2E7D32),
                         disabledBackgroundColor: const Color(0xFFE5E7EB),
                         disabledForegroundColor: const Color(0xFF9CA3AF),
                         foregroundColor: Colors.white,
