@@ -25,7 +25,7 @@ class _TermsAcceptanceScreenState extends ConsumerState<TermsAcceptanceScreen> {
     if (!mounted) return;
 
     if (res['success'] == true) {
-      context.goNamed('home');
+      context.goNamed('greeting');
     } else {
       setState(() {
         _isSubmitting = false;

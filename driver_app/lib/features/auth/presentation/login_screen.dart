@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'auth_provider.dart';
 
 class ShakeCurve extends Curve {
@@ -87,10 +88,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
 
     // Listen for authentication success or failure
     ref.listen<AuthState>(authProvider, (prev, next) {
-      if (next.status == AuthStatus.authenticated) {
+      if (next.status == AuthStatus.authenticated && prev?.status != AuthStatus.authenticated) {
         final termsAccepted = next.driver?['terms_accepted'] == true;
         if (termsAccepted) {
-          context.goNamed('home');
+          context.goNamed('greeting');
         } else {
           context.goNamed('terms-acceptance');
         }
@@ -185,7 +186,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       controller: _driverIdController,
                       style: const TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.bold),
                       decoration: InputDecoration(
-                        hintText: 'USERNAME OR ID (e.g. robert.bekas)',
+                        hintText: 'USERNAME OR ID (e.g. john.smith)',
                         counterText: '',
                         filled: true,
                         fillColor: const Color(0xFFF5F5F5),
@@ -260,28 +261,36 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       const SizedBox(height: 16),
                     ],
 
-                    // Login Button (Brand Red for primary action)
+                    // Login Button (Sleek, brand red primary action)
                     ElevatedButton(
                       onPressed: authState.status == AuthStatus.loading ? null : _handleLogin,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFCC0000),
                         foregroundColor: Colors.white,
-                        minimumSize: const Size(double.infinity, 52),
+                        minimumSize: const Size(double.infinity, 44),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(10),
                         ),
                         elevation: 0,
                       ),
                       child: authState.status == AuthStatus.loading
                           ? const SizedBox(
-                              width: 20,
-                              height: 20,
+                              width: 18,
+                              height: 18,
                               child: CircularProgressIndicator(
                                 strokeWidth: 2,
                                 color: Colors.white,
                               ),
                             )
-                          : const Text('AUTHORISE SESSION'),
+                          : Text(
+                              'Log in',
+                              style: GoogleFonts.outfit(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.3,
+                              ),
+                            ),
                     ),
 
                     const SizedBox(height: 48),
