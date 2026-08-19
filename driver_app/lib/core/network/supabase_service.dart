@@ -147,7 +147,7 @@ class SupabaseService {
     await client.auth.signOut();
   }
 
-  /// Update driver's PIN in Supabase
+  /// Update driver's PIN in Supabase Auth & drivers table
   static Future<Map<String, dynamic>> updateDriverPin({
     required String driverIdOrUuid,
     required String newPin,
@@ -157,19 +157,34 @@ class SupabaseService {
     }
 
     try {
-      // 1. Update in drivers table
-      await client
-          .from('drivers')
-          .update({'pin': newPin.trim()})
-          .or('id.eq.$driverIdOrUuid,driver_id.ilike.$driverIdOrUuid');
+      final cleanPin = newPin.trim();
 
-      // 2. Also update Supabase Auth user password if authenticated
-      try {
+      // 1. Update Supabase Auth user password directly (used for login)
+      final user = client.auth.currentUser;
+      if (user != null) {
         await client.auth.updateUser(
-          UserAttributes(password: newPin.trim()),
+          UserAttributes(password: cleanPin),
         );
-      } catch (authErr) {
-        debugPrint('Auth password update (non-fatal): $authErr');
+      }
+
+      // 2. Also sync with backend edge function / pin_hash column if present
+      try {
+        await client.functions.invoke('create-driver', body: {
+          'action': 'update',
+          'id': driverIdOrUuid,
+          'pin': cleanPin,
+        });
+      } catch (fnErr) {
+        debugPrint('create-driver edge function update (non-fatal): $fnErr');
+      }
+
+      try {
+        await client
+            .from('drivers')
+            .update({'pin_hash': cleanPin})
+            .or('id.eq.$driverIdOrUuid,driver_id.ilike.$driverIdOrUuid');
+      } catch (dbErr) {
+        debugPrint('pin_hash table update (non-fatal): $dbErr');
       }
 
       return {'success': true};
