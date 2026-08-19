@@ -585,7 +585,7 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Premium, Minimalist Settings Tab
+// Native iOS-Style Settings Tab
 // ─────────────────────────────────────────────────────────────────────────────
 class SettingsTab extends ConsumerStatefulWidget {
   const SettingsTab({super.key});
@@ -597,9 +597,6 @@ class SettingsTab extends ConsumerStatefulWidget {
 class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingObserver {
   bool _isLocationGranted = false;
   bool _isBackgroundGranted = false;
-  final TextEditingController _pinController = TextEditingController();
-  bool _isUpdatingPin = false;
-  String? _pinError;
 
   @override
   void initState() {
@@ -611,7 +608,6 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _pinController.dispose();
     super.dispose();
   }
 
@@ -641,51 +637,182 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
     await Geolocator.openAppSettings();
   }
 
-  Future<void> _handleUpdatePin(String driverUuid) async {
-    final newPin = _pinController.text.trim();
-    if (newPin.length != 6 || int.tryParse(newPin) == null) {
-      setState(() {
-        _pinError = 'Please enter a valid 6-digit numeric PIN';
-      });
-      return;
-    }
+  Future<void> _openChangePinModal(BuildContext context, String driverUuid) async {
+    final pinController = TextEditingController();
+    String? localError;
+    bool isSaving = false;
 
-    setState(() {
-      _isUpdatingPin = true;
-      _pinError = null;
-    });
+    await showDialog(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (context, setModalState) => Dialog(
+          backgroundColor: Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Change PIN',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF1C1C1E),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: () => Navigator.pop(dialogCtx),
+                      child: const Icon(Icons.close, size: 20, color: Color(0xFF8E8E93)),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Enter a new 6-digit PIN for your driver account.',
+                  style: TextStyle(fontSize: 13, color: Color(0xFF8E8E93)),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: pinController,
+                  keyboardType: TextInputType.number,
+                  maxLength: 6,
+                  obscureText: true,
+                  autofocus: true,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 4,
+                    color: Color(0xFF1C1C1E),
+                  ),
+                  decoration: InputDecoration(
+                    hintText: 'New 6-digit PIN',
+                    hintStyle: const TextStyle(
+                      letterSpacing: 0,
+                      fontSize: 13,
+                      fontWeight: FontWeight.normal,
+                      color: Color(0xFFC7C7CC),
+                    ),
+                    counterText: '',
+                    filled: true,
+                    fillColor: const Color(0xFFF2F2F7),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: Color(0xFFE5E5EA)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: const BorderSide(color: Color(0xFF1C1C1E), width: 1.5),
+                    ),
+                  ),
+                ),
+                if (localError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    localError!,
+                    style: const TextStyle(color: Color(0xFFFF3B30), fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                ],
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: isSaving ? null : () => Navigator.pop(dialogCtx),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Color(0xFFE5E5EA)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text(
+                          'Cancel',
+                          style: TextStyle(color: Color(0xFF8E8E93), fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: isSaving
+                            ? null
+                            : () async {
+                                final pinVal = pinController.text.trim();
+                                if (pinVal.length != 6 || int.tryParse(pinVal) == null) {
+                                  setModalState(() {
+                                    localError = 'Please enter a valid 6-digit PIN';
+                                  });
+                                  return;
+                                }
 
-    final res = await SupabaseService.updateDriverPin(
-      driverIdOrUuid: driverUuid,
-      newPin: newPin,
-    );
+                                setModalState(() {
+                                  isSaving = true;
+                                  localError = null;
+                                });
 
-    if (!mounted) return;
+                                final messenger = ScaffoldMessenger.of(context);
+                                final navigator = Navigator.of(dialogCtx);
 
-    setState(() {
-      _isUpdatingPin = false;
-    });
+                                final res = await SupabaseService.updateDriverPin(
+                                  driverIdOrUuid: driverUuid,
+                                  newPin: pinVal,
+                                );
 
-    if (res['success'] == true) {
-      _pinController.clear();
-      FocusScope.of(context).unfocus();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text(
-            'PIN updated successfully.',
-            style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white),
+                                if (!mounted) return;
+
+                                if (res['success'] == true) {
+                                  navigator.pop();
+                                  messenger.showSnackBar(
+                                    SnackBar(
+                                      content: const Text(
+                                        'PIN updated successfully.',
+                                        style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white),
+                                      ),
+                                      backgroundColor: const Color(0xFF1C1C1E),
+                                      behavior: SnackBarBehavior.floating,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      duration: const Duration(seconds: 3),
+                                    ),
+                                  );
+                                } else {
+                                  setModalState(() {
+                                    isSaving = false;
+                                    localError = res['error'] ?? 'Failed to update PIN.';
+                                  });
+                                }
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF1C1C1E),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          elevation: 0,
+                        ),
+                        child: isSaving
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                              )
+                            : const Text(
+                                'Save PIN',
+                                style: TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-          backgroundColor: const Color(0xFF333333),
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-          duration: const Duration(seconds: 3),
         ),
-      );
-    } else {
-      setState(() {
-        _pinError = res['error'] ?? 'Failed to update PIN.';
-      });
-    }
+      ),
+    );
   }
 
   Future<void> _callPhone(String phoneNumber) async {
@@ -698,7 +825,7 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Could not dial $phoneNumber'),
-            backgroundColor: const Color(0xFF333333),
+            backgroundColor: const Color(0xFF1C1C1E),
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -709,305 +836,93 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authProvider);
-    final theme = Theme.of(context);
-
-    final driverName = authState.driver?['full_name'] ?? authState.driver?['name'] ?? 'Driver';
     final driverCode = authState.driver?['driver_id'] ?? 'DRV-001';
     final driverUuid = authState.driver?['id'] ?? driverCode;
 
-    final isFixed = authState.driver?['rate_type'] == 'Fixed Shift Rate (Day Rate)' || authState.driver?['rate_type'] == 'Fixed';
-    final double rateValue = isFixed
-        ? ((authState.driver?['fixed_rate'] as num?)?.toDouble() ?? 0.0)
-        : ((authState.driver?['hourly_rate'] as num?)?.toDouble() ?? (authState.driver?['mon_fri_rate'] as num?)?.toDouble() ?? 16.0);
-    final String rateSuffix = isFixed ? '/shift' : '/hr';
-
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: const Color(0xFFF2F2F6),
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: const Color(0xFFF2F2F6),
         elevation: 0,
-        centerTitle: true,
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Image.asset('assets/images/abtso_logo_transparent.png', height: 26, fit: BoxFit.contain),
-          ],
-        ),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(height: 1, color: const Color(0xFFE0E0E0)),
+        centerTitle: false,
+        automaticallyImplyLeading: false,
+        title: const Padding(
+          padding: EdgeInsets.only(left: 4, top: 8),
+          child: Text(
+            'Settings',
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.5,
+              color: Color(0xFF1C1C1E),
+            ),
+          ),
         ),
       ),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
-            // Driver profile banner
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF5F5F5),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
+            // ── GROUP 1: PERMISSIONS ──
+            _buildSectionHeader('PERMISSIONS'),
+            _buildSettingsGroup([
+              _buildSettingsRow(
+                icon: Icons.location_on_outlined,
+                title: 'Location Access (Always)',
+                isToggle: true,
+                toggleValue: _isLocationGranted,
+                onToggle: _handleOpenSettings,
               ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF333333),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(Icons.person_outline, color: Colors.white, size: 22),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          driverName.toUpperCase(),
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w900,
-                            fontSize: 14,
-                            color: const Color(0xFF333333),
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'ID: $driverCode • Base Rate: £${rateValue.toStringAsFixed(2)}$rateSuffix',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontSize: 11,
-                            color: const Color(0xFF888888),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+              _buildDivider(),
+              _buildSettingsRow(
+                icon: Icons.battery_charging_full_outlined,
+                title: 'Background Activity',
+                isToggle: true,
+                toggleValue: _isBackgroundGranted,
+                onToggle: _handleOpenSettings,
               ),
-            ),
+            ]),
             const SizedBox(height: 24),
 
-            // 1. APP PERMISSIONS SECTION
-            _buildSectionHeader('APP PERMISSIONS'),
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
-              ),
-              child: Column(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Location Access (Always)',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 13,
-                              color: const Color(0xFF333333),
-                            ),
-                          ),
-                        ),
-                        Switch.adaptive(
-                          value: _isLocationGranted,
-                          activeThumbColor: const Color(0xFF2E7D32),
-                          activeTrackColor: const Color(0xFFA5D6A7),
-                          inactiveTrackColor: const Color(0xFFD3D3D3),
-                          onChanged: _handleOpenSettings,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1, color: Color(0xFFE0E0E0)),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            'Background Activity',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              fontSize: 13,
-                              color: const Color(0xFF333333),
-                            ),
-                          ),
-                        ),
-                        Switch.adaptive(
-                          value: _isBackgroundGranted,
-                          activeThumbColor: const Color(0xFF2E7D32),
-                          activeTrackColor: const Color(0xFFA5D6A7),
-                          inactiveTrackColor: const Color(0xFFD3D3D3),
-                          onChanged: _handleOpenSettings,
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-
-            // 2. ACCOUNT SECURITY (CHANGE PIN) SECTION
+            // ── GROUP 2: SECURITY ──
             _buildSectionHeader('SECURITY'),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
+            _buildSettingsGroup([
+              _buildSettingsRow(
+                icon: Icons.lock_outline,
+                title: 'Change PIN',
+                onTap: () => _openChangePinModal(context, driverUuid),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TextFormField(
-                    controller: _pinController,
-                    keyboardType: TextInputType.number,
-                    maxLength: 6,
-                    obscureText: true,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 3,
-                      color: Color(0xFF333333),
-                    ),
-                    decoration: InputDecoration(
-                      hintText: 'Enter New 6-digit PIN',
-                      hintStyle: const TextStyle(
-                        letterSpacing: 0,
-                        fontSize: 13,
-                        fontWeight: FontWeight.normal,
-                        color: Color(0xFF999999),
-                      ),
-                      counterText: '',
-                      filled: true,
-                      fillColor: const Color(0xFFF5F5F5),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        borderSide: const BorderSide(color: Color(0xFFE0E0E0), width: 1),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        borderSide: const BorderSide(color: Color(0xFF333333), width: 1.5),
-                      ),
-                    ),
-                  ),
-                  if (_pinError != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      _pinError!,
-                      style: const TextStyle(color: Color(0xFFCC0000), fontSize: 11, fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  ElevatedButton(
-                    onPressed: _isUpdatingPin ? null : () => _handleUpdatePin(driverUuid),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF333333),
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size(double.infinity, 44),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      elevation: 0,
-                    ),
-                    child: _isUpdatingPin
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                          )
-                        : const Text(
-                            'UPDATE PIN',
-                            style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.8, fontSize: 12),
-                          ),
-                  ),
-                ],
-              ),
-            ),
+            ]),
             const SizedBox(height: 24),
 
-            // 3. SUPPORT / CONTACT INFORMATION
+            // ── GROUP 3: SUPPORT ──
             _buildSectionHeader('SUPPORT'),
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
+            _buildSettingsGroup([
+              _buildSettingsRow(
+                icon: Icons.phone_outlined,
+                title: 'Office: +44 7724 320498',
+                onTap: () => _callPhone('+44 7724 320498'),
               ),
-              child: Column(
-                children: [
-                  InkWell(
-                    onTap: () => _callPhone('+44 7724 320498'),
-                    borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            'ABTSO OFFICE: +44 7724 320498',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: const Color(0xFF333333),
-                            ),
-                          ),
-                          const Icon(Icons.phone_outlined, size: 16, color: Color(0xFF888888)),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const Divider(height: 1, color: Color(0xFFE0E0E0)),
-                  InkWell(
-                    onTap: () => _callPhone('+44 7751 735184'),
-                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            'ABTSO OFFICE: +44 7751 735184',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: const Color(0xFF333333),
-                            ),
-                          ),
-                          const Icon(Icons.phone_outlined, size: 16, color: Color(0xFF888888)),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+              _buildDivider(),
+              _buildSettingsRow(
+                icon: Icons.phone_outlined,
+                title: 'Office: +44 7751 735184',
+                onTap: () => _callPhone('+44 7751 735184'),
               ),
-            ),
-            const SizedBox(height: 32),
+            ]),
+            const SizedBox(height: 24),
 
-            // 4. LOGOUT BUTTON
-            OutlinedButton(
-              onPressed: () => ref.read(authProvider.notifier).logout(),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Color(0xFF333333), width: 1.5),
-                foregroundColor: const Color(0xFF333333),
-                minimumSize: const Size(double.infinity, 46),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            // ── GROUP 4: ACCOUNT (DESTRUCTIVE) ──
+            _buildSectionHeader('ACCOUNT'),
+            _buildSettingsGroup([
+              _buildSettingsRow(
+                icon: Icons.logout_rounded,
+                title: 'Log out',
+                isDestructive: true,
+                onTap: () => ref.read(authProvider.notifier).logout(),
               ),
-              child: const Text(
-                'LOG OUT',
-                style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.0, fontSize: 13),
-              ),
-            ),
-            const SizedBox(height: 20),
+            ]),
+            const SizedBox(height: 24),
           ],
         ),
       ),
@@ -1016,14 +931,84 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
 
   Widget _buildSectionHeader(String title) {
     return Padding(
-      padding: const EdgeInsets.only(left: 4, bottom: 8),
+      padding: const EdgeInsets.only(left: 12, bottom: 6),
       child: Text(
         title,
         style: const TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w900,
-          letterSpacing: 1.2,
-          color: Color(0xFF888888),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.2,
+          color: Color(0xFF6C6C70),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSettingsGroup(List<Widget> children) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: children,
+      ),
+    );
+  }
+
+  Widget _buildDivider() {
+    return const Divider(
+      height: 1,
+      thickness: 1,
+      indent: 48,
+      endIndent: 0,
+      color: Color(0xFFE5E5EA),
+    );
+  }
+
+  Widget _buildSettingsRow({
+    required IconData icon,
+    required String title,
+    VoidCallback? onTap,
+    bool isToggle = false,
+    bool toggleValue = false,
+    ValueChanged<bool>? onToggle,
+    bool isDestructive = false,
+  }) {
+    final Color itemColor = isDestructive ? const Color(0xFFFF3B30) : const Color(0xFF1C1C1E);
+    final Color iconColor = isDestructive ? const Color(0xFFFF3B30) : const Color(0xFF3A3A3C);
+
+    return InkWell(
+      onTap: isToggle ? () => onToggle?.call(!toggleValue) : onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: iconColor),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                title,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: itemColor,
+                ),
+              ),
+            ),
+            if (isToggle)
+              Switch.adaptive(
+                value: toggleValue,
+                activeTrackColor: const Color(0xFF34C759),
+                activeThumbColor: Colors.white,
+                inactiveTrackColor: const Color(0xFFE5E5EA),
+                onChanged: onToggle,
+              )
+            else if (!isDestructive)
+              const Icon(Icons.chevron_right, size: 18, color: Color(0xFFC7C7CC)),
+          ],
         ),
       ),
     );
