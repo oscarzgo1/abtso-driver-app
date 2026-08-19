@@ -167,19 +167,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       ),
                     ),
 
-                    const SizedBox(height: 56),
-
-                    Text(
-                      'EMPLOYEE AUTHORISATION',
-                      style: theme.textTheme.headlineMedium?.copyWith(
-                        fontSize: 12,
-                        letterSpacing: 1,
-                        fontWeight: FontWeight.w900,
-                        color: const Color(0xFF333333),
-                      ),
-                    ),
-                    
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 40),
 
                     // Driver ID / Username Input
                     TextFormField(
