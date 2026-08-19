@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
@@ -30,6 +31,16 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
       const HistoryTab(),
       const SettingsTab(),
     ];
+
+    // Hard Gate: Redirect to terms acceptance if not yet agreed
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        final auth = ref.read(authProvider);
+        if (auth.status == AuthStatus.authenticated && auth.driver?['terms_accepted'] != true) {
+          context.goNamed('terms-acceptance');
+        }
+      }
+    });
   }
 
   @override

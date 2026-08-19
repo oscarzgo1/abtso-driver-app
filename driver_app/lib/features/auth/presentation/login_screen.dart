@@ -50,8 +50,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
 
     // Handle immediate redirect if already authenticated on launch
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && ref.read(authProvider).status == AuthStatus.authenticated) {
-        context.goNamed('home');
+      final auth = ref.read(authProvider);
+      if (mounted && auth.status == AuthStatus.authenticated) {
+        final termsAccepted = auth.driver?['terms_accepted'] == true;
+        if (termsAccepted) {
+          context.goNamed('home');
+        } else {
+          context.goNamed('terms-acceptance');
+        }
       }
     });
   }
@@ -82,7 +88,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     // Listen for authentication success or failure
     ref.listen<AuthState>(authProvider, (prev, next) {
       if (next.status == AuthStatus.authenticated) {
-        context.goNamed('home');
+        final termsAccepted = next.driver?['terms_accepted'] == true;
+        if (termsAccepted) {
+          context.goNamed('home');
+        } else {
+          context.goNamed('terms-acceptance');
+        }
       } else if (next.status == AuthStatus.error) {
         _shakeController.forward();
       }

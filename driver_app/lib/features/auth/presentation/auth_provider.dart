@@ -121,6 +121,37 @@ class AuthNotifier extends StateNotifier<AuthState> {
     } catch (_) {}
   }
 
+  /// Mark statutory terms and privacy policy as accepted by the driver
+  Future<Map<String, dynamic>> acceptTerms() async {
+    final driverUuid = state.driver?['id'] ?? SupabaseService.currentDriverId;
+    final driverCode = state.driver?['driver_id'];
+    final lookupKey = driverUuid ?? driverCode;
+
+    if (lookupKey == null) {
+      return {'success': false, 'error': 'No active driver found.'};
+    }
+
+    try {
+      if (!SupabaseService.isMockMode) {
+        await SupabaseService.client
+            .from('drivers')
+            .update({'terms_accepted': true})
+            .or('id.eq.$lookupKey,driver_id.ilike.$lookupKey');
+      }
+
+      final updatedDriver = state.driver != null
+          ? Map<String, dynamic>.from(state.driver!)
+          : <String, dynamic>{};
+      updatedDriver['terms_accepted'] = true;
+
+      state = state.copyWith(driver: updatedDriver);
+      return {'success': true};
+    } catch (e) {
+      debugPrint('acceptTerms error: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
   Future<void> login(String driverId, String pin) async {
     // Validation
     final cleanId = driverId.trim();
