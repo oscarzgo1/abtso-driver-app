@@ -774,7 +774,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       Text(
                         state.isNearDepot
                             ? 'INSIDE DEPOT GEOFENCE'
-                            : 'SEARCHING DEPOT RANGE',
+                            : 'OUTSIDE DEPOT RANGE',
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontSize: 9,
                           fontWeight: FontWeight.w900,
@@ -789,7 +789,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
                   if (isClockedIn) ...[
                     // ── Active Shift Controls (Night Out + Clock Out) ──
-                    // Always active regardless of geofence location
                     if (state.activeShift?.nightOutStatus == 'pending') ...[
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -903,137 +902,135 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       const SizedBox(height: 12),
                     ],
 
-                    // Clock Out Button (Rendered ONLY if inside depot range)
-                    if (state.isNearDepot)
-                      ElevatedButton(
-                        onPressed: state.isLoading
-                            ? null
-                            : () => ref.read(shiftProvider.notifier).clockOut(),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFCC0000),
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size(double.infinity, 46),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          elevation: 0,
+                    // Clock Out Button (Dynamically enabled/disabled based on geofence)
+                    ElevatedButton(
+                      onPressed: (state.isLoading || !state.isNearDepot)
+                          ? null
+                          : () => ref.read(shiftProvider.notifier).clockOut(),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFCC0000),
+                        disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+                        disabledForegroundColor: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 46),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        child: state.isLoading
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.5,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.stop_rounded, size: 22),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    'CLOCK OUT OF SHIFT',
-                                    style: GoogleFonts.outfit(
-                                      fontWeight: FontWeight.w900,
-                                      fontSize: 14,
-                                      letterSpacing: 0.5,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                      )
-                    else
-                      Container(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        alignment: Alignment.center,
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.location_searching_rounded,
-                              size: 14,
-                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Awaiting arrival at designated location to clock out',
-                              style: GoogleFonts.outfit(
-                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                                fontWeight: FontWeight.w600,
-                                fontSize: 12,
-                                letterSpacing: 0.2,
-                              ),
-                            ),
-                          ],
-                        ),
+                        elevation: 0,
                       ),
+                      child: state.isLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.stop_rounded, size: 22),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'CLOCK OUT OF SHIFT',
+                                  style: GoogleFonts.outfit(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 14,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                    if (!state.isNearDepot) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.location_searching_rounded,
+                            size: 13,
+                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Awaiting arrival at designated location to clock out',
+                            style: GoogleFonts.outfit(
+                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              fontWeight: FontWeight.w600,
+                              fontSize: 11.5,
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ] else ...[
                     // ── Inactive Shift Controls (Clock In Only) ──
-                    if (state.isNearDepot)
-                      ElevatedButton(
-                        onPressed: state.isLoading
-                            ? null
-                            : () => ref.read(shiftProvider.notifier).clockIn(),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF2E7D32),
-                          foregroundColor: Colors.white,
-                          minimumSize: const Size(double.infinity, 46),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          elevation: 0,
+                    ElevatedButton(
+                      onPressed: (state.isLoading || !state.isNearDepot)
+                          ? null
+                          : () => ref.read(shiftProvider.notifier).clockIn(),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF2E7D32),
+                        disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+                        disabledForegroundColor: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 46),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        child: state.isLoading
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.5,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  const Icon(Icons.play_arrow_rounded, size: 22),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    'CLOCK IN TO SHIFT',
-                                    style: GoogleFonts.outfit(
-                                      fontWeight: FontWeight.w900,
-                                      fontSize: 14,
-                                      letterSpacing: 0.5,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                      )
-                    else
-                      Container(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        alignment: Alignment.center,
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              Icons.location_searching_rounded,
-                              size: 14,
-                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Awaiting arrival at designated location',
-                              style: GoogleFonts.outfit(
-                                color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
-                                fontWeight: FontWeight.w600,
-                                fontSize: 12,
-                                letterSpacing: 0.2,
-                              ),
-                            ),
-                          ],
-                        ),
+                        elevation: 0,
                       ),
+                      child: state.isLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.play_arrow_rounded, size: 22),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'CLOCK IN TO SHIFT',
+                                  style: GoogleFonts.outfit(
+                                    fontWeight: FontWeight.w900,
+                                    fontSize: 14,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                    ),
+                    if (!state.isNearDepot) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.location_searching_rounded,
+                            size: 13,
+                            color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Awaiting arrival at designated location to clock in',
+                            style: GoogleFonts.outfit(
+                              color: isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B),
+                              fontWeight: FontWeight.w600,
+                              fontSize: 11.5,
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
 
                   // Dev Location controller presets drawer (sandbox debug mode only)
