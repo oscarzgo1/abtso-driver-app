@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/network/supabase_service.dart';
 import 'home_screen.dart';
 import '../../auth/presentation/auth_provider.dart';
@@ -583,18 +585,135 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Premium, minimalist Settings Tab
+// Premium, Minimalist Settings Tab
 // ─────────────────────────────────────────────────────────────────────────────
-class SettingsTab extends ConsumerWidget {
+class SettingsTab extends ConsumerStatefulWidget {
   const SettingsTab({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<SettingsTab> createState() => _SettingsTabState();
+}
+
+class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingObserver {
+  bool _isLocationGranted = false;
+  bool _isBackgroundGranted = false;
+  final TextEditingController _pinController = TextEditingController();
+  bool _isUpdatingPin = false;
+  String? _pinError;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkPermissions();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkPermissions();
+    }
+  }
+
+  Future<void> _checkPermissions() async {
+    try {
+      final permission = await Geolocator.checkPermission();
+      final hasLocation = (permission == LocationPermission.always || permission == LocationPermission.whileInUse);
+      final hasBackground = (permission == LocationPermission.always);
+
+      if (mounted) {
+        setState(() {
+          _isLocationGranted = hasLocation;
+          _isBackgroundGranted = hasBackground;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _handleOpenSettings(bool _) async {
+    await Geolocator.openAppSettings();
+  }
+
+  Future<void> _handleUpdatePin(String driverUuid) async {
+    final newPin = _pinController.text.trim();
+    if (newPin.length != 6 || int.tryParse(newPin) == null) {
+      setState(() {
+        _pinError = 'Please enter a valid 6-digit numeric PIN';
+      });
+      return;
+    }
+
+    setState(() {
+      _isUpdatingPin = true;
+      _pinError = null;
+    });
+
+    final res = await SupabaseService.updateDriverPin(
+      driverIdOrUuid: driverUuid,
+      newPin: newPin,
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _isUpdatingPin = false;
+    });
+
+    if (res['success'] == true) {
+      _pinController.clear();
+      FocusScope.of(context).unfocus();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            'PIN updated successfully.',
+            style: TextStyle(fontWeight: FontWeight.w700, color: Colors.white),
+          ),
+          backgroundColor: const Color(0xFF333333),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } else {
+      setState(() {
+        _pinError = res['error'] ?? 'Failed to update PIN.';
+      });
+    }
+  }
+
+  Future<void> _callPhone(String phoneNumber) async {
+    final cleanNumber = phoneNumber.replaceAll(RegExp(r'[^0-9+]'), '');
+    final uri = Uri.parse('tel:$cleanNumber');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not dial $phoneNumber'),
+            backgroundColor: const Color(0xFF333333),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final authState = ref.watch(authProvider);
     final theme = Theme.of(context);
 
     final driverName = authState.driver?['full_name'] ?? authState.driver?['name'] ?? 'Driver';
     final driverCode = authState.driver?['driver_id'] ?? 'DRV-001';
+    final driverUuid = authState.driver?['id'] ?? driverCode;
 
     final isFixed = authState.driver?['rate_type'] == 'Fixed Shift Rate (Day Rate)' || authState.driver?['rate_type'] == 'Fixed';
     final double rateValue = isFixed
@@ -623,42 +742,45 @@ class SettingsTab extends ConsumerWidget {
         child: ListView(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
           children: [
-            // Driver card
+            // Driver profile banner
             Container(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: const Color(0xFFF5F5F5),
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
               ),
               child: Row(
                 children: [
                   Container(
-                    width: 48,
-                    height: 48,
+                    width: 44,
+                    height: 44,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFCC0000),
-                      borderRadius: BorderRadius.circular(12),
+                      color: const Color(0xFF333333),
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                    child: const Icon(Icons.person, color: Colors.white, size: 24),
+                    child: const Icon(Icons.person_outline, color: Colors.white, size: 22),
                   ),
-                  const SizedBox(width: 16),
+                  const SizedBox(width: 14),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           driverName.toUpperCase(),
-                          style: theme.textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w900, fontSize: 15,
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 14,
                             color: const Color(0xFF333333),
                           ),
                         ),
                         const SizedBox(height: 2),
                         Text(
                           'ID: $driverCode • Base Rate: £${rateValue.toStringAsFixed(2)}$rateSuffix',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontSize: 12, color: const Color(0xFF888888),
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontSize: 11,
+                            color: const Color(0xFF888888),
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ],
@@ -667,100 +789,242 @@ class SettingsTab extends ConsumerWidget {
                 ],
               ),
             ),
-            const SizedBox(height: 28),
+            const SizedBox(height: 24),
 
-            _buildSettingSection(theme, 'APP PREFERENCES'),
-            _buildSettingTile(
-              context,
-              icon: Icons.notifications_none,
-              title: 'Push Notifications',
-              trailing: Switch(
-                value: true,
-                onChanged: (_) {},
-                activeThumbColor: const Color(0xFFCC0000),
+            // 1. APP PERMISSIONS SECTION
+            _buildSectionHeader('APP PERMISSIONS'),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
               ),
-            ),
-            _buildSettingTile(
-              context,
-              icon: Icons.gps_fixed,
-              title: 'GPS Tracking Settings',
-              subtitle: 'Optimized background telemetry',
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Location Access (Always)',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: const Color(0xFF333333),
+                            ),
+                          ),
+                        ),
+                        Switch.adaptive(
+                          value: _isLocationGranted,
+                          activeThumbColor: const Color(0xFF2E7D32),
+                          activeTrackColor: const Color(0xFFA5D6A7),
+                          inactiveTrackColor: const Color(0xFFD3D3D3),
+                          onChanged: _handleOpenSettings,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1, color: Color(0xFFE0E0E0)),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Background Activity',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: const Color(0xFF333333),
+                            ),
+                          ),
+                        ),
+                        Switch.adaptive(
+                          value: _isBackgroundGranted,
+                          activeThumbColor: const Color(0xFF2E7D32),
+                          activeTrackColor: const Color(0xFFA5D6A7),
+                          inactiveTrackColor: const Color(0xFFD3D3D3),
+                          onChanged: _handleOpenSettings,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 24),
 
-            _buildSettingSection(theme, 'SUPPORT & LEGAL'),
-            _buildSettingTile(context, icon: Icons.help_outline, title: 'Help & Dispatch Support'),
-            _buildSettingTile(context, icon: Icons.privacy_tip_outlined, title: 'Privacy Policy'),
-            _buildSettingTile(context, icon: Icons.info_outline, title: 'App Version', subtitle: 'v1.0.0+1'),
-            const SizedBox(height: 32),
-
-            // Logout Button
-            ElevatedButton(
-              onPressed: () => ref.read(authProvider.notifier).logout(),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFCC0000),
-                foregroundColor: Colors.white,
-                minimumSize: const Size(double.infinity, 48),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                elevation: 0,
+            // 2. ACCOUNT SECURITY (CHANGE PIN) SECTION
+            _buildSectionHeader('SECURITY'),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
               ),
-              child: const Text(
-                'LOGOUT SESSION',
-                style: TextStyle(fontWeight: FontWeight.w700, letterSpacing: 0.8, fontSize: 13),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  TextFormField(
+                    controller: _pinController,
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    obscureText: true,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 3,
+                      color: Color(0xFF333333),
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'Enter New 6-digit PIN',
+                      hintStyle: const TextStyle(
+                        letterSpacing: 0,
+                        fontSize: 13,
+                        fontWeight: FontWeight.normal,
+                        color: Color(0xFF999999),
+                      ),
+                      counterText: '',
+                      filled: true,
+                      fillColor: const Color(0xFFF5F5F5),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: Color(0xFFE0E0E0), width: 1),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: Color(0xFF333333), width: 1.5),
+                      ),
+                    ),
+                  ),
+                  if (_pinError != null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      _pinError!,
+                      style: const TextStyle(color: Color(0xFFCC0000), fontSize: 11, fontWeight: FontWeight.w600),
+                    ),
+                  ],
+                  const SizedBox(height: 12),
+                  ElevatedButton(
+                    onPressed: _isUpdatingPin ? null : () => _handleUpdatePin(driverUuid),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF333333),
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(double.infinity, 44),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      elevation: 0,
+                    ),
+                    child: _isUpdatingPin
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text(
+                            'UPDATE PIN',
+                            style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.8, fontSize: 12),
+                          ),
+                  ),
+                ],
               ),
             ),
+            const SizedBox(height: 24),
+
+            // 3. SUPPORT / CONTACT INFORMATION
+            _buildSectionHeader('SUPPORT'),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
+              ),
+              child: Column(
+                children: [
+                  InkWell(
+                    onTap: () => _callPhone('+44 7724 320498'),
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'ABTSO OFFICE: +44 7724 320498',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: const Color(0xFF333333),
+                            ),
+                          ),
+                          const Icon(Icons.phone_outlined, size: 16, color: Color(0xFF888888)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const Divider(height: 1, color: Color(0xFFE0E0E0)),
+                  InkWell(
+                    onTap: () => _callPhone('+44 7751 735184'),
+                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12)),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'ABTSO OFFICE: +44 7751 735184',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: const Color(0xFF333333),
+                            ),
+                          ),
+                          const Icon(Icons.phone_outlined, size: 16, color: Color(0xFF888888)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 32),
+
+            // 4. LOGOUT BUTTON
+            OutlinedButton(
+              onPressed: () => ref.read(authProvider.notifier).logout(),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Color(0xFF333333), width: 1.5),
+                foregroundColor: const Color(0xFF333333),
+                minimumSize: const Size(double.infinity, 46),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text(
+                'LOG OUT',
+                style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 1.0, fontSize: 13),
+              ),
+            ),
+            const SizedBox(height: 20),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildSettingSection(ThemeData theme, String title) {
+  Widget _buildSectionHeader(String title) {
     return Padding(
-      padding: const EdgeInsets.only(left: 4, bottom: 10),
+      padding: const EdgeInsets.only(left: 4, bottom: 8),
       child: Text(
         title,
-        style: theme.textTheme.bodyMedium?.copyWith(
+        style: const TextStyle(
           fontSize: 10,
           fontWeight: FontWeight.w900,
           letterSpacing: 1.2,
-          color: const Color(0xFF888888),
+          color: Color(0xFF888888),
         ),
-      ),
-    );
-  }
-
-  Widget _buildSettingTile(
-    BuildContext context, {
-    required IconData icon,
-    required String title,
-    String? subtitle,
-    Widget? trailing,
-  }) {
-    final theme = Theme.of(context);
-
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
-      ),
-      child: ListTile(
-        leading: Icon(icon, color: const Color(0xFFCC0000), size: 18),
-        title: Text(
-          title,
-          style: theme.textTheme.bodyLarge?.copyWith(
-            fontWeight: FontWeight.w600, fontSize: 14, color: const Color(0xFF333333),
-          ),
-        ),
-        subtitle: subtitle != null
-            ? Text(
-                subtitle,
-                style: theme.textTheme.bodyMedium?.copyWith(fontSize: 11),
-              )
-            : null,
-        trailing: trailing ?? const Icon(Icons.chevron_right, color: Color(0xFFBBBBBB), size: 16),
       ),
     );
   }

@@ -147,6 +147,38 @@ class SupabaseService {
     await client.auth.signOut();
   }
 
+  /// Update driver's PIN in Supabase
+  static Future<Map<String, dynamic>> updateDriverPin({
+    required String driverIdOrUuid,
+    required String newPin,
+  }) async {
+    if (isMockMode) {
+      return {'success': true};
+    }
+
+    try {
+      // 1. Update in drivers table
+      await client
+          .from('drivers')
+          .update({'pin': newPin.trim()})
+          .or('id.eq.$driverIdOrUuid,driver_id.ilike.$driverIdOrUuid');
+
+      // 2. Also update Supabase Auth user password if authenticated
+      try {
+        await client.auth.updateUser(
+          UserAttributes(password: newPin.trim()),
+        );
+      } catch (authErr) {
+        debugPrint('Auth password update (non-fatal): $authErr');
+      }
+
+      return {'success': true};
+    } catch (e) {
+      debugPrint('updateDriverPin error: $e');
+      return {'success': false, 'error': e.toString()};
+    }
+  }
+
   /// Get current authenticated driver ID
   static String? get currentDriverId {
     if (isMockMode) {
