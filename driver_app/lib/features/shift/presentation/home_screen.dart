@@ -312,6 +312,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
+  void _handleRecenter() {
+    final pos = ref.read(shiftProvider).currentPosition;
+    if (pos != null) {
+      _mapController.move(
+        latlong.LatLng(pos.latitude, pos.longitude),
+        15.0,
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Acquiring GPS location...'),
+          backgroundColor: const Color(0xFF1C1C1E),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   void _handleSOSAction(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
@@ -647,6 +667,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         ),
                       ),
                     ),
+
+                  // Floating "Center to My Location" Button
+                  Positioned(
+                    bottom: isClockedIn ? 68 : 16,
+                    right: 16,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: FloatingActionButton(
+                        heroTag: 'recenter_btn',
+                        backgroundColor: Colors.white,
+                        foregroundColor: const Color(0xFF1C1C1E),
+                        shape: const CircleBorder(),
+                        mini: true,
+                        elevation: 0,
+                        onPressed: _handleRecenter,
+                        child: const Icon(Icons.my_location_rounded, size: 20, color: Color(0xFF1C1C1E)),
+                      ),
+                    ),
+                  ),
 
                   // Red SOS breakdown button
                   if (isClockedIn)
