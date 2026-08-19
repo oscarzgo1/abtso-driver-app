@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../../core/network/supabase_service.dart';
 import 'home_screen.dart';
 import '../../auth/presentation/auth_provider.dart';
+import '../../legal/presentation/legal_compliance_screen.dart';
 
 class MainLayout extends ConsumerStatefulWidget {
   const MainLayout({super.key});
@@ -815,73 +816,6 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
     );
   }
 
-  Future<void> _openLegalModal(BuildContext context, String title, String content) async {
-    await showDialog(
-      context: context,
-      builder: (dialogCtx) => Dialog(
-        backgroundColor: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xFF1C1C1E),
-                      ),
-                    ),
-                  ),
-                  InkWell(
-                    onTap: () => Navigator.pop(dialogCtx),
-                    child: const Icon(Icons.close, size: 20, color: Color(0xFF8E8E93)),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              Flexible(
-                child: SingleChildScrollView(
-                  child: Text(
-                    content,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      height: 1.5,
-                      color: Color(0xFF3A3A3C),
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(dialogCtx),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1C1C1E),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  elevation: 0,
-                ),
-                child: const Text(
-                  'Close',
-                  style: TextStyle(fontWeight: FontWeight.w700),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
   Future<void> _callPhone(String phoneNumber) async {
     final cleanNumber = phoneNumber.replaceAll(RegExp(r'[^0-9+]'), '');
     final uri = Uri.parse('tel:$cleanNumber');
@@ -962,32 +896,7 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
             ]),
             const SizedBox(height: 24),
 
-            // ── GROUP 3: LEGAL (NEW) ──
-            _buildSectionHeader('LEGAL'),
-            _buildSettingsGroup([
-              _buildSettingsRow(
-                icon: Icons.shield_outlined,
-                title: 'Privacy Policy',
-                onTap: () => _openLegalModal(
-                  context,
-                  'Privacy Policy',
-                  'ABTSO Logistics & Transport values your privacy and data security.\n\n1. Location Telemetry: Location data is collected exclusively while clocked into an active shift to calculate route efficiency, mileage, and dispatch status.\n\n2. Shift Records: Historical shift timestamps, rates, and bonus records are encrypted and retained for payroll processing compliance.\n\n3. Device Diagnostics: Basic device state and battery levels are monitored to ensure accurate background telemetry.\n\n4. Data Protection: Your data is never shared with unauthorized third parties and is protected under UK GDPR regulations.',
-                ),
-              ),
-              _buildDivider(),
-              _buildSettingsRow(
-                icon: Icons.article_outlined,
-                title: 'Terms and Conditions',
-                onTap: () => _openLegalModal(
-                  context,
-                  'Terms and Conditions',
-                  'ABTSO Driver Platform Agreement:\n\n1. Active Shifts: Drivers must ensure accurate clock-in and clock-out timestamps at designated depot locations.\n\n2. Vehicle & Safety: Drivers are responsible for conducting standard vehicle checks and adhering to UK road safety standards at all times.\n\n3. Rest & Compliance: Working hours and statutory driving breaks must comply with Driver Hours Regulations.\n\n4. Confidentiality: Client, route, and delivery information accessed through the platform is strictly confidential.',
-                ),
-              ),
-            ]),
-            const SizedBox(height: 24),
-
-            // ── GROUP 4: SUPPORT ──
+            // ── GROUP 3: SUPPORT ──
             _buildSectionHeader('SUPPORT'),
             _buildSettingsGroup([
               _buildSettingsRow(
@@ -1000,6 +909,22 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
                 icon: Icons.phone_outlined,
                 title: 'Office: +44 7751 735184',
                 onTap: () => _callPhone('+44 7751 735184'),
+              ),
+            ]),
+            const SizedBox(height: 24),
+
+            // ── GROUP 4: LEGAL & COMPLIANCE ──
+            _buildSectionHeader('LEGAL & COMPLIANCE'),
+            _buildSettingsGroup([
+              _buildSettingsRow(
+                icon: Icons.shield_outlined,
+                title: 'Privacy Policy & Terms of Use',
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const LegalComplianceScreen()),
+                  );
+                },
               ),
             ]),
             const SizedBox(height: 24),
