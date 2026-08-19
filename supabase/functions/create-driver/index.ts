@@ -116,6 +116,7 @@ serve(async (req: Request) => {
       if (full_name) updatePayload.full_name = full_name.trim();
       if (driver_id) updatePayload.driver_id = driver_id.trim();
       if (phone !== undefined) updatePayload.phone = phone.trim();
+      if (pin && pin.trim().length >= 4) updatePayload.pin_hash = pin.trim();
 
       const { data: updatedDriver, error: updateError } = await supabaseAdmin
         .from("drivers")

@@ -1286,6 +1286,9 @@ export default function App() {
         driver_id: cleanUsername,
         phone: cleanPhone,
       };
+      if (cleanPin) {
+        dbPayload.pin_hash = cleanPin;
+      }
 
       const { error: dbError } = await supabase
         .from('drivers')
