@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
@@ -33,16 +32,8 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
       const HistoryTab(),
       const SettingsTab(),
     ];
-
-    // Hard Gate: Redirect to terms acceptance if not yet agreed
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) {
-        final auth = ref.read(authProvider);
-        if (auth.status == AuthStatus.authenticated && auth.driver?['terms_accepted'] != true) {
-          context.goNamed('terms-acceptance');
-        }
-      }
-    });
+    // Terms & Conditions are accepted via the checkbox on the login screen,
+    // before a session exists — there is no in-app gate to enforce here.
   }
 
   @override
@@ -1033,7 +1024,7 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
               ),
               _buildDivider(),
               _buildSettingsRow(
-                icon: Icons.battery_charging_full_outlined,
+                icon: Icons.sync_outlined,
                 title: 'Background Activity',
                 isToggle: true,
                 toggleValue: _isBackgroundGranted,
@@ -1173,12 +1164,29 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
               ),
             ),
             if (isToggle)
-              Switch.adaptive(
-                value: toggleValue,
-                activeTrackColor: const Color(0xFF34C759),
-                activeThumbColor: Colors.white,
-                inactiveTrackColor: const Color(0xFFE5E5EA),
-                onChanged: onToggle,
+              // Plain Material Switch, not .adaptive — the adaptive variant
+              // renders the full-size Cupertino control on iOS/web (visibly
+              // larger than everything else on this screen) and hardcodes
+              // iOS system green, bypassing ABTSOTheme's brand-red
+              // switchTheme entirely. Scaled down to sit comfortably next
+              // to the 20px row icons instead of dominating the row.
+              Transform.scale(
+                scale: 0.82,
+                child: Switch(
+                  value: toggleValue,
+                  // Fully explicit per-state colors here rather than relying
+                  // on ABTSOTheme.switchTheme + convenience props together —
+                  // the two can silently disagree on precedence. White thumb
+                  // throughout; brand red track when on, light grey when off.
+                  thumbColor: const WidgetStatePropertyAll(Colors.white),
+                  trackColor: WidgetStateProperty.resolveWith((states) =>
+                      states.contains(WidgetState.selected)
+                          ? const Color(0xFFCC0000)
+                          : const Color(0xFFE5E5EA)),
+                  trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  onChanged: onToggle,
+                ),
               )
             else if (!isDestructive)
               const Icon(Icons.chevron_right, size: 18, color: Color(0xFFC7C7CC)),

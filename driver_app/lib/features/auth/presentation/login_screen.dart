@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,6 +28,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
   final _driverIdController = TextEditingController();
   final _pinController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
+  bool _acceptedTerms = false;
 
   late AnimationController _shakeController;
   late Animation<double> _shakeAnimation;
@@ -49,16 +51,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
         }
       });
 
-    // Handle immediate redirect if already authenticated on launch
+    // Handle immediate redirect if already authenticated on launch.
+    // The user stays logged in until they explicitly sign out — see
+    // AuthNotifier.checkSession, which restores this session indefinitely
+    // and never bounces the driver back here over a transient network issue.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = ref.read(authProvider);
       if (mounted && auth.status == AuthStatus.authenticated) {
-        final termsAccepted = auth.driver?['terms_accepted'] == true;
-        if (termsAccepted) {
-          context.goNamed('home');
-        } else {
-          context.goNamed('terms-acceptance');
-        }
+        context.goNamed('home');
       }
     });
   }
@@ -72,6 +72,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
   }
 
   void _handleLogin() {
+    if (!_acceptedTerms) return; // Button is disabled in this state; guarded here too.
     if (_formKey.currentState!.validate()) {
       FocusScope.of(context).unfocus();
       ref.read(authProvider.notifier).login(
@@ -89,12 +90,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     // Listen for authentication success or failure
     ref.listen<AuthState>(authProvider, (prev, next) {
       if (next.status == AuthStatus.authenticated && prev?.status != AuthStatus.authenticated) {
-        final termsAccepted = next.driver?['terms_accepted'] == true;
-        if (termsAccepted) {
-          context.goNamed('greeting');
-        } else {
-          context.goNamed('terms-acceptance');
-        }
+        // Terms were accepted via the checkbox on this screen, which is the
+        // only way to reach a successful login — record it against the
+        // driver's profile now that a session exists. Login itself is not
+        // gated on this write succeeding: a slow/offline acceptance sync
+        // should never block a driver from starting a shift.
+        ref.read(authProvider.notifier).acceptTerms();
+        context.goNamed('greeting');
       } else if (next.status == AuthStatus.error) {
         _shakeController.forward();
       }
@@ -249,12 +251,75 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       const SizedBox(height: 16),
                     ],
 
+                    // Terms & Conditions consent — required before login is
+                    // possible; replaces the old post-login acceptance screen.
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: Checkbox(
+                            value: _acceptedTerms,
+                            onChanged: (value) => setState(() => _acceptedTerms = value ?? false),
+                            activeColor: const Color(0xFFCC0000),
+                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            visualDensity: VisualDensity.compact,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        // Deliberately not wrapped in its own tap-to-toggle
+                        // GestureDetector: doing so would put a second
+                        // TapGestureRecognizer in the same gesture arena as
+                        // the "Terms & Conditions" link below, making it
+                        // unreliable which one wins on tap. The checkbox
+                        // above is the sole toggle; this text carries only
+                        // the link's own recognizer.
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: RichText(
+                              text: TextSpan(
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  height: 1.4,
+                                  color: Color(0xFF555555),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                children: [
+                                  const TextSpan(text: 'I accept the '),
+                                  TextSpan(
+                                    text: 'Terms & Conditions and Privacy Policy',
+                                    style: const TextStyle(
+                                      color: Color(0xFFCC0000),
+                                      fontWeight: FontWeight.w800,
+                                      decoration: TextDecoration.underline,
+                                      decorationColor: Color(0xFFCC0000),
+                                    ),
+                                    recognizer: TapGestureRecognizer()
+                                      ..onTap = () => context.pushNamed('legal'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 20),
+
                     // Login Button (Sleek, brand red primary action)
                     ElevatedButton(
-                      onPressed: authState.status == AuthStatus.loading ? null : _handleLogin,
+                      onPressed: (authState.status == AuthStatus.loading || !_acceptedTerms)
+                          ? null
+                          : _handleLogin,
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFCC0000),
                         foregroundColor: Colors.white,
+                        disabledBackgroundColor: const Color(0xFFE0A0A0),
+                        disabledForegroundColor: Colors.white.withValues(alpha: 0.85),
                         minimumSize: const Size(double.infinity, 44),
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         shape: RoundedRectangleBorder(

@@ -2,12 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import '@maplibre/maplibre-gl-leaflet';
 import { 
-  Users, 
-  Map as MapIcon, 
-  AlertTriangle, 
+  Users,
   FileSpreadsheet, 
-  TrendingUp, 
   Clock, 
   ShieldAlert, 
   LogOut, 
@@ -18,11 +17,45 @@ import {
   VolumeX,
   Compass,
   RefreshCw,
-  DollarSign
+  DollarSign,
+  Mail,
+  Lock,
+  Eye,
+  EyeOff,
+  Shield,
+  Bell,
+  MapPinned,
+  FileText,
+  User,
+  Briefcase,
+  PoundSterling,
+  ChevronUp,
+  Activity,
+  Search,
+  X,
+  ChevronDown,
+  Upload,
+  Wand2,
+  ListChecks,
+  BarChart3,
+  AlertOctagon,
+  Moon,
+  Building2,
+  Calendar,
+  AlertTriangle
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import abtsoLogo from './assets/logo_transparent.png';
+
+// "Remember Me" stores only the administrator's email address for prefill —
+// never the password. Session persistence itself is handled by Supabase.
+const REMEMBERED_EMAIL_KEY = 'admin_remembered_email';
+
+// Placeholder fleet photo for the login branding panel.
+// Swap for a self-hosted ABTSO fleet image when one is available.
+const loginBrandImage =
+  'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?q=80&w=1000&auto=format&fit=crop';
 
 // Waypoints list representing the HGV route between Rossington Depot and Wheatley Depot
 const routeWaypoints = [
@@ -138,16 +171,72 @@ interface LiveLocation {
   status: 'moving' | 'stationary' | 'idle';
 }
 
+// -- KPI Sparkline (decorative) ----------------------------
+// Hardcoded paths, not derived from real history: the dashboard has no
+// stored time-series for these metrics to chart honestly. Purely a visual
+// echo of the trend badge next to it.
+const SPARKLINE_PATHS: Record<'up' | 'down' | 'flat', string> = {
+  up: 'M1 21 L10 16 L19 18 L28 10 L37 12 L46 3',
+  down: 'M1 5 L10 9 L19 7 L28 15 L37 13 L46 20',
+  flat: 'M1 12 L10 10 L19 13 L28 11 L37 12 L46 10',
+};
+
+function KpiSparkline({ tone }: { tone: 'up' | 'down' | 'flat' }) {
+  const stroke = tone === 'up' ? '#22C55E' : tone === 'down' ? '#EF4444' : '#94A3B8';
+  return (
+    <svg width="48" height="24" viewBox="0 0 48 24" fill="none" aria-hidden="true">
+      <path d={SPARKLINE_PATHS[tone]} stroke={stroke} strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// -- KPI Trend Badge (decorative, same caveat as above) ----
+function KpiTrend({ tone, label }: { tone: 'up' | 'down' | 'flat'; label: string }) {
+  if (tone === 'flat') {
+    return <span className="kpi-trend kpi-trend--flat">{label}</span>;
+  }
+  return (
+    <span className={`kpi-trend ${tone === 'up' ? 'kpi-trend--up' : 'kpi-trend--down'}`}>
+      {tone === 'up' ? '↗' : '↘'} {label}
+    </span>
+  );
+}
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     return localStorage.getItem('admin_session') === 'true';
   });
+  // Least privilege: the cached value is only a first paint hint — the real
+  // department is re-resolved from the database on every session restore.
   const [userRole, setUserRole] = useState<UserRole>(() => {
-    return (localStorage.getItem('admin_role') as UserRole) || 'payroll_admin';
+    return localStorage.getItem('admin_role') === 'payroll_admin' ? 'payroll_admin' : 'logistics';
   });
-  const [loginEmail, setLoginEmail] = useState('');
+  const [loginEmail, setLoginEmail] = useState(() => localStorage.getItem(REMEMBERED_EMAIL_KEY) || '');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(() => !!localStorage.getItem(REMEMBERED_EMAIL_KEY));
+
+  // Department sign-up
+  const [signupMode, setSignupMode] = useState(false);
+  const [signupEmail, setSignupEmail] = useState('');
+  const [signupPassword, setSignupPassword] = useState('');
+  const [signupConfirm, setSignupConfirm] = useState('');
+  const [signupRole, setSignupRole] = useState<UserRole>('logistics');
+  const [signupCode, setSignupCode] = useState('');
+  const [showSignupPassword, setShowSignupPassword] = useState(false);
+  const [isSigningUp, setIsSigningUp] = useState(false);
+  const [signupError, setSignupError] = useState('');
+
+  // Password reset / recovery
+  const [resetNotice, setResetNotice] = useState<{ tone: 'info' | 'error' | 'success'; text: string } | null>(null);
+  const [isSendingReset, setIsSendingReset] = useState(false);
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [isSavingPassword, setIsSavingPassword] = useState(false);
+  const [recoveryError, setRecoveryError] = useState('');
   const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'reports'>('live');
 
   // Route Guard: enforce that logistics role cannot access rates or reports tabs
@@ -156,6 +245,28 @@ export default function App() {
       setActiveTab('live');
     }
   }, [userRole, activeTab]);
+
+  /// Resolves the signed-in user's department from public.user_roles.
+  /// Matched on email: the deployed table is keyed by email and has no
+  /// user_id column, unlike the definition in migration 009.
+  /// Least privilege: anything unrecognised resolves to 'logistics'.
+  const resolveUserRole = useCallback(async (): Promise<UserRole> => {
+    const { data: { user } } = await supabase!.auth.getUser();
+    const email = (user?.email ?? '').toLowerCase().trim();
+    if (!email) return 'logistics';
+
+    const { data, error } = await supabase!
+      .from('user_roles')
+      .select('role')
+      .eq('email', email)
+      .limit(1);
+
+    if (error) {
+      console.warn('Role lookup failed, defaulting to logistics:', error.message);
+      return 'logistics';
+    }
+    return data?.[0]?.role === 'payroll_admin' ? 'payroll_admin' : 'logistics';
+  }, []);
 
   // Database States
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -345,6 +456,10 @@ export default function App() {
 
   // Report Filters
   const [reportEmployeeFilter, setReportEmployeeFilter] = useState('all');
+  // Driver search combo (visual text shown in the field vs. the underlying
+  // filter, which stays keyed by driver id so filtering logic is unaffected).
+  const [driverSearchQuery, setDriverSearchQuery] = useState('');
+  const [isDriverSearchOpen, setIsDriverSearchOpen] = useState(false);
   const [reportDateStart, setReportDateStart] = useState('');
   const [reportDateEnd, setReportDateEnd] = useState('');
   const [showOnlyNightOutRequested, setShowOnlyNightOutRequested] = useState(false);
@@ -773,10 +888,30 @@ export default function App() {
   useEffect(() => {
     if (isMockMode) return;
 
-    const { data: { subscription } } = supabase!.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase!.auth.onAuthStateChange((event, session) => {
+      // A reset link signs the user in with a recovery session. Divert them to the
+      // "set a new password" screen instead of dropping them into the dashboard.
+      if (event === 'PASSWORD_RECOVERY') {
+        setRecoveryMode(true);
+        return;
+      }
+
       if (session) {
         setIsAuthenticated(true);
         localStorage.setItem('admin_session', 'true');
+
+        // A provisioned or admin-reset account carries a temporary password —
+        // divert to the same "set a new password" screen before anything else.
+        if (session.user?.user_metadata?.must_change_password) {
+          setRecoveryMode(true);
+        }
+
+        // Re-resolve the department from the database so an edited
+        // localStorage value cannot widen the UI on reload.
+        resolveUserRole().then(role => {
+          setUserRole(role);
+          localStorage.setItem('admin_role', role);
+        });
       } else {
         setIsAuthenticated(false);
         localStorage.removeItem('admin_session');
@@ -784,7 +919,7 @@ export default function App() {
     });
 
     return () => subscription.unsubscribe();
-  }, []);
+  }, [resolveUserRole]);
 
   // ── WebSockets Realtime Subscriptions ──────────────────────────
   useEffect(() => {
@@ -953,9 +1088,178 @@ export default function App() {
   }, [isAuthenticated]);
 
   // ── Admin Login Logic ───────────────────────────────────────
+
+  /// Persists (or clears) the remembered email once a sign-in actually succeeds.
+  const persistRememberedEmail = (email: string) => {
+    if (rememberMe) {
+      localStorage.setItem(REMEMBERED_EMAIL_KEY, email);
+    } else {
+      localStorage.removeItem(REMEMBERED_EMAIL_KEY);
+    }
+  };
+
+  /// Extracts the real error message from an edge function response.
+  /// supabase-js returns { data: null, error: FunctionsHttpError } for ANY
+  /// non-2xx and keeps the JSON body on error.context — without unwrapping it
+  /// the UI can only ever say "Edge Function returned a non-2xx status code".
+  /// Returns null when the call actually succeeded.
+  const readFunctionError = async (data: any, error: any): Promise<string | null> => {
+    if (data?.error) return data.error;
+    if (!error) return null;
+
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) return body.error;
+    } catch (_) {
+      // Body was not JSON — fall back to the generic message below.
+    }
+    return error.message ?? 'The request failed.';
+  };
+
+  /// Registers a new dashboard account against a department registration code.
+  /// The department is granted by the edge function only if the code matches
+  /// that department's server-side secret — never on the client's say-so.
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSignupError('');
+
+    const email = signupEmail.trim().toLowerCase();
+    if (!email.includes('@')) {
+      setSignupError('Enter a valid email address.');
+      return;
+    }
+    if (signupPassword.length < 8) {
+      setSignupError('Password must be at least 8 characters.');
+      return;
+    }
+    if (signupPassword !== signupConfirm) {
+      setSignupError('Passwords do not match.');
+      return;
+    }
+    if (!signupCode.trim()) {
+      setSignupError('Enter the registration code for your department.');
+      return;
+    }
+    if (isMockMode) {
+      setSignupError('Sign-up is unavailable in sandbox mock mode.');
+      return;
+    }
+
+    setIsSigningUp(true);
+    try {
+      const { data, error } = await supabase!.functions.invoke('admin-signup', {
+        body: { email, password: signupPassword, role: signupRole, code: signupCode.trim() },
+      });
+
+      const failure = await readFunctionError(data, error);
+      if (failure) {
+        setSignupError(failure);
+      } else {
+        setSignupMode(false);
+        setSignupPassword('');
+        setSignupConfirm('');
+        setSignupCode('');
+        setLoginEmail(email);
+        setResetNotice({
+          tone: 'success',
+          text: `Account created for ${email}. Sign in with your new password.`,
+        });
+      }
+    } catch (_) {
+      setSignupError('Could not reach the sign-up service.');
+    } finally {
+      setIsSigningUp(false);
+    }
+  };
+
+  /// Sends a Supabase password-reset email. The link returns the admin to this
+  /// app, where the PASSWORD_RECOVERY listener above opens the new-password screen.
+  const handleForgotPassword = async () => {
+    setLoginError('');
+    const email = loginEmail.trim();
+
+    if (!email) {
+      setResetNotice({ tone: 'error', text: 'Enter your administrator email above, then select Forgot Password.' });
+      return;
+    }
+
+    if (isMockMode) {
+      setResetNotice({ tone: 'info', text: 'Password reset is unavailable in sandbox mock mode.' });
+      return;
+    }
+
+    setIsSendingReset(true);
+    setResetNotice(null);
+
+    try {
+      const { error } = await supabase!.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
+      });
+
+      if (error) {
+        setResetNotice({ tone: 'error', text: error.message });
+      } else {
+        // Supabase does not disclose whether the address exists — keep the wording neutral.
+        setResetNotice({
+          tone: 'success',
+          text: `If ${email} is a registered administrator, a reset link is on its way. Check your inbox.`,
+        });
+      }
+    } catch (_) {
+      setResetNotice({ tone: 'error', text: 'Could not reach the authentication service.' });
+    } finally {
+      setIsSendingReset(false);
+    }
+  };
+
+  /// Applies the new password chosen on the recovery screen.
+  const handleSetNewPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRecoveryError('');
+
+    if (newPassword.length < 8) {
+      setRecoveryError('Password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setRecoveryError('Passwords do not match.');
+      return;
+    }
+
+    setIsSavingPassword(true);
+
+    try {
+      // Clearing the flag in the same call means a provisioned account stops
+      // being diverted to this screen once the temporary password is replaced.
+      const { error } = await supabase!.auth.updateUser({
+        password: newPassword,
+        data: { must_change_password: false },
+      });
+
+      if (error) {
+        setRecoveryError(error.message);
+      } else {
+        // Drop the recovery session so the new password is used deliberately.
+        await supabase!.auth.signOut();
+        setRecoveryMode(false);
+        setNewPassword('');
+        setConfirmPassword('');
+        setLoginPassword('');
+        setIsAuthenticated(false);
+        localStorage.removeItem('admin_session');
+        setResetNotice({ tone: 'success', text: 'Password updated. Sign in with your new password.' });
+      }
+    } catch (_) {
+      setRecoveryError('Could not reach the authentication service.');
+    } finally {
+      setIsSavingPassword(false);
+    }
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
+    setResetNotice(null);
 
     if (isMockMode) {
       if (loginEmail === 'logistics@abtso.co.uk' && loginPassword === 'logistics123') {
@@ -963,6 +1267,7 @@ export default function App() {
         setUserRole('logistics');
         localStorage.setItem('admin_session', 'true');
         localStorage.setItem('admin_role', 'logistics');
+        persistRememberedEmail(loginEmail);
         setActiveTab('live');
       } else if (
         (loginEmail === 'payroll@abtso.co.uk' || loginEmail === 'admin@abtso.co.uk') && 
@@ -972,6 +1277,7 @@ export default function App() {
         setUserRole('payroll_admin');
         localStorage.setItem('admin_session', 'true');
         localStorage.setItem('admin_role', 'payroll_admin');
+        persistRememberedEmail(loginEmail);
       } else {
         setLoginError('Invalid email or password. Use payroll@abtso.co.uk / payroll123 OR logistics@abtso.co.uk / logistics123');
       }
@@ -979,7 +1285,7 @@ export default function App() {
     }
 
     try {
-      const { data: authData, error } = await supabase!.auth.signInWithPassword({
+      const { error } = await supabase!.auth.signInWithPassword({
         email: loginEmail,
         password: loginPassword,
       });
@@ -989,22 +1295,12 @@ export default function App() {
       } else {
         setIsAuthenticated(true);
         localStorage.setItem('admin_session', 'true');
+        persistRememberedEmail(loginEmail);
 
-        // Look up role from database
-        let resolvedRole: UserRole = 'logistics';
-        if (authData.user) {
-          const { data: roleRes } = await supabase!
-            .from('user_roles')
-            .select('role')
-            .eq('user_id', authData.user.id)
-            .maybeSingle();
-
-          if (roleRes?.role) {
-            resolvedRole = roleRes.role as UserRole;
-          } else if (loginEmail.includes('payroll') || loginEmail.includes('admin')) {
-            resolvedRole = 'payroll_admin';
-          }
-        }
+        // Department comes solely from the user_roles table. The previous
+        // email-pattern fallback let any address containing "admin" or
+        // "payroll" self-assign the payroll department.
+        const resolvedRole = await resolveUserRole();
 
         setUserRole(resolvedRole);
         localStorage.setItem('admin_role', resolvedRole);
@@ -2431,13 +2727,15 @@ export default function App() {
 
     // Initialize Leaflet map
     if (!mapRef.current) {
-      mapRef.current = L.map('live-dispatch-map').setView([53.5160, -1.0880], 11);
+      mapRef.current = L.map('live-dispatch-map', { maxZoom: 20 }).setView([53.5160, -1.0880], 11);
 
-      // Always use bright CartoDB Positron tiles to match ABTSO brand
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; CartoDB',
-        maxZoom: 20
+      // OpenFreeMap Positron vector tiles — keyless, unmetered, commercial use permitted.
+      // Rendered through MapLibre GL; all Leaflet overlays below stay on Leaflet panes.
+      L.maplibreGL({
+        style: 'https://tiles.openfreemap.org/styles/positron'
       }).addTo(mapRef.current);
+      // Attribution (OpenFreeMap / OpenMapTiles / OSM) is required, and is supplied
+      // automatically as linked text from the style itself — do not add it manually.
 
       // Draw Rossington Depot (53.481798, -1.086552)
       L.circle([53.481798, -1.086552], {
@@ -2549,63 +2847,339 @@ export default function App() {
   }, [isAuthenticated, activeTab, liveLocations, alerts]);
 
   // ── Render login Page if Unauthenticated ───────────────────
+  // ── Department Sign-Up ─────────────────────────────────────
+  if (!isAuthenticated && signupMode) {
+    return (
+      <div className="login-shell">
+        <div className="login-card login-card--single">
+          <div className="login-form-col">
+            <div className="text-center mb-24">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '18px' }}>
+                <img src={abtsoLogo} onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }} alt="ABTSO Logo" style={{ height: '54px', width: 'auto', objectFit: 'contain' }} />
+              </div>
+              <h1 className="login-title">Register Access</h1>
+              <p className="login-subtitle">Join a department with its registration code</p>
+            </div>
+
+            <form onSubmit={handleSignup}>
+              <div className="input-group">
+                <label className="input-label" htmlFor="signup-email">WORK EMAIL</label>
+                <div className="login-field">
+                  <span className="login-field-icon"><Mail size={16} /></span>
+                  <input
+                    id="signup-email"
+                    type="email"
+                    className="login-input"
+                    placeholder="firstname.lastname@abtso.co.uk"
+                    autoComplete="username"
+                    value={signupEmail}
+                    onChange={(e) => setSignupEmail(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="signup-role">DEPARTMENT</label>
+                <select
+                  id="signup-role"
+                  className="select-field"
+                  value={signupRole}
+                  onChange={(e) => setSignupRole(e.target.value as UserRole)}
+                >
+                  <option value="logistics">Logistics</option>
+                  <option value="payroll_admin">Payroll Admin</option>
+                </select>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="signup-code">DEPARTMENT REGISTRATION CODE</label>
+                <div className="login-field">
+                  <span className="login-field-icon"><Shield size={16} /></span>
+                  <input
+                    id="signup-code"
+                    type="text"
+                    className="login-input"
+                    placeholder="Provided by your administrator"
+                    value={signupCode}
+                    onChange={(e) => setSignupCode(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="signup-password">PASSWORD</label>
+                <div className="login-field">
+                  <span className="login-field-icon"><Lock size={16} /></span>
+                  <input
+                    id="signup-password"
+                    type={showSignupPassword ? 'text' : 'password'}
+                    className="login-input login-input--with-toggle"
+                    placeholder="At least 8 characters"
+                    autoComplete="new-password"
+                    value={signupPassword}
+                    onChange={(e) => setSignupPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="login-toggle"
+                    onClick={() => setShowSignupPassword(v => !v)}
+                    aria-label={showSignupPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showSignupPassword}
+                  >
+                    {showSignupPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="signup-confirm">CONFIRM PASSWORD</label>
+                <div className="login-field">
+                  <span className="login-field-icon"><Lock size={16} /></span>
+                  <input
+                    id="signup-confirm"
+                    type={showSignupPassword ? 'text' : 'password'}
+                    className="login-input"
+                    placeholder="Re-enter password"
+                    autoComplete="new-password"
+                    value={signupConfirm}
+                    onChange={(e) => setSignupConfirm(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              {signupError && (
+                <div className="login-notice login-notice--error">{signupError}</div>
+              )}
+
+              <button type="submit" className="login-submit" disabled={isSigningUp}>
+                <Shield size={15} />
+                {isSigningUp ? 'CREATING ACCOUNT…' : 'REGISTER ACCESS'}
+              </button>
+            </form>
+
+            <div className="login-utils" style={{ marginTop: '16px', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="login-forgot"
+                onClick={() => { setSignupMode(false); setSignupError(''); }}
+              >
+                ← Back to sign in
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Password Recovery: reached via the emailed reset link ──
+  if (recoveryMode) {
+    return (
+      <div className="login-shell">
+        <div className="login-card login-card--single">
+          <div className="login-form-col">
+            <div className="text-center mb-24">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '18px' }}>
+                <img src={abtsoLogo} onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }} alt="ABTSO Logo" style={{ height: '54px', width: 'auto', objectFit: 'contain' }} />
+              </div>
+              <h1 className="login-title">Set New Password</h1>
+              <p className="login-subtitle">Choose a new administrator password</p>
+            </div>
+
+            <form onSubmit={handleSetNewPassword}>
+              <div className="input-group">
+                <label className="input-label" htmlFor="new-password">NEW PASSWORD</label>
+                <div className="login-field">
+                  <span className="login-field-icon"><Lock size={16} /></span>
+                  <input
+                    id="new-password"
+                    type={showNewPassword ? 'text' : 'password'}
+                    className="login-input login-input--with-toggle"
+                    placeholder="At least 8 characters"
+                    autoComplete="new-password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="login-toggle"
+                    onClick={() => setShowNewPassword(v => !v)}
+                    aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showNewPassword}
+                  >
+                    {showNewPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="confirm-password">CONFIRM NEW PASSWORD</label>
+                <div className="login-field">
+                  <span className="login-field-icon"><Lock size={16} /></span>
+                  <input
+                    id="confirm-password"
+                    type={showNewPassword ? 'text' : 'password'}
+                    className="login-input"
+                    placeholder="Re-enter new password"
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              {recoveryError && (
+                <div className="text-error text-sm font-semibold mb-16 flex align-center gap-8">
+                  <ShieldAlert size={15} />
+                  {recoveryError}
+                </div>
+              )}
+
+              <button type="submit" className="login-submit" disabled={isSavingPassword}>
+                <Shield size={15} />
+                {isSavingPassword ? 'UPDATING…' : 'UPDATE PASSWORD'}
+              </button>
+            </form>
+
+            <p className="login-footnote">Multi-Factor Authentication enabled for enhanced security</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!isAuthenticated) {
     return (
-      <div className="flex align-center justify-center min-h-screen p-16" style={{ backgroundColor: '#FFFFFF' }}>
-        <div style={{ background: '#FFFFFF', border: '1px solid #E0E0E0', borderRadius: '16px', padding: '40px', width: '100%', maxWidth: '420px' }}>
-          <div className="text-center mb-24">
-            {/* ABTSO Brand Logo Mark */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '20px' }}>
-              <img src={abtsoLogo} onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }} alt="ABTSO Logo" style={{ height: '54px', width: 'auto', objectFit: 'contain' }} />
-            </div>
-            <h1 className="text-2xl font-black m-0" style={{ color: '#333333', letterSpacing: '0.5px' }}>Dispatch Console</h1>
-            <p className="text-sm mt-4" style={{ color: '#888888' }}>Administrator Access Only</p>
-          </div>
-
-          <form onSubmit={handleLogin}>
-            <div className="input-group">
-              <span className="input-label">ADMINISTRATOR EMAIL</span>
-              <input
-                type="email"
-                className="input-field"
-                placeholder="admin@abtso.co.uk"
-                value={loginEmail}
-                onChange={(e) => setLoginEmail(e.target.value)}
-                required
-              />
+      <div className="login-shell">
+        <div className="login-card">
+          {/* ── Left column: credentials ─────────────────────── */}
+          <div className="login-form-col">
+            <div className="text-center mb-24">
+              {/* ABTSO Brand Logo Mark */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '18px' }}>
+                <img src={abtsoLogo} onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }} alt="ABTSO Logo" style={{ height: '54px', width: 'auto', objectFit: 'contain' }} />
+              </div>
+              <h1 className="login-title">Dispatch Console</h1>
+              <p className="login-subtitle">Administrator Access Only</p>
             </div>
 
-            <div className="input-group">
-              <span className="input-label">PASSWORD</span>
-              <input
-                type="password"
-                className="input-field"
-                placeholder="••••••••"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                required
-              />
+            <form onSubmit={handleLogin}>
+              <div className="input-group">
+                <label className="input-label" htmlFor="login-email">ADMINISTRATOR EMAIL</label>
+                <div className="login-field">
+                  <span className="login-field-icon"><Mail size={16} /></span>
+                  <input
+                    id="login-email"
+                    type="email"
+                    className="login-input"
+                    placeholder="admin@abtso.co.uk"
+                    autoComplete="email"
+                    value={loginEmail}
+                    onChange={(e) => setLoginEmail(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="login-password">PASSWORD</label>
+                <div className="login-field">
+                  <span className="login-field-icon"><Lock size={16} /></span>
+                  <input
+                    id="login-password"
+                    type={showPassword ? 'text' : 'password'}
+                    className="login-input login-input--with-toggle"
+                    placeholder="••••••••••"
+                    autoComplete="current-password"
+                    value={loginPassword}
+                    onChange={(e) => setLoginPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="login-toggle"
+                    onClick={() => setShowPassword(v => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="login-utils">
+                <label className="login-remember">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                  />
+                  Remember Me
+                </label>
+                <button
+                  type="button"
+                  className="login-forgot"
+                  onClick={handleForgotPassword}
+                  disabled={isSendingReset}
+                >
+                  {isSendingReset ? 'Sending…' : 'Forgot Password?'}
+                </button>
+              </div>
+
+              {resetNotice && (
+                <div className={`login-notice login-notice--${resetNotice.tone}`} role="status">
+                  {resetNotice.text}
+                </div>
+              )}
+
+              {loginError && (
+                <div className="text-error text-sm font-semibold mb-16 flex align-center gap-8">
+                  <ShieldAlert size={15} />
+                  {loginError}
+                </div>
+              )}
+
+              <button type="submit" className="login-submit">
+                <Shield size={15} />
+                SECURE AUTHORIZE
+              </button>
+            </form>
+
+            <div className="login-utils" style={{ marginTop: '14px', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="login-forgot"
+                onClick={() => { setSignupMode(true); setResetNotice(null); setLoginError(''); }}
+              >
+                Need access? Register with a department code
+              </button>
             </div>
 
-            {loginError && (
-              <div className="text-error text-sm font-semibold mb-16 flex align-center gap-8">
-                <ShieldAlert size={15} />
-                {loginError}
+            <p className="login-footnote">Multi-Factor Authentication enabled for enhanced security</p>
+
+            {isMockMode && (
+              <div className="mt-24 p-12 text-center text-xs text-muted" style={{ border: '1px dashed var(--border-color)', borderRadius: '6px' }}>
+                ℹ️ Sandbox Mock Mode Active<br/>
+                <b>Payroll Admin:</b> <span className="text-secondary font-mono">payroll@abtso.co.uk</span> / <span className="text-secondary font-mono">payroll123</span><br/>
+                <b>Logistics:</b> <span className="text-secondary font-mono">logistics@abtso.co.uk</span> / <span className="text-secondary font-mono">logistics123</span>
               </div>
             )}
+          </div>
 
-            <button type="submit" className="btn btn-primary w-full mt-8">
-              SECURE AUTHORIZE
-            </button>
-          </form>
-
-          {isMockMode && (
-            <div className="mt-24 p-12 text-center text-xs text-muted" style={{ border: '1px dashed var(--border-color)', borderRadius: '6px' }}>
-              ℹ️ Sandbox Mock Mode Active<br/>
-              <b>Payroll Admin:</b> <span className="text-secondary font-mono">payroll@abtso.co.uk</span> / <span className="text-secondary font-mono">payroll123</span><br/>
-              <b>Logistics:</b> <span className="text-secondary font-mono">logistics@abtso.co.uk</span> / <span className="text-secondary font-mono">logistics123</span>
-            </div>
-          )}
+          {/* ── Right column: fleet branding ─────────────────── */}
+          <div
+            className="login-brand"
+            style={{ backgroundImage: `url(${loginBrandImage})` }}
+            role="presentation"
+          >
+            <div className="login-brand-overlay" />
+          </div>
         </div>
       </div>
     );
@@ -2621,65 +3195,97 @@ export default function App() {
   return (
     <div className="grid grid-sidebar min-h-screen">
       {/* ── Left Sidebar Navigation ────────────────────────── */}
-      <div className="sidebar p-24 flex flex-col justify-between">
+      {/* No horizontal padding on the container: the active item's red border
+          must sit flush against the sidebar's left edge, so each nav item
+          owns its own inset instead. */}
+      <div className="sidebar flex flex-col justify-between">
         <div>
-          {/* ABTSO Brand Logo in sidebar */}
-          <div className="flex align-center gap-12 mb-32">
-            <img src={abtsoLogo} onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }} alt="ABTSO Logo" style={{ height: '32px', width: 'auto', objectFit: 'contain' }} />
-            <div>
-              <h2 className="text-md font-black m-0" style={{ color: '#333333', letterSpacing: '0.5px' }}>DISPATCH</h2>
-              <span className="text-xs text-muted">
-                {userRole === 'payroll_admin' ? 'PAYROLL ADMIN' : 'LOGISTICS'} CONSOLE
-              </span>
-            </div>
+          {/* Brand header */}
+          <div className="text-center" style={{ padding: '28px 20px 24px' }}>
+            <img
+              src={abtsoLogo}
+              onError={(e) => { (e.target as HTMLImageElement).src = '/logo.png'; }}
+              alt="ABTSO Logo"
+              style={{ height: '38px', width: 'auto', objectFit: 'contain', marginBottom: '12px' }}
+            />
+            <h2 className="sidebar-title">Dispatch &amp; Payroll Console</h2>
           </div>
 
-          <div className="flex flex-col gap-8">
-            <div className={`nav-item ${activeTab === 'live' ? 'active' : ''}`} onClick={() => setActiveTab('live')}>
-              <MapIcon size={18} /> Live Dispatch Board
-            </div>
-            
-            <div className={`nav-item ${activeTab === 'alerts' ? 'active' : ''}`} onClick={() => setActiveTab('alerts')}>
-              <AlertTriangle size={18} /> 
-              Alert Monitors 
-              {activeAlertsCount > 0 && (
-                <span className="badge badge-danger text-xs px-8 ml-8" style={{ padding: '2px 6px', borderRadius: '8px' }}>
-                  {activeAlertsCount}
-                </span>
-              )}
+          <nav className="flex flex-col" style={{ gap: '2px' }}>
+            <div
+              className={`nav-item ${activeTab === 'live' ? 'active' : ''}`}
+              onClick={() => setActiveTab('live')}
+            >
+              <span className="nav-icon"><MapPinned size={18} /></span>
+              Live Dispatch Board
             </div>
 
-            <div className={`nav-item ${activeTab === 'drivers' ? 'active' : ''}`} onClick={() => setActiveTab('drivers')}>
-              <Users size={18} /> Driver Profiles
+            <div
+              className={`nav-item ${activeTab === 'alerts' ? 'active' : ''}`}
+              onClick={() => setActiveTab('alerts')}
+            >
+              <span className="nav-icon">
+                <Bell size={18} />
+                {activeAlertsCount > 0 && (
+                  <span
+                    className="nav-dot"
+                    aria-label={`${activeAlertsCount} unacknowledged alerts`}
+                  />
+                )}
+              </span>
+              Alert Monitors
+            </div>
+
+            <div
+              className={`nav-item ${activeTab === 'drivers' ? 'active' : ''}`}
+              onClick={() => setActiveTab('drivers')}
+            >
+              <span className="nav-icon"><Users size={18} /></span>
+              Driver Profiles
             </div>
 
             {userRole === 'payroll_admin' && (
               <>
-                <div className={`nav-item ${activeTab === 'rates' ? 'active' : ''}`} onClick={() => setActiveTab('rates')}>
-                  <DollarSign size={18} /> Rates & Agencies
+                <div
+                  className={`nav-item ${activeTab === 'rates' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('rates')}
+                >
+                  <span className="nav-icon"><DollarSign size={18} /></span>
+                  Rates &amp; Agencies
                 </div>
 
-                <div className={`nav-item ${activeTab === 'reports' ? 'active' : ''}`} onClick={() => setActiveTab('reports')}>
-                  <FileSpreadsheet size={18} /> Payroll Calculator
+                <div
+                  className={`nav-item ${activeTab === 'reports' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('reports')}
+                >
+                  <span className="nav-icon"><FileText size={18} /></span>
+                  Payroll Calculator
                   {pendingNightOutsCount > 0 && (
-                    <span className="badge badge-warning text-xs px-8 ml-8" style={{ padding: '2px 6px', borderRadius: '8px', backgroundColor: '#F59E0B', color: '#FFFFFF' }}>
+                    <span
+                      className="badge text-xs ml-8"
+                      style={{ padding: '2px 6px', borderRadius: '8px', backgroundColor: '#F59E0B', color: '#FFFFFF' }}
+                    >
                       {pendingNightOutsCount} N/O
                     </span>
                   )}
                 </div>
               </>
             )}
-          </div>
+          </nav>
         </div>
 
-        <div>
-          <div className="p-12 text-center text-xs text-muted mb-16" style={{ border: '1px dashed rgba(255,255,255,0.08)', borderRadius: '10px' }}>
+        <div style={{ padding: '0 20px 20px' }}>
+          <div className="p-12 text-center text-xs text-muted mb-16" style={{ border: '1px solid #E5E7EB', borderRadius: '10px' }}>
             <span className="font-bold uppercase" style={{ color: userRole === 'payroll_admin' ? '#10B981' : '#3B82F6' }}>
-              {userRole === 'payroll_admin' ? '🛡️ Payroll Admin' : '🚚 Logistics Role'}
+              {userRole === 'payroll_admin' ? 'Payroll Admin' : 'Logistics Role'}
             </span>
           </div>
 
-          <div className="nav-item text-error" onClick={handleLogout}>
+          <div
+            className="nav-item text-error"
+            onClick={handleLogout}
+            style={{ paddingLeft: '14px', borderLeft: 0, borderRadius: '8px' }}
+          >
             <LogOut size={18} /> Terminate Session
           </div>
         </div>
@@ -2689,100 +3295,100 @@ export default function App() {
       <div className="p-32 flex flex-col overflow-auto" style={{ height: '100vh' }}>
         
         {/* Header Stats Row */}
-        <div className="stats-grid">
-          <div className="glass-card p-16">
-            <div className="flex align-center justify-between">
-              <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>ACTIVE SHIFTS</span>
-              <Clock size={16} className="text-accent" />
+        <div className="kpi-grid">
+          <div className="kpi-card">
+            <span className="kpi-icon kpi-icon--red"><User size={18} /></span>
+            <div className="kpi-body">
+              <h2 className="kpi-value">{activeEmployeeCount}</h2>
+              <span className="kpi-label">Employees logged in</span>
             </div>
-            <h2 className="text-2xl font-black mt-8 text-primary">{activeEmployeeCount}</h2>
-            <span className="text-xs text-muted">Employees logged in</span>
+            <div className="kpi-trend-col">
+              <KpiTrend tone="down" label="0%" />
+              <KpiSparkline tone="down" />
+            </div>
           </div>
 
-          <div className="glass-card p-16">
-            <div className="flex align-center justify-between">
-              <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>HGV IDLE ALERTS</span>
-              <AlertTriangle size={16} className="text-error" />
+          <div className="kpi-card">
+            <span className="kpi-icon kpi-icon--red"><Clock size={18} /></span>
+            <div className="kpi-body">
+              <h2 className="kpi-value">{activeAlertsCount}</h2>
+              <span className="kpi-label">Stops &gt; 50 mins (Break)</span>
             </div>
-            <h2 className="text-2xl font-black mt-8 text-primary">{activeAlertsCount}</h2>
-            <span className="text-xs text-muted">Stops &gt; 50 mins (Break)</span>
+            <div className="kpi-trend-col">
+              <KpiTrend tone="down" label="0%" />
+              <KpiSparkline tone="down" />
+            </div>
           </div>
 
-          <div className="glass-card p-16">
-            <div className="flex align-center justify-between">
-              <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>COMPLETED SHIFTS</span>
-              <TrendingUp size={16} className="text-success" />
+          <div className="kpi-card">
+            <span className="kpi-icon kpi-icon--red"><Briefcase size={18} /></span>
+            <div className="kpi-body">
+              <h2 className="kpi-value">{completedShiftsCount}</h2>
+              <span className="kpi-label">Calculated shifts</span>
             </div>
-            <h2 className="text-2xl font-black mt-8 text-primary">{completedShiftsCount}</h2>
-            <span className="text-xs text-muted">Calculated shifts</span>
+            <div className="kpi-trend-col">
+              <KpiTrend tone="up" label="100%" />
+              <KpiSparkline tone="up" />
+            </div>
           </div>
 
           {userRole === 'payroll_admin' ? (
-            <div className="glass-card p-16">
-              <div className="flex align-center justify-between">
-                <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>GROSS PAYROLL</span>
-                <FileSpreadsheet size={16} className="text-warning" />
+            <div className="kpi-card">
+              <span className="kpi-icon kpi-icon--red"><PoundSterling size={18} /></span>
+              <div className="kpi-body">
+                <h2 className="kpi-value">£{(totalWeeklyPayout || 0).toFixed(2)}</h2>
+                <span className="kpi-label">Calculated gross pay</span>
               </div>
-              <h2 className="text-2xl font-black mt-8 text-primary">£{(totalWeeklyPayout || 0).toFixed(2)}</h2>
-              <span className="text-xs text-muted">Calculated gross pay</span>
+              <div className="kpi-trend-col">
+                <KpiTrend tone="up" label="12%" />
+                <KpiSparkline tone="up" />
+              </div>
             </div>
           ) : (
-            <div className="glass-card p-16">
-              <div className="flex align-center justify-between">
-                <span className="text-xs text-secondary font-bold" style={{ letterSpacing: '1px' }}>ACTIVE DEPOTS</span>
-                <Compass size={16} className="text-accent" />
+            <div className="kpi-card">
+              <span className="kpi-icon kpi-icon--red"><Compass size={18} /></span>
+              <div className="kpi-body">
+                <h2 className="kpi-value">2</h2>
+                <span className="kpi-label">Active depots (Rossington &amp; Wheatley)</span>
               </div>
-              <h2 className="text-2xl font-black mt-8 text-primary">2 STATIONS</h2>
-              <span className="text-xs text-muted">Rossington & Wheatley</span>
+              <div className="kpi-trend-col">
+                {/* Station count has no meaningful up/down trend, unlike the
+                    other three cards — shown as flat rather than a fake number. */}
+                <KpiTrend tone="flat" label="STABLE" />
+                <KpiSparkline tone="flat" />
+              </div>
             </div>
           )}
         </div>
 
-        {/* ── TAB 1: Live Dispatch Board ───────────────────── */}
+        {/* -- TAB 1: Live Dispatch Board ------------------- */}
         {activeTab === 'live' && (
           <div className="flex-1 grid gap-24" style={{ gridTemplateRows: '1fr auto', minHeight: 0 }}>
             {/* Live map layout */}
-            <div style={{ position: 'relative', height: '480px' }}>
+            <div className="map-shell">
               <div id="live-dispatch-map" className="h-full w-full"></div>
-              
+
               {/* Floating Map Refresh Button */}
               <button
-                className={`btn btn-secondary flex align-center gap-8 ${isRefreshing ? 'loading-pulse' : ''}`}
-                style={{
-                  position: 'absolute',
-                  top: '12px',
-                  right: '12px',
-                  zIndex: 1000,
-                  boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
-                  borderRadius: '12px',
-                  padding: '8px 16px',
-                  backgroundColor: '#FFFFFF',
-                  color: '#333333',
-                  border: '1px solid #E2E8F0',
-                  fontWeight: 900,
-                  fontSize: '12px',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  display: 'flex',
-                  alignItems: 'center',
-                }}
+                className="map-refresh-btn"
                 onClick={handleMapRefresh}
                 disabled={isRefreshing}
               >
-                <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} style={{ marginRight: '6px' }} />
-                {isRefreshing ? 'REFRESHING...' : 'REFRESH POSITIONS'}
+                <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} />
+                {isRefreshing ? 'REFRESHING…' : 'REFRESH POSITIONS'}
               </button>
             </div>
 
             {/* Live Telemetry lists */}
-            <div className="glass-panel p-20" style={{ borderRadius: '16px' }}>
-              <h3 className="text-md font-bold text-primary mb-12 flex align-center gap-8">
-                <Compass size={18} className="text-accent" />
-                Active Telemetry Feed
-              </h3>
-              
-              <div className="table-container">
-                <table className="data-table">
+            <div className="telemetry-card">
+              <div className="telemetry-header">
+                <span className="telemetry-header-icon"><Activity size={14} /></span>
+                <h3 className="telemetry-title">Active Telemetry Feed</h3>
+                <ChevronUp size={16} className="telemetry-chevron" />
+              </div>
+
+              <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
+                <table className="data-table telemetry-table">
                   <thead>
                     <tr>
                       <th>Employee</th>
@@ -2794,8 +3400,10 @@ export default function App() {
                   </thead>
                   <tbody>
                     {liveLocations.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="text-center text-muted">No employees currently logged into shifts</td>
+                      <tr className="telemetry-empty-row">
+                        <td colSpan={5}>
+                          <div className="telemetry-empty-box">No employees currently logged into shifts</div>
+                        </td>
                       </tr>
                     ) : (
                       liveLocations.map(loc => (
@@ -2832,6 +3440,7 @@ export default function App() {
             </div>
           </div>
         )}
+
 
         {/* ── TAB 2: Idle Alert Center ─────────────────────── */}
         {activeTab === 'alerts' && (
@@ -3332,18 +3941,68 @@ export default function App() {
           // Collect unique agencies for filter dropdown
           const agencies = Array.from(new Set(Object.values(employeeRates).map(r => r.agency_name || 'Direct')));
 
+          // Driver search combo: suggestions from the free-text query, capped
+          // so the dropdown never becomes a second unscrollable page.
+          const driverSuggestions = driverSearchQuery.trim()
+            ? employees.filter(d => d.full_name.toLowerCase().includes(driverSearchQuery.trim().toLowerCase())).slice(0, 8)
+            : employees.slice(0, 8);
+
+          const selectDriver = (driverId: string, driverName: string) => {
+            setReportEmployeeFilter(driverId);
+            setDriverSearchQuery(driverName);
+            setIsDriverSearchOpen(false);
+          };
+
+          const clearDriverFilter = () => {
+            setReportEmployeeFilter('all');
+            setDriverSearchQuery('');
+          };
+
           return (
             <div className="flex-1">
-              <h2 className="text-xl font-black text-primary mb-4">AUTOMATED PAYROLL CALCULATOR</h2>
-              <p className="text-xs text-muted mb-24">Aggregating telemetry shifts with employee rate profiles and Night Out allowances</p>
+              {/* -- Hero header ------------------------------------ */}
+              <div className="payroll-hero" style={{ backgroundImage: `url(${loginBrandImage})` }}>
+                <div className="payroll-hero-overlay" />
+                <div className="payroll-hero-content">
+                  <div>
+                    <h2 className="payroll-hero-title">
+                      EMPLOYEE PAYROLL DASHBOARD <span>Automated Shift &amp; Allowance Calculator</span>
+                    </h2>
+                    <p className="payroll-hero-tagline">
+                      Aggregating telemetry data with driver rate profiles and Night Out allowances
+                    </p>
+                  </div>
 
-              {/* Filter controls panel */}
-              <div className="glass-panel p-20 mb-24 flex flex-wrap align-center justify-between gap-16" style={{ borderRadius: '16px' }}>
-                <div className="flex flex-wrap gap-16">
-                  <div className="flex flex-col gap-6">
-                    <span className="input-label">FILTER BY AGENCY</span>
-                    <select 
+                  <div className="payroll-hero-actions">
+                    <button
+                      className={`payroll-pill-btn ${showOnlyNightOutRequested ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
+                      onClick={() => setShowOnlyNightOutRequested(!showOnlyNightOutRequested)}
+                    >
+                      <Moon size={13} />
+                      {showOnlyNightOutRequested ? 'SHOWING N/O ONLY' : 'FILTER N/O REQUESTS'}
+                      {pendingNightOutsCount > 0 && (
+                        <span className="payroll-pill-badge">{pendingNightOutsCount}</span>
+                      )}
+                    </button>
+                    <button className="payroll-pill-btn" onClick={exportCSV}>
+                      <Download size={13} /> Export CSV
+                    </button>
+                    <button className="payroll-pill-btn" onClick={exportExcel}>
+                      <FileSpreadsheet size={13} /> Export Excel
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* -- Filter bar --------------------------------------- */}
+              <div className="payroll-filter-bar">
+                <div className="payroll-filter-field">
+                  <span className="input-label">Agency</span>
+                  <div className="payroll-input-wrap">
+                    <span className="payroll-input-icon"><Building2 size={14} /></span>
+                    <select
                       className="select-field"
+                      style={{ width: '160px' }}
                       value={reportAgencyFilter}
                       onChange={(e) => setReportAgencyFilter(e.target.value)}
                     >
@@ -3352,155 +4011,156 @@ export default function App() {
                         <option key={ag} value={ag}>{ag}</option>
                       ))}
                     </select>
+                    <ChevronDown size={13} className="payroll-input-chevron" />
                   </div>
+                </div>
 
-                  <div className="flex flex-col gap-6">
-                    <span className="input-label">FILTER BY EMPLOYEE</span>
-                    <select 
-                      className="select-field"
-                      value={reportEmployeeFilter}
-                      onChange={(e) => setReportEmployeeFilter(e.target.value)}
-                    >
-                      <option value="all">Show All Employees</option>
-                      {employees.map(d => (
-                        <option key={d.id} value={d.id}>{d.full_name}</option>
-                      ))}
-                    </select>
+                <div className="payroll-filter-field">
+                  <span className="input-label">Driver</span>
+                  <div className="payroll-driver-search">
+                    <div className="payroll-input-wrap">
+                      <span className="payroll-input-icon"><Search size={14} /></span>
+                      <input
+                        type="text"
+                        className="input-field"
+                        style={{ width: '100%', paddingRight: '34px' }}
+                        placeholder="Search/select driver"
+                        value={driverSearchQuery}
+                        onFocus={() => setIsDriverSearchOpen(true)}
+                        onChange={(e) => {
+                          setDriverSearchQuery(e.target.value);
+                          setIsDriverSearchOpen(true);
+                          if (reportEmployeeFilter !== 'all') setReportEmployeeFilter('all');
+                        }}
+                        onBlur={() => setTimeout(() => setIsDriverSearchOpen(false), 150)}
+                      />
+                      {(driverSearchQuery || reportEmployeeFilter !== 'all') && (
+                        <button
+                          type="button"
+                          className="payroll-driver-clear"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={clearDriverFilter}
+                          aria-label="Clear driver filter"
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+
+                    {isDriverSearchOpen && (
+                      <div className="payroll-driver-dropdown">
+                        {driverSuggestions.length === 0 ? (
+                          <div className="payroll-driver-empty">No drivers match "{driverSearchQuery}"</div>
+                        ) : (
+                          driverSuggestions.map(d => (
+                            <div
+                              key={d.id}
+                              className={`payroll-driver-option ${reportEmployeeFilter === d.id ? 'payroll-driver-option--highlighted' : ''}`}
+                              onMouseDown={(e) => { e.preventDefault(); selectDriver(d.id, d.full_name); }}
+                            >
+                              {d.full_name} <span style={{ color: '#94A3B8' }}>({d.driver_id})</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
                   </div>
+                </div>
 
-                  <div className="flex flex-col gap-6">
-                    <span className="input-label">START DATE</span>
-                    <input 
-                      type="date" 
-                      className="input-field" 
+                <div className="payroll-filter-field">
+                  <span className="input-label">Start Date</span>
+                  <div className="payroll-input-wrap">
+                    <span className="payroll-input-icon"><Calendar size={14} /></span>
+                    <input
+                      type="date"
+                      className="input-field"
                       value={reportDateStart}
                       onChange={(e) => setReportDateStart(e.target.value)}
                     />
                   </div>
+                </div>
 
-                  <div className="flex flex-col gap-6">
-                    <span className="input-label">END DATE</span>
-                    <input 
-                      type="date" 
-                      className="input-field" 
+                <div className="payroll-filter-field">
+                  <span className="input-label">End Date</span>
+                  <div className="payroll-input-wrap">
+                    <span className="payroll-input-icon"><Calendar size={14} /></span>
+                    <input
+                      type="date"
+                      className="input-field"
                       value={reportDateEnd}
                       onChange={(e) => setReportDateEnd(e.target.value)}
                     />
                   </div>
-                  <div className="flex flex-col gap-6 justify-end">
-                    <button 
-                      className="btn flex align-center gap-6"
-                      style={{ 
-                        height: '38px', 
-                        backgroundColor: showOnlyNightOutRequested ? '#D97706' : 'transparent',
-                        borderColor: '#F59E0B',
-                        color: showOnlyNightOutRequested ? '#FFFFFF' : '#D97706',
-                        fontWeight: 'bold',
-                        fontSize: '12px',
-                        border: '1px solid #F59E0B'
-                      }}
-                      onClick={() => setShowOnlyNightOutRequested(!showOnlyNightOutRequested)}
-                    >
-                      🌙 {showOnlyNightOutRequested ? 'SHOWING REQUESTS ONLY' : 'FILTER N/O REQUESTS'} 
-                      {pendingNightOutsCount > 0 && (
-                        <span style={{ backgroundColor: showOnlyNightOutRequested ? '#FFFFFF' : '#F59E0B', color: showOnlyNightOutRequested ? '#D97706' : '#FFFFFF', padding: '2px 6px', borderRadius: '10px', fontSize: '11px', marginLeft: '4px' }}>
-                          {pendingNightOutsCount}
-                        </span>
-                      )}
+                </div>
+              </div>
+
+              {/* -- Action row: view toggle, exports, bulk edit ------ */}
+              <div className="payroll-action-row">
+                <div className="payroll-action-group">
+                  <button
+                    className={`payroll-pill-btn ${reportViewMode === 'detailed' ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
+                    onClick={() => setReportViewMode('detailed')}
+                  >
+                    <ListChecks size={13} /> Detailed View
+                  </button>
+                  <button
+                    className={`payroll-pill-btn ${reportViewMode === 'summary' ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
+                    onClick={() => setReportViewMode('summary')}
+                  >
+                    <BarChart3 size={13} /> Weekly Summary
+                  </button>
+                  <button className="payroll-pill-btn" onClick={handleExportSummaryCSV}>
+                    <Download size={13} /> Export Summary
+                  </button>
+
+                  <input
+                    type="file"
+                    accept=".csv"
+                    ref={csvInputRef}
+                    style={{ display: 'none' }}
+                    onChange={handleImportCSV}
+                  />
+                  <button className="payroll-pill-btn payroll-pill-btn--outline" onClick={() => csvInputRef.current?.click()}>
+                    <Upload size={13} /> Import Blip CSV
+                  </button>
+
+                  {/* EXCEL TEMPLATE INJECTION */}
+                  <div style={{ position: 'relative', display: 'inline-flex' }}>
+                    <input
+                      type="file"
+                      accept=".xlsx, .xls"
+                      onChange={handleFillExcelTemplate}
+                      style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', cursor: 'pointer', zIndex: 10, left: 0, top: 0 }}
+                      title="Upload Payment Template (Step 2)"
+                      onClick={(e) => { (e.target as HTMLInputElement).value = '' }}
+                    />
+                    <button className="payroll-pill-btn">
+                      <Wand2 size={13} /> Fill Excel Template
                     </button>
                   </div>
                 </div>
 
-                {/* Download actions */}
-                <div className="flex gap-8 mt-16">
-                  <button className="btn btn-secondary" onClick={exportCSV}>
-                    <Download size={16} /> Export CSV
-                  </button>
-                  <button className="btn btn-primary" onClick={exportExcel}>
-                    <FileSpreadsheet size={16} /> Export Excel
-                  </button>
-                </div>
+                {reportViewMode === 'detailed' && (
+                  <div className="payroll-bulk-bar">
+                    {selectedShiftIds.size > 0 ? (
+                      <>
+                        <span className="text-sm font-black text-primary">{selectedShiftIds.size} SELECTED</span>
+                        <button
+                          className="payroll-pill-btn"
+                          onClick={() => openActionModal('bulk', Array.from(selectedShiftIds), 'Bulk Update')}
+                        >
+                          Edit Selected
+                        </button>
+                        <button className="btn btn-secondary text-xs" onClick={() => setSelectedShiftIds(new Set())}>CANCEL</button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-muted">Use checkboxes to edit multiple shifts at once</span>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {/* View Toggle & Bulk Actions Bar */}
-              <div className="glass-panel mb-16 flex align-center justify-between" style={{ padding: '12px 16px', borderRadius: '12px', marginTop: '16px' }}>
-                 <div className="flex gap-8 align-center">
-                    <button 
-                       className={`btn ${reportViewMode === 'detailed' ? 'btn-primary' : 'btn-secondary'}`}
-                       style={{ fontWeight: 'bold' }}
-                       onClick={() => setReportViewMode('detailed')}
-                    >
-                       ☰ DETAILED VIEW
-                    </button>
-                    <button 
-                       className={`btn ${reportViewMode === 'summary' ? 'btn-primary' : 'btn-secondary'}`}
-                       style={{ fontWeight: 'bold' }}
-                       onClick={() => setReportViewMode('summary')}
-                    >
-                       📊 WEEKLY SUMMARY
-                    </button>
-
-                    <button 
-                       className="btn btn-primary flex align-center gap-6" 
-                       style={{ backgroundColor: '#10B981', borderColor: '#059669', color: 'white', fontWeight: 'bold' }}
-                       onClick={handleExportSummaryCSV}
-                    >
-                       📤 EXPORT SUMMARY
-                    </button>
-
-                    <input 
-                      type="file" 
-                      accept=".csv" 
-                      ref={csvInputRef} 
-                      style={{ display: 'none' }} 
-                      onChange={handleImportCSV} 
-                    />
-                    <button 
-                      className="btn btn-outline flex align-center gap-6"
-                      style={{ borderColor: '#6366F1', color: '#4F46E5', fontWeight: 'bold' }}
-                      onClick={() => csvInputRef.current?.click()}
-                    >
-                      📥 IMPORT BLIP CSV
-                    </button>
-
-                    {/* EXCEL TEMPLATE INJECTION */}
-                    <div style={{ position: 'relative' }}>
-                       <input 
-                          type="file" 
-                          accept=".xlsx, .xls" 
-                          onChange={handleFillExcelTemplate} 
-                          style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', cursor: 'pointer', zIndex: 10, left: 0, top: 0 }} 
-                          title="Upload Payment Template (Step 2)"
-                          onClick={(e) => { (e.target as HTMLInputElement).value = '' }}
-                       />
-                       <button className="btn btn-primary flex align-center gap-6" style={{ backgroundColor: '#F59E0B', borderColor: '#D97706', color: 'white', fontWeight: 'bold' }}>
-                          🪄 FILL EXCEL TEMPLATE
-                       </button>
-                    </div>
-                 </div>
-                 
-                 {reportViewMode === 'detailed' && (
-                   <div className="flex align-center gap-12">
-                      {selectedShiftIds.size > 0 ? (
-                        <>
-                          <span className="text-sm font-black text-primary">{selectedShiftIds.size} SELECTED</span>
-                          <button 
-                            className="btn btn-outline" 
-                            style={{ borderColor: '#10B981', color: '#047857', fontWeight: 'bold' }} 
-                            onClick={() => openActionModal('bulk', Array.from(selectedShiftIds), 'Bulk Update')}
-                          >
-                            ✏️ EDIT SELECTED
-                          </button>
-                          <button className="btn btn-secondary text-xs" onClick={() => setSelectedShiftIds(new Set())}>CANCEL</button>
-                        </>
-                      ) : (
-                        <span className="text-xs text-muted">Use checkboxes to edit multiple shifts at once</span>
-                      )}
-                   </div>
-                 )}
-              </div>
-
-              {/* Flagged Shifts & Night Out Alert Banners */}
+              {/* -- Flagged Shifts & Night Out Alert Banners --------- */}
               {(() => {
                 const flaggedShifts = filteredShifts.filter(shift => {
                   const end = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
@@ -3529,15 +4189,15 @@ export default function App() {
                 // Analyze gaps for each driver
                 Object.keys(employeeGroups).forEach(driverId => {
                   const dShifts = employeeGroups[driverId].sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
-                  
+
                   for (let i = 0; i < dShifts.length - 1; i++) {
                     const currentShift = dShifts[i];
                     const nextShift = dShifts[i+1];
-                    
+
                     if (currentShift.end_time && nextShift.start_time) {
                       const gapMs = new Date(nextShift.start_time).getTime() - new Date(currentShift.end_time).getTime();
                       const gapHours = gapMs / (1000 * 60 * 60);
-                      
+
                       if (gapHours >= 8 && gapHours <= 15) {
                         nightOutSuggestions.push({
                           driverName: currentShift.driver_name || 'Driver',
@@ -3555,12 +4215,15 @@ export default function App() {
                 return (
                   <>
                     {flaggedShifts.length > 0 && (
-                      <div className="alert-box alert-danger" style={{ marginBottom: '24px', backgroundColor: '#FEF2F2', border: '1px solid #F87171', color: '#B91C1C', padding: '16px', borderRadius: '8px' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>⚠️ Flags to review (Shifts &gt; 18 hours)</h3>
-                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
+                      <div className="payroll-alert-banner payroll-alert-banner--danger">
+                        <div className="payroll-alert-header">
+                          <AlertOctagon size={16} />
+                          Action Required &middot; Alert: Critical Shift Anomalies Detected (&gt;18h)
+                        </div>
+                        <ul className="payroll-alert-list">
                           {flaggedShifts.map(fs => (
-                            <li key={fs.id} style={{ marginBottom: '4px' }}>
-                              <strong>{fs.driver_name}</strong> - Shift started: {new Date(fs.start_time).toLocaleString()} - <em>Check clock-out time!</em>
+                            <li key={fs.id}>
+                              <strong>{fs.driver_name}</strong> ({fs.driver_code}) &mdash; Shift started {new Date(fs.start_time).toLocaleString()} &mdash; <em>Clock-out missing or invalid.</em>
                             </li>
                           ))}
                         </ul>
@@ -3569,12 +4232,15 @@ export default function App() {
 
                     {/* Render the Night out suggestions box */}
                     {nightOutSuggestions.length > 0 && (
-                      <div className="alert-box alert-warning" style={{ marginBottom: '24px', backgroundColor: '#FFFBEB', border: '1px solid #FCD34D', color: '#92400E', padding: '16px', borderRadius: '8px' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>🌙 Night outs detected (8-15h break between shifts)</h3>
-                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
+                      <div className="payroll-alert-banner payroll-alert-banner--warning">
+                        <div className="payroll-alert-header">
+                          <Moon size={15} />
+                          Night Outs Detected (8&ndash;15h break between shifts)
+                        </div>
+                        <ul className="payroll-alert-list">
                           {nightOutSuggestions.map((no, idx) => (
-                            <li key={idx} style={{ marginBottom: '4px' }}>
-                              <strong>{no.driverName}</strong> - Break between {new Date(no.prevEnd).toLocaleDateString()} {new Date(no.prevEnd).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} and {new Date(no.nextStart).toLocaleDateString()} {new Date(no.nextStart).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} | <em>Duration: {no.gapHours}h</em>
+                            <li key={idx}>
+                              <strong>{no.driverName}</strong> &mdash; Break between {new Date(no.prevEnd).toLocaleDateString()} {new Date(no.prevEnd).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} and {new Date(no.nextStart).toLocaleDateString()} {new Date(no.nextStart).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} &mdash; <em>Duration: {no.gapHours}h</em>
                             </li>
                           ))}
                         </ul>
@@ -3583,12 +4249,15 @@ export default function App() {
 
                     {/* Render the Week Boundary Splits box */}
                     {weekBoundaryAlerts.length > 0 && (
-                      <div className="alert-box alert-warning" style={{ marginBottom: '24px', backgroundColor: '#FFFBEB', border: '1px solid #FCD34D', color: '#92400E', padding: '16px', borderRadius: '8px' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>✂️ Week Boundary Splits (Sunday ➝ Monday)</h3>
-                        <ul style={{ margin: '0', paddingLeft: '20px', fontSize: '14px' }}>
+                      <div className="payroll-alert-banner payroll-alert-banner--warning">
+                        <div className="payroll-alert-header">
+                          <AlertTriangle size={15} />
+                          Week Boundary Splits (Sunday &#10132; Monday)
+                        </div>
+                        <ul className="payroll-alert-list">
                           {weekBoundaryAlerts.map(fs => (
-                            <li key={fs.id} style={{ marginBottom: '4px' }}>
-                              <strong>{fs.driver_name}</strong> - Shift crossed Sunday midnight. <em>Automatically split for payroll processing.</em>
+                            <li key={fs.id}>
+                              <strong>{fs.driver_name}</strong> &mdash; Shift crossed Sunday midnight. <em>Automatically split for payroll processing.</em>
                             </li>
                           ))}
                         </ul>
@@ -3598,131 +4267,143 @@ export default function App() {
                 );
               })()}
 
-              {/* Reports Payroll Data Table / Dual View */}
+              {/* -- Reports Payroll Data Table / Dual View ----------- */}
               {reportViewMode === 'summary' ? (
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Employee</th>
-                        <th>Agency</th>
-                        <th>Shifts Logged</th>
-                        <th>Total Hours</th>
-                        <th>Night Outs</th>
-                        <th>Total Extras</th>
-                        <th>Total Gross Pay</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(() => {
-                        const summaryData: any = {};
-                        filteredShifts.forEach(shift => {
-                           const { grossPay, noAmt, extrasAmt, liveHours } = getShiftFinancials(shift);
-                           const id = shift.driver_id;
-                           if (!summaryData[id]) {
-                               summaryData[id] = {
-                                   driver_name: shift.driver_name,
-                                   driver_code: shift.driver_code,
-                                   agency: employeeRates[id]?.agency_name || 'Direct',
-                                   total_hours: 0,
-                                   total_gross: 0,
-                                   total_night_outs: 0,
-                                   total_extras: 0,
-                                   shift_count: 0
-                               };
-                           }
-                           summaryData[id].total_hours += liveHours;
-                           summaryData[id].total_gross += grossPay;
-                           summaryData[id].total_extras += extrasAmt;
-                           summaryData[id].total_night_outs += (noAmt > 0 ? 1 : 0);
-                           // Prevent double counting split shifts
-                           if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) {
-                               summaryData[id].shift_count += 1;
-                           }
-                        });
-                        
-                        const rows = Object.values(summaryData);
-                        if (rows.length === 0) return <tr><td colSpan={7} className="text-center text-muted">No data available for summary</td></tr>;
-
-                        return rows.map((row: any) => (
-                           <tr key={row.driver_code}>
-                              <td className="font-bold text-primary">{row.driver_name} ({row.driver_code})</td>
-                              <td><span className="badge badge-accent">{row.agency}</span></td>
-                              <td className="font-semibold">{row.shift_count}</td>
-                              <td>{row.total_hours.toFixed(2)} hrs</td>
-                              <td>{row.total_night_outs > 0 ? <span className="text-success font-bold">+{row.total_night_outs} (N/O)</span> : '—'}</td>
-                              <td>{row.total_extras !== 0 ? <span className="text-primary font-bold">£{row.total_extras.toFixed(2)}</span> : '—'}</td>
-                              <td className="font-black text-success text-md">£{row.total_gross.toFixed(2)}</td>
-                           </tr>
-                        ));
-                      })()}
-                      {/* Global summary row */}
-                      <tr style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', fontWeight: 'bold', borderTop: '2px solid rgba(16, 185, 129, 0.2)' }}>
-                        <td colSpan={3} className="text-primary font-black" style={{ padding: '16px' }}>GRAND TOTAL</td>
-                        <td className="text-primary font-bold">{(totalHours || 0).toFixed(2)} hrs</td>
-                        <td className="text-success font-bold">{nightOutCount}</td>
-                        <td></td>
-                        <td className="text-success font-black" style={{ fontSize: '15px' }}>£{totalEarnings.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: '40px' }}>
-                           <input 
-                              type="checkbox" 
-                              style={{ cursor: 'pointer', width: '16px', height: '16px' }}
-                              checked={filteredShifts.length > 0 && selectedShiftIds.size === new Set(filteredShifts.map(s => s.real_id || s.id)).size}
-                              onChange={(e) => {
-                                 if (e.target.checked) {
-                                     setSelectedShiftIds(new Set(filteredShifts.map(s => s.real_id || s.id)));
-                                 } else {
-                                     setSelectedShiftIds(new Set());
-                                 }
-                              }}
-                           />
-                        </th>
-                        <th>Employee</th>
-                        <th>Agency</th>
-                        <th>Shift Schedule</th>
-                        <th>Hours</th>
-                        <th>Hourly Rate</th>
-                        <th>Night Out Allowance</th>
-                        <th>Flags & Actions</th>
-                        <th>Gross Pay</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredShifts.length === 0 ? (
+                <>
+                  <div className="payroll-table-wrap">
+                    <table className="payroll-table">
+                      <thead>
                         <tr>
-                          <td colSpan={9} className="text-center text-muted">No completed shifts found matching active filters</td>
+                          <th>Employee</th>
+                          <th>Agency</th>
+                          <th>Shifts Logged</th>
+                          <th>Total Hours</th>
+                          <th>Night Outs</th>
+                          <th>Total Extras</th>
+                          <th>Total Gross Pay</th>
                         </tr>
-                      ) : (
-                        <>
-                          {filteredShifts.map(shift => {
-                            const { 
-                              startRateVal, 
-                              endRateVal, 
-                              startDay, 
-                              endDay, 
+                      </thead>
+                      <tbody>
+                        {(() => {
+                          const summaryData: any = {};
+                          filteredShifts.forEach(shift => {
+                             const { grossPay, noAmt, extrasAmt, liveHours } = getShiftFinancials(shift);
+                             const id = shift.driver_id;
+                             if (!summaryData[id]) {
+                                 summaryData[id] = {
+                                     driver_name: shift.driver_name,
+                                     driver_code: shift.driver_code,
+                                     agency: employeeRates[id]?.agency_name || 'Direct',
+                                     total_hours: 0,
+                                     total_gross: 0,
+                                     total_night_outs: 0,
+                                     total_extras: 0,
+                                     shift_count: 0
+                                 };
+                             }
+                             summaryData[id].total_hours += liveHours;
+                             summaryData[id].total_gross += grossPay;
+                             summaryData[id].total_extras += extrasAmt;
+                             summaryData[id].total_night_outs += (noAmt > 0 ? 1 : 0);
+                             // Prevent double counting split shifts
+                             if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) {
+                                 summaryData[id].shift_count += 1;
+                             }
+                          });
+
+                          const rows = Object.values(summaryData);
+                          if (rows.length === 0) return <tr><td colSpan={7} className="text-center text-muted">No data available for summary</td></tr>;
+
+                          return rows.map((row: any) => (
+                             <tr key={row.driver_code}>
+                                <td className="font-bold text-primary">{row.driver_name} ({row.driver_code})</td>
+                                <td><span className="payroll-agency-badge">{row.agency}</span></td>
+                                <td className="font-semibold">{row.shift_count}</td>
+                                <td>{row.total_hours.toFixed(2)} hrs</td>
+                                <td>{row.total_night_outs > 0 ? <span className="text-success font-bold">+{row.total_night_outs} (N/O)</span> : '—'}</td>
+                                <td>{row.total_extras !== 0 ? <span className="text-primary font-bold">£{row.total_extras.toFixed(2)}</span> : '—'}</td>
+                                <td className="font-black text-success text-md">£{row.total_gross.toFixed(2)}</td>
+                             </tr>
+                          ));
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="payroll-totals-bar">
+                    <span className="payroll-totals-label">
+                      GRAND TOTAL: ({filteredShifts.length} completed shifts | {nightOutCount} Night Outs)
+                    </span>
+                    <div className="payroll-totals-stats">
+                      <div className="payroll-stat">
+                        <div className="payroll-stat-label">Total Tracked Hours</div>
+                        <div className="payroll-stat-value">{(totalHours || 0).toFixed(2)} hrs</div>
+                      </div>
+                      <div className="payroll-stat">
+                        <div className="payroll-stat-label">Total Gross Pay</div>
+                        <div className="payroll-stat-value payroll-stat-value--money">
+                          £{totalEarnings.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="payroll-table-wrap">
+                    <table className="payroll-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: '36px' }}>
+                             <input
+                                type="checkbox"
+                                style={{ cursor: 'pointer', width: '15px', height: '15px' }}
+                                checked={filteredShifts.length > 0 && selectedShiftIds.size === new Set(filteredShifts.map(s => s.real_id || s.id)).size}
+                                onChange={(e) => {
+                                   if (e.target.checked) {
+                                       setSelectedShiftIds(new Set(filteredShifts.map(s => s.real_id || s.id)));
+                                   } else {
+                                       setSelectedShiftIds(new Set());
+                                   }
+                                }}
+                             />
+                          </th>
+                          <th>Driver Name &amp; ID</th>
+                          <th>Fleet Agency</th>
+                          <th>Shift Schedule</th>
+                          <th>Hours</th>
+                          <th>Hourly Rate</th>
+                          <th>Night Out Allowance</th>
+                          <th>Flags &amp; Actions</th>
+                          <th>Gross Pay (£)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredShifts.length === 0 ? (
+                          <tr>
+                            <td colSpan={9} className="text-center text-muted">No completed shifts found matching active filters</td>
+                          </tr>
+                        ) : (
+                          filteredShifts.map(shift => {
+                            const {
+                              startRateVal,
+                              endRateVal,
+                              startDay,
+                              endDay,
                               isFixedRate,
-                              noAmt: noAmount, 
-                              grossPay: shiftGrossPay, 
+                              noAmt: noAmount,
+                              grossPay: shiftGrossPay,
                               agency,
-                              liveHours 
+                              liveHours
                             } = getShiftFinancials(shift);
 
                             const shiftEndMs = shift.end_time ? new Date(shift.end_time).getTime() : Date.now();
                             const shiftStartMs = new Date(shift.start_time).getTime();
                             const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
 
-                            const isRequested = 
-                              shift.night_out_requested === true || 
-                              (shift as any).has_requested_night_out === true || 
+                            const isRequested =
+                              shift.night_out_requested === true ||
+                              (shift as any).has_requested_night_out === true ||
                               shift.night_out_status === 'pending';
 
                             const hasNightOut = noAmount > 0 || isRequested;
@@ -3741,9 +4422,9 @@ export default function App() {
                             return (
                               <tr key={shift.id} style={rowStyle}>
                                 <td onClick={(e) => e.stopPropagation()}>
-                                  <input 
-                                    type="checkbox" 
-                                    style={{ cursor: 'pointer', width: '16px', height: '16px' }}
+                                  <input
+                                    type="checkbox"
+                                    style={{ cursor: 'pointer', width: '15px', height: '15px' }}
                                     checked={selectedShiftIds.has(shift.real_id || shift.id)}
                                     onChange={(e) => {
                                         const newSet = new Set(selectedShiftIds);
@@ -3756,28 +4437,29 @@ export default function App() {
                                 </td>
                                 <td className="font-bold text-primary">
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                    <span>{shift.driver_name} ({shift.driver_code})</span>
+                                    <span>{shift.driver_name}</span>
+                                    <span className="text-xs text-muted" style={{ fontWeight: 500 }}>{shift.driver_code}</span>
                                     {isRequested && (
                                       <span className="badge text-xs font-bold" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', alignSelf: 'flex-start', padding: '2px 6px', fontSize: '10px' }}>
-                                        🔔 N/O REQUESTED
+                                        N/O REQUESTED
                                       </span>
                                     )}
                                   </div>
                                 </td>
                                 <td>
-                                  <span className="badge badge-accent">{agency}</span>
+                                  <span className="payroll-agency-badge">{agency}</span>
                                 </td>
                                 <td>
                                   {(() => {
                                     const startObj = new Date(shift.start_time);
                                     const endObj = shift.end_time ? new Date(shift.end_time) : null;
-                                    
+
                                     const startDateStr = startObj.toLocaleDateString();
                                     const startTimeStr = startObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                                    
+
                                     let endDateStr = '';
                                     let endTimeStr = 'Ongoing';
-                                    
+
                                     if (endObj) {
                                       endDateStr = endObj.toLocaleDateString();
                                       endTimeStr = endObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -3843,31 +4525,29 @@ export default function App() {
                                   <div className="flex align-center gap-6" style={{ flexWrap: 'wrap' }}>
                                     {shift.is_week_boundary && (
                                       <span className="badge text-xs" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', padding: '2px 6px', fontWeight: 'bold', marginRight: '6px' }}>
-                                        ✂️ SPLIT
+                                        SPLIT
                                       </span>
                                     )}
-                                    {isFlagged && <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>⚠️ &gt;18h</span>}
-                                    <button 
-                                      className="btn btn-secondary flex align-center gap-2" 
-                                      style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 'bold' }}
+                                    {isFlagged && <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>&gt;18h</span>}
+                                    <button
+                                      className="payroll-mini-btn"
                                       onClick={() => handleEditShiftTime(shift.real_id || shift.id, shift.start_time, shift.end_time)}
                                     >
-                                      ✏️ TIME
+                                      <Clock size={11} /> TIME
                                     </button>
 
-                                    <button 
-                                      className="btn btn-secondary flex align-center gap-2" 
-                                      style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 'bold' }}
+                                    <button
+                                      className="payroll-mini-btn"
                                       onClick={() => openActionModal(
-                                        'single', 
-                                        [shift.real_id || shift.id], 
-                                        shift.driver_name || 'Driver', 
-                                        Number(shift.extras_amount) || 0, 
-                                        shift.extras_note || '', 
+                                        'single',
+                                        [shift.real_id || shift.id],
+                                        shift.driver_name || 'Driver',
+                                        Number(shift.extras_amount) || 0,
+                                        shift.extras_note || '',
                                         Number(shift.night_out_allowance ?? shift.night_out_amount ?? 0)
                                       )}
                                     >
-                                      ✏️ EDIT PAYROLL
+                                      <FileText size={11} /> EDIT PAYROLL
                                     </button>
                                     {shift.extras_note && (
                                       <div className="text-xs text-gray-500 italic mt-1" style={{ fontSize: '11px', color: '#6B7280', fontStyle: 'italic', width: '100%' }}>
@@ -3881,27 +4561,30 @@ export default function App() {
                                 </td>
                               </tr>
                             );
-                          })}
-                          {/* Summary Row */}
-                          <tr style={{ backgroundColor: 'rgba(16, 185, 129, 0.05)', fontWeight: 'bold', borderTop: '2px solid rgba(16, 185, 129, 0.2)' }}>
-                            <td colSpan={4} className="text-primary font-black" style={{ padding: '16px' }}>
-                              TOTALS FOR SELECTED PERIOD ({filteredShifts.length} completed shifts | {nightOutCount} Night Outs: £{totalNightOutAmount.toFixed(2)})
-                            </td>
-                            <td className="text-primary font-bold" style={{ padding: '16px' }}>
-                              {(totalHours || 0).toFixed(2)} hrs
-                            </td>
-                            <td></td>
-                            <td></td>
-                            <td></td>
-                            <td className="text-success font-black" style={{ padding: '16px', fontSize: '15px' }}>
-                              £{totalEarnings.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </td>
-                          </tr>
-                        </>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="payroll-totals-bar">
+                    <span className="payroll-totals-label">
+                      TOTALS FOR SELECTED PERIOD: ({filteredShifts.length} completed shifts | {nightOutCount} Night Outs: £{totalNightOutAmount.toFixed(2)})
+                    </span>
+                    <div className="payroll-totals-stats">
+                      <div className="payroll-stat">
+                        <div className="payroll-stat-label">Total Tracked Hours</div>
+                        <div className="payroll-stat-value">{(totalHours || 0).toFixed(2)} hrs</div>
+                      </div>
+                      <div className="payroll-stat">
+                        <div className="payroll-stat-label">Total Gross Pay</div>
+                        <div className="payroll-stat-value payroll-stat-value--money">
+                          £{totalEarnings.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
               )}
             </div>
           );

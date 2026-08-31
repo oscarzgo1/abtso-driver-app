@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_map/flutter_map.dart';
+import 'package:vector_map_tiles/vector_map_tiles.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
@@ -26,6 +27,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   Duration _elapsedTime = Duration.zero;
   final MapController _mapController = MapController();
   late AnimationController _iconAnimationController;
+
+  /// OpenFreeMap Positron vector style — keyless, unmetered, commercial use permitted.
+  /// Fetched once per screen mount; the layer is built when it resolves.
+  late final Future<Style> _mapStyle = StyleReader(
+    uri: 'https://tiles.openfreemap.org/styles/positron',
+  ).read();
 
   RealtimeChannel? _driverProfileChannel;
   RealtimeChannel? _shiftsChannel;
@@ -582,11 +589,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       initialZoom: 14.0,
                     ),
                     children: [
-                      // Bright Google Maps-style tiles (CartoDB Positron)
-                      TileLayer(
-                        urlTemplate: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-                        subdomains: const ['a', 'b', 'c', 'd'],
-                        userAgentPackageName: 'com.abtso.driver',
+                      // Bright Google Maps-style tiles (OpenFreeMap Positron, vector)
+                      FutureBuilder<Style>(
+                        future: _mapStyle,
+                        builder: (context, snapshot) {
+                          final style = snapshot.data;
+                          if (style == null) {
+                            // Plain backdrop while the style loads, or if it fails —
+                            // depot circles and markers below stay usable regardless.
+                            return const SizedBox.shrink();
+                          }
+                          return VectorTileLayer(
+                            theme: style.theme,
+                            sprites: style.sprites,
+                            tileProviders: style.providers,
+                          );
+                        },
                       ),
                       
                       // Circles Layer for Depots
@@ -640,6 +658,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               ),
                             ),
                         ],
+                      ),
+
+                      // Attribution is required by OpenFreeMap / OpenMapTiles / OSM terms
+                      const SimpleAttributionWidget(
+                        source: Text(
+                          'OpenFreeMap © OpenMapTiles Data from OpenStreetMap',
+                          style: TextStyle(fontSize: 9),
+                        ),
+                        backgroundColor: Color(0xCCFFFFFF),
                       ),
                     ],
                   ),

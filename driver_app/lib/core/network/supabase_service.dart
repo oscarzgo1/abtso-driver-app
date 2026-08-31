@@ -410,14 +410,21 @@ class SupabaseService {
           },
         };
       }
+      // No row matched — this is a real "not found", not a connectivity
+      // problem, so it is safe for callers to treat as a genuine logout.
       return {
         'success': false,
         'error': 'Employee profile not found.',
+        'errorType': 'not_found',
       };
     } catch (e) {
+      // Network/DB failure, not a verdict on the account. Tagged separately
+      // so a dropped connection at startup never gets treated the same as
+      // the driver having been removed from the system.
       return {
         'success': false,
         'error': 'Database profile connection failed: $e',
+        'errorType': 'network_error',
       };
     }
   }

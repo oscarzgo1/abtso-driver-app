@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -80,8 +81,21 @@ class AuthNotifier extends StateNotifier<AuthState> {
     super.dispose();
   }
 
-  /// Verifies persistent session indefinitely on boot (no arbitrary expiration)
+  /// Persists the last-known driver profile locally so a session can be
+  /// restored even when the network is unavailable at launch.
+  Future<void> _cacheDriverProfile(Map<String, dynamic> driver) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('session_driver_cache', jsonEncode(driver));
+    } catch (_) {}
+  }
+
+  /// Verifies persistent session indefinitely on boot (no arbitrary
+  /// expiration). Only a confirmed "driver not found" ends the session here
+  /// — a network failure falls back to the last cached profile and stays
+  /// authenticated, so a dead signal at the depot can never look like a logout.
   Future<void> checkSession() async {
+    final previousState = state;
     state = const AuthState(status: AuthStatus.loading);
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -91,16 +105,49 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
       if (lookupId != null && lookupId.isNotEmpty) {
         final result = await SupabaseService.fetchDriverProfile(lookupId);
+
         if (result['success'] == true && result['driver'] != null) {
           state = AuthState(
             status: AuthStatus.authenticated,
             driver: result['driver'],
           );
+          unawaited(_cacheDriverProfile(result['driver']));
           return;
         }
+
+        if (result['errorType'] != 'not_found') {
+          // Network/DB hiccup, not a verdict on the account — fall back to
+          // whatever profile was last cached and stay signed in.
+          final cachedJson = prefs.getString('session_driver_cache');
+          if (cachedJson != null) {
+            try {
+              final cachedDriver = jsonDecode(cachedJson) as Map<String, dynamic>;
+              state = AuthState(status: AuthStatus.authenticated, driver: cachedDriver);
+              return;
+            } catch (_) {}
+          }
+          // No cache yet (e.g. first launch after login lost connectivity
+          // immediately) — still honour the session rather than sign out,
+          // using the minimal identity already on disk.
+          state = AuthState(
+            status: AuthStatus.authenticated,
+            driver: {'id': lookupId, 'driver_id': savedDriverId},
+          );
+          return;
+        }
+        // errorType == 'not_found': the account genuinely no longer exists —
+        // fall through to the unauthenticated state below.
       }
     } catch (e) {
       debugPrint('Error restoring persistent auth session: $e');
+      // An unexpected exception here is an app-side problem, not proof the
+      // driver logged out. If there was already an authenticated session in
+      // memory, keep it rather than dropping to a spinner or the login
+      // screen; otherwise there is nothing to preserve.
+      state = previousState.status == AuthStatus.authenticated
+          ? previousState
+          : const AuthState(status: AuthStatus.initial);
+      return;
     }
     state = const AuthState(status: AuthStatus.initial);
   }
@@ -117,6 +164,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         state = state.copyWith(
           driver: result['driver'],
         );
+        unawaited(_cacheDriverProfile(result['driver']));
       }
     } catch (_) {}
   }
@@ -178,13 +226,18 @@ class AuthNotifier extends StateNotifier<AuthState> {
     );
 
     if (result['success'] == true) {
-      // Save persistent login session locally
+      // Save persistent login session locally — restored indefinitely by
+      // checkSession() on every future launch; there is no expiry to enforce.
       try {
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('session_driver_id', cleanId);
         await prefs.setString('session_login_time', DateTime.now().toIso8601String());
       } catch (_) {
         // Safe to ignore, fallback to normal lifecycle if shared preferences fails
+      }
+
+      if (result['driver'] != null) {
+        unawaited(_cacheDriverProfile(result['driver']));
       }
 
       state = AuthState(
@@ -200,11 +253,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   Future<void> logout() async {
-    // Clear 14-day login cache
+    // Clear the locally persisted session — this is the ONLY path that
+    // should ever end it. Reached solely from the driver's own "Log Out"
+    // action, never from lifecycle events, backgrounding, or a failed
+    // network call (see checkSession, which deliberately does not call this).
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('session_driver_id');
       await prefs.remove('session_login_time');
+      await prefs.remove('session_driver_cache');
     } catch (_) {}
 
     await SupabaseService.signOut();

@@ -16,3 +16,9 @@ admin_dashboard/.env
 .DS_Store
 *.log
 pass.txt
+
+# Supabase CLI scratch files
+supabase/.temp/
+
+# Claude Code local config
+.claude/
