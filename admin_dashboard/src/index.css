@@ -515,6 +515,20 @@ body {
   background: #F5F5F5;
 }
 
+.agency-group-header-row td {
+  background: #F5F4FE;
+  padding: 8px 16px;
+  border-bottom: 1px solid #E4E1FB;
+}
+
+.agency-group-header-row:hover td {
+  background: #F5F4FE;
+}
+
+.agency-group-header-row:first-child td {
+  border-top: none;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

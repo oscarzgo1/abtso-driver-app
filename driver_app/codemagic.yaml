@@ -5,6 +5,11 @@ workflows:
     instance_type: mac_mini_m2
     environment:
       flutter: stable
+      # Reference name of the keystore uploaded under Team settings > Code
+      # signing identities > Android in the Codemagic dashboard. Must match
+      # the name given to that upload exactly.
+      android_signing:
+        - abtso_driver_keystore
     triggering:
       events:
         - push
@@ -14,6 +19,12 @@ workflows:
       - name: Get Flutter packages
         script: |
           flutter packages pub get
+      - name: Write key.properties from Codemagic's signing identity
+        script: |
+          echo "storePassword=$CM_KEYSTORE_PASSWORD" > android/key.properties
+          echo "keyPassword=$CM_KEY_PASSWORD" >> android/key.properties
+          echo "keyAlias=$CM_KEY_ALIAS" >> android/key.properties
+          echo "storeFile=$CM_KEYSTORE_PATH" >> android/key.properties
       - name: Build Android APK
         script: |
           flutter build apk --release

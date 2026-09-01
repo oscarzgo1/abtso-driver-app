@@ -207,6 +207,7 @@ interface IdleAlert {
   };
   is_sos?: boolean;
   created_at?: string;
+  timestamp?: string;
 }
 
 interface Shift {
@@ -247,37 +248,6 @@ interface LiveLocation {
   speed_mph: number;
   last_ping: string;
   status: 'moving' | 'stationary' | 'idle';
-}
-
-// -- KPI Sparkline (decorative) ----------------------------
-// Hardcoded paths, not derived from real history: the dashboard has no
-// stored time-series for these metrics to chart honestly. Purely a visual
-// echo of the trend badge next to it.
-const SPARKLINE_PATHS: Record<'up' | 'down' | 'flat', string> = {
-  up: 'M1 21 L10 16 L19 18 L28 10 L37 12 L46 3',
-  down: 'M1 5 L10 9 L19 7 L28 15 L37 13 L46 20',
-  flat: 'M1 12 L10 10 L19 13 L28 11 L37 12 L46 10',
-};
-
-function KpiSparkline({ tone }: { tone: 'up' | 'down' | 'flat' }) {
-  const stroke = tone === 'up' ? '#22C55E' : tone === 'down' ? '#EF4444' : '#94A3B8';
-  return (
-    <svg width="48" height="24" viewBox="0 0 48 24" fill="none" aria-hidden="true">
-      <path d={SPARKLINE_PATHS[tone]} stroke={stroke} strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-// -- KPI Trend Badge (decorative, same caveat as above) ----
-function KpiTrend({ tone, label }: { tone: 'up' | 'down' | 'flat'; label: string }) {
-  if (tone === 'flat') {
-    return <span className="kpi-trend kpi-trend--flat">{label}</span>;
-  }
-  return (
-    <span className={`kpi-trend ${tone === 'up' ? 'kpi-trend--up' : 'kpi-trend--down'}`}>
-      {tone === 'up' ? '↗' : '↘'} {label}
-    </span>
-  );
 }
 
 export default function App() {
@@ -555,6 +525,42 @@ export default function App() {
     currentExtras: number;
     currentNote: string;
     currentNO: number;
+  } | null>(null);
+
+  // In-dashboard replacements for window.alert/confirm/prompt — those
+  // render as the browser's own native dialog, which looks like a broken
+  // "site says" box and doesn't match the app at all.
+  const [toast, setToast] = useState<{ message: string; tone: 'success' | 'error' | 'info' } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+  const showToast = (message: string, tone: 'success' | 'error' | 'info' = 'info') => {
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    setToast({ message, tone });
+    toastTimerRef.current = window.setTimeout(() => setToast(null), tone === 'error' ? 6000 : 4000);
+  };
+
+  const [confirmDialog, setConfirmDialog] = useState<{
+    message: string;
+    tone?: 'danger' | 'default';
+    onConfirm: () => void;
+  } | null>(null);
+  const requestConfirm = (message: string, onConfirm: () => void, tone: 'danger' | 'default' = 'default') => {
+    setConfirmDialog({ message, onConfirm, tone });
+  };
+
+  // Replaces the two sequential window.prompt() calls that used to collect
+  // a shift's new start/end time as free-typed text.
+  const [editTimeModal, setEditTimeModal] = useState<{
+    shiftId: string;
+    startValue: string;
+    endValue: string;
+    isOngoing: boolean;
+  } | null>(null);
+
+  // Replaces the "type 1 or 2" window.prompt() used to pick a depot when
+  // manually clocking a driver in.
+  const [depotSelectModal, setDepotSelectModal] = useState<{
+    driverId: string;
+    depots: { id: string; name: string; latitude: number; longitude: number }[];
   } | null>(null);
 
   // Leaflet Map Reference
@@ -1582,11 +1588,15 @@ export default function App() {
     }
   };
 
-  const handleDeleteEmployee = async (employeeId: string) => {
-    if (!window.confirm('Are you sure you want to permanently remove this employee profile? Historical shifts will remain intact, but the account will be deleted.')) {
-      return;
-    }
+  const handleDeleteEmployee = (employeeId: string) => {
+    requestConfirm(
+      'Are you sure you want to permanently remove this employee profile? Historical shifts will remain intact, but the account will be deleted.',
+      () => performDeleteEmployee(employeeId),
+      'danger'
+    );
+  };
 
+  const performDeleteEmployee = async (employeeId: string) => {
     if (isMockMode) {
       setEmployees(prev => prev.filter(e => e.id !== employeeId));
       return;
@@ -1612,15 +1622,16 @@ export default function App() {
             if (body) realMessage = body;
           }
         } catch (_) {}
-        alert('Failed to remove employee: ' + realMessage);
+        showToast('Failed to remove employee: ' + realMessage, 'error');
       } else if (data && data.error) {
-        alert('Failed to remove employee: ' + data.error);
+        showToast('Failed to remove employee: ' + data.error, 'error');
       } else {
+        showToast('Employee profile removed.', 'success');
         loadData();
       }
     } catch (e: any) {
       console.error(e);
-      alert('Connection error: ' + (e?.message ?? 'Failed to remove employee.'));
+      showToast('Connection error: ' + (e?.message ?? 'Failed to remove employee.'), 'error');
     }
   };
 
@@ -1720,11 +1731,11 @@ export default function App() {
 
   const handleManualClockIn = async (driverId: string) => {
     if (isMockMode) {
-      alert("Manual Clock In not supported in Mock Mode.");
+      showToast("Manual Clock In not supported in Mock Mode.", 'error');
       return;
     }
 
-    let depotsList = [];
+    let depotsList: { id: string; name: string; latitude: number; longitude: number }[] = [];
     try {
       const { data } = await supabase!.from('depots').select('*');
       depotsList = data || [];
@@ -1733,22 +1744,15 @@ export default function App() {
     }
 
     if (depotsList.length === 0) {
-      alert("No depots found in database.");
+      showToast("No depots found in database.", 'error');
       return;
     }
 
-    const depotNames = depotsList.map((d, idx) => `${idx + 1}: ${d.name}`).join('\n');
-    const choice = window.prompt(`Select start depot for driver:\n${depotNames}\n\nEnter number (1 or 2):`, "1");
-    if (choice === null) return;
+    setDepotSelectModal({ driverId, depots: depotsList });
+  };
 
-    const selectedIdx = parseInt(choice) - 1;
-    if (isNaN(selectedIdx) || selectedIdx < 0 || selectedIdx >= depotsList.length) {
-      alert("Invalid selection.");
-      return;
-    }
-
-    const depot = depotsList[selectedIdx];
-
+  const performManualClockIn = async (driverId: string, depot: { id: string; name: string; latitude: number; longitude: number }) => {
+    setDepotSelectModal(null);
     try {
       const startTime = new Date().toISOString();
       const { data: shiftData, error } = await supabase!
@@ -1765,7 +1769,7 @@ export default function App() {
         .single();
 
       if (error) {
-        alert("Failed to manual clock in: " + error.message);
+        showToast("Failed to manual clock in: " + error.message, 'error');
       } else {
         // Insert an initial GPS ping so the driver appears on the live map
         // and the idle detection pipeline has a baseline ping to measure from.
@@ -1785,23 +1789,28 @@ export default function App() {
             console.warn('Manual clock-in GPS ping failed (non-fatal):', gpsError.message);
           }
         }
+        showToast('Driver clocked in.', 'success');
         loadData();
       }
     } catch (e: any) {
-      alert("Failed to manual clock in: " + e.message);
+      showToast("Failed to manual clock in: " + e.message, 'error');
     }
   };
 
-
-  const handleManualClockOut = async (driverId: string, shiftId: string) => {
+  const handleManualClockOut = (driverId: string, shiftId: string) => {
     if (isMockMode) {
-      alert("Manual Clock Out not supported in Mock Mode.");
+      showToast("Manual Clock Out not supported in Mock Mode.", 'error');
       return;
     }
 
-    const confirm = window.confirm("Are you sure you want to manually clock out this driver? This will end their shift immediately and log them out of the mobile app.");
-    if (!confirm) return;
+    requestConfirm(
+      "Are you sure you want to manually clock out this driver? This will end their shift immediately and log them out of the mobile app.",
+      () => performManualClockOut(driverId, shiftId),
+      'danger'
+    );
+  };
 
+  const performManualClockOut = async (driverId: string, shiftId: string) => {
     try {
       // Get shift details to find depot coords
       const { data: shiftData } = await supabase!
@@ -1854,57 +1863,68 @@ export default function App() {
         .eq('id', shiftId);
 
       if (error) {
-        alert("Failed to manual clock out: " + error.message);
+        showToast("Failed to manual clock out: " + error.message, 'error');
       } else {
+        showToast('Driver clocked out.', 'success');
         await loadData();
       }
     } catch (e: any) {
-      alert("Failed to manual clock out: " + e.message);
+      showToast("Failed to manual clock out: " + e.message, 'error');
     }
   };
 
-  const handleEditShiftTime = async (shiftId: string, currentStartTime: string, currentEndTime: string | null) => {
-    const formatForPrompt = (isoStr: string) => new Date(isoStr).toISOString().slice(0, 16).replace('T', ' ');
+  // Opens the Edit Shift Time modal, pre-filled from the shift's current
+  // values — datetime-local inputs use "YYYY-MM-DDTHH:mm", no timezone.
+  const handleEditShiftTime = (shiftId: string, currentStartTime: string, currentEndTime: string | null) => {
+    const formatForInput = (isoStr: string) => new Date(isoStr).toISOString().slice(0, 16);
+    setEditTimeModal({
+      shiftId,
+      startValue: formatForInput(currentStartTime),
+      endValue: currentEndTime ? formatForInput(currentEndTime) : '',
+      isOngoing: !currentEndTime,
+    });
+  };
 
-    // 1. Edit Start Time
-    const defaultStart = formatForPrompt(currentStartTime);
-    const newStartRaw = window.prompt("1/2: Edit START date and time (YYYY-MM-DD HH:mm):", defaultStart);
-    if (!newStartRaw) return; // User cancelled
+  const performEditShiftTime = async () => {
+    if (!editTimeModal) return;
+    const { shiftId, startValue, endValue, isOngoing } = editTimeModal;
 
-    // 2. Edit End Time (Allowing clearing for 'ongoing')
-    const defaultEnd = currentEndTime ? formatForPrompt(currentEndTime) : "";
-    const newEndRaw = window.prompt("2/2: Edit END date and time (YYYY-MM-DD HH:mm).\nTo leave the shift ACTIVE (ongoing), completely CLEAR this text box before clicking OK:", defaultEnd);
-    
-    if (newEndRaw === null) return; // User clicked Cancel
+    if (!startValue) {
+      showToast('Start date and time is required.', 'error');
+      return;
+    }
 
-    const newStartTime = new Date(newStartRaw).toISOString();
-    
+    const newStartTime = new Date(startValue).toISOString();
     const targetShift = shifts.find(s => s.id === shiftId);
     if (!targetShift) return;
 
     let updatePayload: any = {
       start_time: newStartTime,
-      status: 'completed'
+      status: 'completed',
     };
 
-    if (newEndRaw.trim() === "") {
+    if (isOngoing) {
       updatePayload.end_time = null;
       updatePayload.status = 'active';
       updatePayload.total_pay = null;
       updatePayload.total_hours = null;
     } else {
-      const newEndTime = new Date(newEndRaw).toISOString();
+      if (!endValue) {
+        showToast('End date and time is required, or mark the shift as still active.', 'error');
+        return;
+      }
+      const newEndTime = new Date(endValue).toISOString();
       if (new Date(newEndTime) <= new Date(newStartTime)) {
-        alert("Error: End time must be strictly after the start time!");
+        showToast('End time must be strictly after the start time.', 'error');
         return;
       }
       updatePayload.end_time = newEndTime;
-      
+
       // 1. Calculate new duration
       const newHours = (new Date(newEndTime).getTime() - new Date(newStartTime).getTime()) / (1000 * 60 * 60);
       updatePayload.total_hours = newHours;
-      
-      // 2. FORCE FRONTEND RECALCULATION 
+
+      // 2. FORCE FRONTEND RECALCULATION
       // Create a mocked shift overriding the time and stripping the old total_pay so the engine calculates it fresh
       const simulatedShift = {
           ...targetShift,
@@ -1912,14 +1932,14 @@ export default function App() {
           end_time: newEndTime,
           total_hours: newHours,
           status: 'completed',
-          total_pay: null 
+          total_pay: null
       };
 
       // 3. Extract perfectly calculated gross pay from our master engine
       const { grossPay, isFixedRate: isSimulatedFixed } = getShiftFinancials(simulatedShift as any);
-      
+
       // 4. Set the exact payload to bypass DB triggers AND STAMP HISTORY
-      updatePayload.total_pay = grossPay; 
+      updatePayload.total_pay = grossPay;
       updatePayload.rate_type = isSimulatedFixed ? 'Fixed Shift Rate (Day Rate)' : 'Hourly';
     }
 
@@ -1930,9 +1950,10 @@ export default function App() {
       .eq('id', shiftId);
 
     if (error) {
-      alert("Failed to update shift: " + error.message);
+      showToast("Failed to update shift: " + error.message, 'error');
     } else {
-      alert("Shift times updated successfully.");
+      showToast("Shift times updated successfully.", 'success');
+      setEditTimeModal(null);
       loadData(); // Refresh UI
     }
   };
@@ -2024,7 +2045,7 @@ export default function App() {
         const coTimeIdx = headers.indexOf('Clock Out Time');
 
         if (fnIdx === -1 || ciDateIdx === -1) {
-          alert("Invalid CSV format. Missing required columns.");
+          showToast("Invalid CSV format. Missing required columns.", 'error');
           return;
         }
 
@@ -2066,7 +2087,7 @@ export default function App() {
         }
 
         if (parsedShifts.length === 0) {
-          alert("No valid shifts found to import. Check if driver names in CSV match the system exactly.");
+          showToast("No valid shifts found to import. Check if driver names in CSV match the system exactly.", 'error');
           return;
         }
 
@@ -2085,17 +2106,17 @@ export default function App() {
         if (newUploads.length > 0) {
           const { error } = await supabase!.from('shifts').insert(newUploads);
           if (error) throw error;
-          alert(`Successfully imported ${newUploads.length} new shift(s) from Blip!`);
+          showToast(`Successfully imported ${newUploads.length} new shift(s) from Blip!`, 'success');
           await loadData();
         } else {
-          alert("All shifts in this CSV are already in the database. No duplicates were added.");
+          showToast("All shifts in this CSV are already in the database. No duplicates were added.", 'info');
         }
 
         if (missingDrivers.size > 0) {
           console.warn("Drivers in CSV not found in system:", Array.from(missingDrivers));
         }
       } catch (err: any) {
-        alert("Error parsing CSV: " + err.message);
+        showToast("Error parsing CSV: " + err.message, 'error');
       } finally {
         if (event.target) {
           event.target.value = '';
@@ -2108,7 +2129,7 @@ export default function App() {
   const handleExportSummaryCSV = () => {
     const filteredShifts = getFilteredShifts();
     if (filteredShifts.length === 0) {
-      alert("No data available to export.");
+      showToast("No data available to export.", 'error');
       return;
     }
 
@@ -2271,10 +2292,10 @@ export default function App() {
         }
 
         XLSX.writeFile(workbook, `Filled_Payment_List_${new Date().toISOString().split('T')[0]}.xlsx`);
-        alert(`Template Injection Complete!\nSuccessfully matched and injected data for ${matchCount} employees.`);
+        showToast(`Template injection complete — matched and injected data for ${matchCount} employees.`, 'success');
 
       } catch (error: any) {
-        alert("Error processing Excel file: " + error.message);
+        showToast("Error processing Excel file: " + error.message, 'error');
       } finally {
         if (event.target) {
           event.target.value = '';
@@ -2353,7 +2374,7 @@ export default function App() {
     setEditingRateDriverId(null);
 
     if (isMockMode) {
-      alert('Driver rate profile updated successfully (Mock Mode).');
+      showToast('Driver rate profile updated successfully (Mock Mode).', 'success');
       return;
     }
 
@@ -2430,21 +2451,21 @@ export default function App() {
       if (error) {
         console.error('Database Error updating drivers table:', error.message);
         // Show user a soft warning but don't block — local state is already updated
-        alert('Rate saved locally. Database sync notice: ' + error.message + '\n\nYour changes are visible but may need a page refresh after the database schema cache reloads (usually within 30 seconds).');
+        showToast('Rate saved locally. Database sync notice: ' + error.message + ' Your changes are visible but may need a page refresh after the database schema cache reloads (usually within 30 seconds).', 'error');
         await loadData();
         return;
       }
 
       if (!data || data.length === 0) {
-        alert(`Error: No rows updated. Ensure driver ID (${primaryId} / ${driverCode}) is correct and RLS allows updating 'drivers' table.`);
+        showToast(`No rows updated. Ensure driver ID (${primaryId} / ${driverCode}) is correct and RLS allows updating 'drivers' table.`, 'error');
         await loadData();
         return;
       }
 
-      alert(`Profile updated successfully!\n\nRate Type: ${isFixed ? 'Fixed Shift Rate' : 'Hourly'} ${isFixed ? `(£${parsedFixed.toFixed(2)}/shift)` : ''}`);
+      showToast(`Profile updated successfully! Rate Type: ${isFixed ? 'Fixed Shift Rate' : 'Hourly'} ${isFixed ? `(£${parsedFixed.toFixed(2)}/shift)` : ''}`, 'success');
       await loadData();
     } catch (e: any) {
-      alert(`Rate save error: ${e?.message ?? 'Unknown error'}`);
+      showToast(`Rate save error: ${e?.message ?? 'Unknown error'}`, 'error');
       await loadData();
     }
   };
@@ -2868,7 +2889,7 @@ export default function App() {
           })
         }).addTo(mapRef.current!).bindPopup(`
           <div style="font-family:'Outfit',sans-serif;">
-            <b style="font-size:13px;color:#333333;">${loc.driver_name} (${loc.driver_code})</b><br>
+            <b style="font-size:13px;color:#333333;">${loc.driver_name}</b><br>
             <span style="color:#888888;font-size:11px;">Speed: ${loc.speed_mph.toFixed(0)} mph</span><br>
             <span style="color:${loc.status === 'idle' ? '#CC0000' : '#2E7D32'};font-size:11px;font-weight:bold;">
               Status: ${loc.status.toUpperCase()}
@@ -2894,7 +2915,7 @@ export default function App() {
           }).addTo(mapRef.current!).bindPopup(`
             <div style="font-family:'Outfit',sans-serif;">
               <b style="font-size:13px;color:#CC0000;">🚨 EMERGENCY SOS BREAKDOWN</b><br>
-              <b style="font-size:12px;color:#333333;">${alert.driver_name} (${alert.driver_code})</b><br>
+              <b style="font-size:12px;color:#333333;">${alert.driver_name}</b><br>
               <span style="color:#888888;font-size:11px;">Triggered at: ${new Date(alert.created_at as string).toLocaleTimeString()}</span><br>
               <a href="https://www.google.com/maps/search/?api=1&query=${alert.latitude},${alert.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">🗺️ Open Google Maps</a>
             </div>
@@ -3341,6 +3362,7 @@ export default function App() {
   // Calculate quick stats
   const activeEmployeeCount = liveLocations.length;
   const activeAlertsCount = alerts.filter(a => !a.acknowledged).length;
+  const idleAlertsCount = alerts.filter(a => !a.acknowledged && !a.is_sos).length;
   const completedShiftsCount = shifts.filter(s => s.status === 'completed').length;
   const pendingNightOutsCount = shifts.filter(s => s.night_out_status === 'pending').length;
   const totalWeeklyPayout = shifts.reduce((sum, s) => sum + (s.total_pay || 0), 0);
@@ -3455,21 +3477,13 @@ export default function App() {
               <h2 className="kpi-value">{activeEmployeeCount}</h2>
               <span className="kpi-label">Employees logged in</span>
             </div>
-            <div className="kpi-trend-col">
-              <KpiTrend tone="down" label="0%" />
-              <KpiSparkline tone="down" />
-            </div>
           </div>
 
           <div className="kpi-card">
             <span className="kpi-icon kpi-icon--red"><Clock size={18} /></span>
             <div className="kpi-body">
-              <h2 className="kpi-value">{activeAlertsCount}</h2>
+              <h2 className="kpi-value">{idleAlertsCount}</h2>
               <span className="kpi-label">Stops &gt; 50 mins (Break)</span>
-            </div>
-            <div className="kpi-trend-col">
-              <KpiTrend tone="down" label="0%" />
-              <KpiSparkline tone="down" />
             </div>
           </div>
 
@@ -3478,10 +3492,6 @@ export default function App() {
             <div className="kpi-body">
               <h2 className="kpi-value">{completedShiftsCount}</h2>
               <span className="kpi-label">Calculated shifts</span>
-            </div>
-            <div className="kpi-trend-col">
-              <KpiTrend tone="up" label="100%" />
-              <KpiSparkline tone="up" />
             </div>
           </div>
 
@@ -3492,10 +3502,6 @@ export default function App() {
                 <h2 className="kpi-value">£{(totalWeeklyPayout || 0).toFixed(2)}</h2>
                 <span className="kpi-label">Calculated gross pay</span>
               </div>
-              <div className="kpi-trend-col">
-                <KpiTrend tone="up" label="12%" />
-                <KpiSparkline tone="up" />
-              </div>
             </div>
           ) : (
             <div className="kpi-card">
@@ -3503,12 +3509,6 @@ export default function App() {
               <div className="kpi-body">
                 <h2 className="kpi-value">2</h2>
                 <span className="kpi-label">Active depots (Rossington &amp; Wheatley)</span>
-              </div>
-              <div className="kpi-trend-col">
-                {/* Station count has no meaningful up/down trend, unlike the
-                    other three cards — shown as flat rather than a fake number. */}
-                <KpiTrend tone="flat" label="STABLE" />
-                <KpiSparkline tone="flat" />
               </div>
             </div>
           )}
@@ -3561,7 +3561,7 @@ export default function App() {
                     ) : (
                       liveLocations.map(loc => (
                         <tr key={loc.driver_id}>
-                          <td className="font-bold text-primary">{loc.driver_name} ({loc.driver_code})</td>
+                          <td className="font-bold text-primary">{loc.driver_name}</td>
                            <td className="font-mono text-secondary text-sm">
                             <div className="flex align-center gap-8">
                               <span>{(loc.latitude || 0).toFixed(6)}, {(loc.longitude || 0).toFixed(6)}</span>
@@ -3623,13 +3623,20 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-16">
-              {alerts.length === 0 ? (
-                <div className="glass-card p-32 text-center text-muted">
-                  ✅ No active idle alerts found. All staff members are moving or on authorized short breaks.
-                </div>
-              ) : (
-                alerts.map(alert => {
+            {alerts.length === 0 ? (
+              <div className="glass-card p-32 text-center text-muted">
+                ✅ No active idle alerts found. All staff members are moving or on authorized short breaks.
+              </div>
+            ) : (
+              (() => {
+                // Unacknowledged first within each group — that's the order
+                // that actually needs eyes on it.
+                const byUrgency = (a: IdleAlert, b: IdleAlert) =>
+                  Number(a.acknowledged) - Number(b.acknowledged);
+                const sosAlerts = alerts.filter(a => a.is_sos).sort(byUrgency);
+                const idleAlertsList = alerts.filter(a => !a.is_sos).sort(byUrgency);
+
+                const renderAlertCard = (alert: IdleAlert) => {
                   const startedTimeMs = alert.started_at ? (
                     alert.started_at.toString().endsWith('Z') || alert.started_at.toString().includes('+')
                       ? new Date(alert.started_at).getTime()
@@ -3645,37 +3652,42 @@ export default function App() {
                     return new Date(cleanStr).toLocaleTimeString();
                   })();
 
+                  const accent = alert.is_sos ? '#CC0000' : '#F59E0B';
+
                   return (
-                    <div 
-                      key={alert.id} 
-                      className={`glass-card p-24 flex align-center justify-between ${!alert.acknowledged ? 'alert-pulse-card' : ''}`}
-                      style={{ borderLeft: alert.is_sos ? '6px solid #FF3333' : undefined }}
+                    <div
+                      key={alert.id}
+                      className={`glass-card p-24 flex align-center justify-between ${!alert.acknowledged && alert.is_sos ? 'alert-pulse-card' : ''}`}
+                      style={{
+                        borderLeft: `6px solid ${accent}`,
+                        opacity: alert.acknowledged ? 0.72 : 1,
+                      }}
                     >
                       <div>
                         <div className="flex align-center gap-12">
                           {alert.is_sos ? (
-                            <span className="badge badge-danger alert-pulse-card" style={{ backgroundColor: '#FF3333' }}>
+                            <span className="badge" style={{ backgroundColor: accent, color: '#FFFFFF' }}>
                               🚨 EMERGENCY SOS
                             </span>
                           ) : (
-                            <span className="badge badge-danger">
-                              ⚠️ IDLE ALERT ({diffMins} MINS)
+                            <span className="badge" style={{ backgroundColor: '#FEF3C7', color: '#92400E' }}>
+                              ⏱ IDLE ALERT ({diffMins} MINS)
                             </span>
                           )}
                           <span className="text-xs text-muted">
                             {alert.is_sos ? 'Vehicle breakdown or employee emergency reported' : 'Stationary stop duration threshold exceeded'}
                           </span>
                         </div>
-                        
+
                         <h3 className="text-lg font-bold text-primary mt-8 mb-4">
-                          Employee: {alert.driver_name} ({alert.driver_code})
+                          Employee: {alert.driver_name}
                         </h3>
-                        
+
                         <p className="text-sm text-secondary m-0">
                           {alert.is_sos ? 'Reported at: ' : 'Stationary since: '}
                           <b>{displayTime}</b> ({diffMins} minutes ago)
                         </p>
-                      
+
                       <p className="text-xs text-muted font-mono mt-8 mb-0 flex align-center gap-12">
                         <span>GPS Coordinate: {(alert.latitude || 0).toFixed(6)}, {(alert.longitude || 0).toFixed(6)}</span>
                         <a
@@ -3701,8 +3713,8 @@ export default function App() {
                           <Check size={16} /> ACKNOWLEDGED
                         </span>
                       )}
-                      <button 
-                        className="btn btn-secondary" 
+                      <button
+                        className="btn btn-secondary"
                         onClick={() => clearAlert(alert.id, alert.is_sos)}
                         style={{ color: '#CC0000', borderColor: '#FECDD3', padding: '6px 12px', fontSize: '11px', fontWeight: 800 }}
                       >
@@ -3710,10 +3722,48 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+                  );
+                };
+
+                return (
+                  <div className="flex flex-col gap-32">
+                    {sosAlerts.length > 0 && (
+                      <div className="flex flex-col gap-16">
+                        <div
+                          className="flex align-center gap-8"
+                          style={{ backgroundColor: '#FCEBEB', border: '1px solid #F5C4B3', borderRadius: '10px', padding: '10px 16px' }}
+                        >
+                          <ShieldAlert size={16} color="#791F1F" />
+                          <span className="font-black" style={{ color: '#791F1F', fontSize: '13px', letterSpacing: '0.4px' }}>
+                            {sosAlerts.length} EMERGENCY SOS {sosAlerts.length === 1 ? 'ALERT' : 'ALERTS'}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-16">
+                          {sosAlerts.map(renderAlertCard)}
+                        </div>
+                      </div>
+                    )}
+
+                    {idleAlertsList.length > 0 && (
+                      <div className="flex flex-col gap-16">
+                        <div
+                          className="flex align-center gap-8"
+                          style={{ backgroundColor: '#FEF3C7', border: '1px solid #FDE68A', borderRadius: '10px', padding: '10px 16px' }}
+                        >
+                          <Clock size={16} color="#92400E" />
+                          <span className="font-black" style={{ color: '#92400E', fontSize: '13px', letterSpacing: '0.4px' }}>
+                            {idleAlertsList.length} IDLE {idleAlertsList.length === 1 ? 'ALERT' : 'ALERTS'}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-16">
+                          {idleAlertsList.map(renderAlertCard)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 );
-              })
+              })()
             )}
-            </div>
           </div>
         )}
 
@@ -3918,7 +3968,8 @@ export default function App() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th>Driver Code & Name</th>
+                    <th>Employee ID</th>
+                    <th>Full Name</th>
                     <th>Agency Name</th>
                     <th>Rate Type</th>
                     <th>Mon-Fri Rate</th>
@@ -3928,7 +3979,28 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {employees.map(emp => {
+                  {(() => {
+                    // Groups drivers by their resolved agency — same fallback
+                    // chain each row already used for its own badge — so the
+                    // fleet reads the way a dispatcher actually thinks about
+                    // it, agency by agency, instead of one flat list.
+                    const resolveAgency = (emp: typeof employees[number]) => {
+                      const currentRate = employeeRates[emp.id] || employeeRates[emp.driver_id];
+                      return (emp as any).agency_name || (emp as any).agency || currentRate?.agency_name || 'Direct';
+                    };
+                    const groups = new Map<string, typeof employees>();
+                    employees.forEach(emp => {
+                      const agency = resolveAgency(emp);
+                      if (!groups.has(agency)) groups.set(agency, []);
+                      groups.get(agency)!.push(emp);
+                    });
+                    const orderedAgencies = Array.from(groups.keys()).sort((a, b) => {
+                      if (a === 'Direct') return -1;
+                      if (b === 'Direct') return 1;
+                      return a.localeCompare(b);
+                    });
+
+                    const renderRateRow = (emp: typeof employees[number]) => {
                     const currentRate = employeeRates[emp.id] || employeeRates[emp.driver_id] || ((emp as any).employee_id ? employeeRates[(emp as any).employee_id] : null) || {
                       driver_id: emp.id,
                       rate_type: (emp as any).rate_type || 'Hourly',
@@ -3943,9 +4015,8 @@ export default function App() {
 
                     return (
                       <tr key={emp.id}>
-                        <td className="font-bold text-primary">
-                          {emp.full_name} ({emp.driver_id})
-                        </td>
+                        <td className="font-mono font-bold text-accent">{emp.driver_id}</td>
+                        <td className="font-bold text-primary">{emp.full_name}</td>
                         <td>
                           {isEditing ? (
                             <input
@@ -4077,8 +4148,28 @@ export default function App() {
                           )}
                         </td>
                       </tr>
-                    );
-                  })}
+                      );
+                    };
+
+                    return orderedAgencies.map(agency => (
+                      <React.Fragment key={agency}>
+                        <tr className="agency-group-header-row">
+                          <td colSpan={8}>
+                            <div className="flex align-center gap-8">
+                              <Building2 size={14} color="#534AB7" />
+                              <span className="font-black" style={{ color: '#3C3489', fontSize: '12px', letterSpacing: '0.5px' }}>
+                                {agency.toUpperCase()}
+                              </span>
+                              <span className="text-xs text-muted">
+                                {groups.get(agency)!.length} driver{groups.get(agency)!.length === 1 ? '' : 's'}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                        {groups.get(agency)!.map(renderRateRow)}
+                      </React.Fragment>
+                    ));
+                  })()}
                 </tbody>
               </table>
             </div>
@@ -4219,7 +4310,7 @@ export default function App() {
                               className={`payroll-driver-option ${reportEmployeeFilter === d.id ? 'payroll-driver-option--highlighted' : ''}`}
                               onMouseDown={(e) => { e.preventDefault(); selectDriver(d.id, d.full_name); }}
                             >
-                              {d.full_name} <span style={{ color: '#94A3B8' }}>({d.driver_id})</span>
+                              {d.full_name}
                             </div>
                           ))
                         )}
@@ -4384,7 +4475,7 @@ export default function App() {
                         <ul className="payroll-alert-list">
                           {flaggedShifts.map(fs => (
                             <li key={fs.id}>
-                              <strong>{fs.driver_name}</strong> ({fs.driver_code}) &mdash; Shift started {new Date(fs.start_time).toLocaleString()} &mdash; <em>Clock-out missing or invalid.</em>
+                              <strong>{fs.driver_name}</strong> &mdash; Shift started {new Date(fs.start_time).toLocaleString()} &mdash; <em>Clock-out missing or invalid.</em>
                             </li>
                           ))}
                         </ul>
@@ -4477,7 +4568,7 @@ export default function App() {
 
                           return rows.map((row: any) => (
                              <tr key={row.driver_code}>
-                                <td className="font-bold text-primary">{row.driver_name} ({row.driver_code})</td>
+                                <td className="font-bold text-primary">{row.driver_name}</td>
                                 <td><span className="payroll-agency-badge">{row.agency}</span></td>
                                 <td className="font-semibold">{row.shift_count}</td>
                                 <td>{row.total_hours.toFixed(2)} hrs</td>
@@ -4529,7 +4620,7 @@ export default function App() {
                                 }}
                              />
                           </th>
-                          <th>Driver Name &amp; ID</th>
+                          <th>Driver Name</th>
                           <th>Fleet Agency</th>
                           <th>Shift Schedule</th>
                           <th>Hours</th>
@@ -4618,7 +4709,6 @@ export default function App() {
                                 <td className="font-bold text-primary">
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                                     <span>{shift.driver_name}</span>
-                                    <span className="text-xs text-muted" style={{ fontWeight: 500 }}>{shift.driver_code}</span>
                                     {isRequested && (
                                       <span className="badge text-xs font-bold" style={{ backgroundColor: '#FEF3C7', color: '#92400E', border: '1px solid #FCD34D', alignSelf: 'flex-start', padding: '2px 6px', fontSize: '10px' }}>
                                         N/O REQUESTED
@@ -4958,6 +5048,191 @@ export default function App() {
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Confirm dialog — replaces window.confirm() */}
+      {confirmDialog && (
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 10001, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div className="modal-content glass-panel" style={{ width: '420px', padding: '28px', borderRadius: '16px', backgroundColor: '#ffffff', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', border: '1px solid #E5E7EB' }}>
+            <div className="flex align-center gap-12 mb-16" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+              <span style={{ display: 'flex', width: '36px', height: '36px', borderRadius: '50%', backgroundColor: confirmDialog.tone === 'danger' ? '#FEE2E2' : '#EFF6FF', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <ShieldAlert size={18} color={confirmDialog.tone === 'danger' ? '#DC2626' : '#2563EB'} />
+              </span>
+              <h2 className="text-lg font-black text-primary m-0" style={{ margin: 0 }}>Please confirm</h2>
+            </div>
+            <p className="text-sm text-secondary mb-24" style={{ marginBottom: '24px', lineHeight: 1.5 }}>{confirmDialog.message}</p>
+            <div className="flex gap-12 justify-end" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setConfirmDialog(null)}
+                style={{ padding: '10px 20px', borderRadius: '8px', fontWeight: 'bold' }}
+              >
+                CANCEL
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  const action = confirmDialog.onConfirm;
+                  setConfirmDialog(null);
+                  action();
+                }}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: '8px',
+                  fontWeight: 'bold',
+                  backgroundColor: confirmDialog.tone === 'danger' ? '#DC2626' : '#4F46E5',
+                  borderColor: confirmDialog.tone === 'danger' ? '#DC2626' : '#4F46E5',
+                  color: 'white',
+                }}
+              >
+                CONFIRM
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Shift Time modal — replaces the two window.prompt() calls */}
+      {editTimeModal && (
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 10001, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div className="modal-content glass-panel" style={{ width: '420px', padding: '28px', borderRadius: '16px', backgroundColor: '#ffffff', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', border: '1px solid #E5E7EB' }}>
+            <h2 className="text-xl font-black text-primary mb-16" style={{ borderBottom: '2px solid #F3F4F6', paddingBottom: '12px', marginBottom: '16px' }}>
+              <Clock size={18} style={{ verticalAlign: '-3px', marginRight: '8px' }} />
+              Edit Shift Time
+            </h2>
+
+            <div className="form-group mb-16" style={{ marginBottom: '16px' }}>
+              <label className="text-sm font-bold text-muted block mb-2" style={{ display: 'block', marginBottom: '6px' }}>Start date &amp; time</label>
+              <input
+                type="datetime-local"
+                className="input-field"
+                value={editTimeModal.startValue}
+                onChange={(e) => setEditTimeModal({ ...editTimeModal, startValue: e.target.value })}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', boxSizing: 'border-box' }}
+              />
+            </div>
+
+            <div className="form-group mb-16" style={{ marginBottom: '16px' }}>
+              <label className="text-sm font-bold text-muted block mb-2" style={{ display: 'block', marginBottom: '6px' }}>End date &amp; time</label>
+              <input
+                type="datetime-local"
+                className="input-field"
+                value={editTimeModal.endValue}
+                disabled={editTimeModal.isOngoing}
+                onChange={(e) => setEditTimeModal({ ...editTimeModal, endValue: e.target.value })}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1px solid #D1D5DB', fontSize: '14px', boxSizing: 'border-box', opacity: editTimeModal.isOngoing ? 0.5 : 1 }}
+              />
+            </div>
+
+            <label className="flex align-center gap-8 mb-24" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '24px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={editTimeModal.isOngoing}
+                onChange={(e) => setEditTimeModal({ ...editTimeModal, isOngoing: e.target.checked })}
+              />
+              <span className="text-sm text-secondary">Shift is still active (no end time yet)</span>
+            </label>
+
+            <div className="flex gap-12 justify-end" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+              <button
+                className="btn btn-secondary"
+                onClick={() => setEditTimeModal(null)}
+                style={{ padding: '10px 20px', borderRadius: '8px', fontWeight: 'bold' }}
+              >
+                CANCEL
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={performEditShiftTime}
+                style={{ padding: '10px 20px', borderRadius: '8px', backgroundColor: '#4F46E5', borderColor: '#4F46E5', color: 'white', fontWeight: 'bold' }}
+              >
+                SAVE CHANGES
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Depot select modal — replaces the "type 1 or 2" window.prompt() */}
+      {depotSelectModal && (
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 10001, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div className="modal-content glass-panel" style={{ width: '380px', padding: '28px', borderRadius: '16px', backgroundColor: '#ffffff', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', border: '1px solid #E5E7EB' }}>
+            <h2 className="text-xl font-black text-primary mb-16" style={{ borderBottom: '2px solid #F3F4F6', paddingBottom: '12px', marginBottom: '16px' }}>
+              <MapPinned size={18} style={{ verticalAlign: '-3px', marginRight: '8px' }} />
+              Select start depot
+            </h2>
+            <div className="flex flex-col gap-8" style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '20px' }}>
+              {depotSelectModal.depots.map(depot => (
+                <button
+                  key={depot.id}
+                  className="btn btn-secondary"
+                  onClick={() => performManualClockIn(depotSelectModal.driverId, depot)}
+                  style={{ padding: '12px 16px', borderRadius: '8px', textAlign: 'left', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}
+                >
+                  <MapPinned size={15} />
+                  {depot.name}
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end">
+              <button
+                className="btn btn-secondary"
+                onClick={() => setDepotSelectModal(null)}
+                style={{ padding: '10px 20px', borderRadius: '8px', fontWeight: 'bold' }}
+              >
+                CANCEL
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast — replaces window.alert() */}
+      {toast && (
+        <div
+          role="status"
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            zIndex: 10002,
+            maxWidth: '380px',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '10px',
+            padding: '14px 16px',
+            borderRadius: '10px',
+            backgroundColor: toast.tone === 'error' ? '#FEF2F2' : toast.tone === 'success' ? '#F0FDF4' : '#F0F9FF',
+            border: `1px solid ${toast.tone === 'error' ? '#FECACA' : toast.tone === 'success' ? '#BBF7D0' : '#BAE6FD'}`,
+            boxShadow: '0 10px 30px -8px rgba(0, 0, 0, 0.25)',
+          }}
+        >
+          {toast.tone === 'error' ? (
+            <ShieldAlert size={18} color="#DC2626" style={{ flexShrink: 0, marginTop: '1px' }} />
+          ) : toast.tone === 'success' ? (
+            <Check size={18} color="#16A34A" style={{ flexShrink: 0, marginTop: '1px' }} />
+          ) : (
+            <Bell size={18} color="#0284C7" style={{ flexShrink: 0, marginTop: '1px' }} />
+          )}
+          <span
+            className="text-sm"
+            style={{
+              flex: 1,
+              whiteSpace: 'pre-line',
+              color: toast.tone === 'error' ? '#7F1D1D' : toast.tone === 'success' ? '#14532D' : '#0C4A6E',
+              lineHeight: 1.4,
+            }}
+          >
+            {toast.message}
+          </span>
+          <button
+            onClick={() => setToast(null)}
+            aria-label="Dismiss"
+            style={{ background: 'none', border: 0, cursor: 'pointer', color: 'inherit', opacity: 0.6, display: 'flex', flexShrink: 0 }}
+          >
+            <X size={15} />
+          </button>
         </div>
       )}
     </div>

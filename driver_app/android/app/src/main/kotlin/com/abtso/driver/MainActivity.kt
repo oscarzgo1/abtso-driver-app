@@ -1,4 +1,4 @@
-package com.example.abtso_driver
+package com.abtso.driver
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -24,7 +24,7 @@ class LoginScreen extends ConsumerStatefulWidget {
   ConsumerState<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProviderStateMixin {
+class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderStateMixin {
   final _driverIdController = TextEditingController();
   final _pinController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
@@ -32,6 +32,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
 
   late AnimationController _shakeController;
   late Animation<double> _shakeAnimation;
+
+  // Two independently-timed controllers drive the soft background blobs —
+  // different durations keep the pair drifting out of sync with each other
+  // instead of breathing in lockstep, which reads as more organic.
+  late final AnimationController _blobController1;
+  late final AnimationController _blobController2;
 
   @override
   void initState() {
@@ -51,6 +57,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
         }
       });
 
+    _blobController1 = AnimationController(
+      duration: const Duration(seconds: 14),
+      vsync: this,
+    )..repeat(reverse: true);
+    _blobController2 = AnimationController(
+      duration: const Duration(seconds: 19),
+      vsync: this,
+    )..repeat(reverse: true);
+
     // Handle immediate redirect if already authenticated on launch.
     // The user stays logged in until they explicitly sign out — see
     // AuthNotifier.checkSession, which restores this session indefinitely
@@ -68,7 +83,49 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     _driverIdController.dispose();
     _pinController.dispose();
     _shakeController.dispose();
+    _blobController1.dispose();
+    _blobController2.dispose();
     super.dispose();
+  }
+
+  // A soft, blurred-looking circle (radial gradient fading to transparent —
+  // cheaper than an actual blur filter) that drifts gently within
+  // [driftRange] as [animation] runs. Positioned via whichever of
+  // left/top/right/bottom is supplied, so it can anchor to any corner.
+  Widget _buildBlob({
+    required Animation<double> animation,
+    required double size,
+    required Color color,
+    double? left,
+    double? top,
+    double? right,
+    double? bottom,
+    required Offset driftRange,
+  }) {
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, child) {
+        final dx = driftRange.dx * animation.value;
+        final dy = driftRange.dy * animation.value;
+        return Positioned(
+          left: left != null ? left + dx : null,
+          top: top != null ? top + dy : null,
+          right: right != null ? right - dx : null,
+          bottom: bottom != null ? bottom - dy : null,
+          child: child!,
+        );
+      },
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: RadialGradient(
+            colors: [color, color.withValues(alpha: 0)],
+          ),
+        ),
+      ),
+    );
   }
 
   void _handleLogin() {
@@ -127,7 +184,38 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
 
     return Scaffold(
       backgroundColor: const Color(0xFFFAFAFA),
-      body: SafeArea(
+      body: Stack(
+        children: [
+          // Soft drifting colour blobs behind everything — background stays
+          // white/near-white, this just gives it some depth instead of
+          // being completely flat.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: ClipRect(
+                child: Stack(
+                  children: [
+                    _buildBlob(
+                      animation: _blobController1,
+                      size: 260,
+                      color: const Color(0xFFCC0000).withValues(alpha: 0.07),
+                      left: -80,
+                      top: -60,
+                      driftRange: const Offset(30, 25),
+                    ),
+                    _buildBlob(
+                      animation: _blobController2,
+                      size: 220,
+                      color: const Color(0xFF333333).withValues(alpha: 0.05),
+                      right: -60,
+                      bottom: -40,
+                      driftRange: const Offset(25, 20),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          SafeArea(
         child: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
@@ -185,10 +273,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                     // Driver ID / Username Input
                     TextFormField(
                       controller: _driverIdController,
-                      style: const TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.bold, fontSize: 13),
+                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 13),
                       decoration: InputDecoration(
                         hintText: 'USERNAME OR ID (e.g. john.smith)',
-                        hintStyle: const TextStyle(fontSize: 12),
+                        hintStyle: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
                         counterText: '',
                         isDense: true,
                         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -221,10 +309,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                     // PIN Input
                     TextFormField(
                       controller: _pinController,
-                      style: const TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.bold, fontSize: 13),
+                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 13),
                       decoration: InputDecoration(
                         hintText: 'SECURITY PIN (6 DIGITS)',
-                        hintStyle: const TextStyle(fontSize: 12),
+                        hintStyle: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
                         counterText: '',
                         isDense: true,
                         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -262,8 +350,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                     if (authState.status == AuthStatus.error) ...[
                       Text(
                         authState.errorMessage?.toUpperCase() ?? 'LOGIN FAILED',
-                        style: const TextStyle(
-                          color: Color(0xFFCC0000),
+                        style: GoogleFonts.outfit(
+                          color: const Color(0xFFCC0000),
                           fontWeight: FontWeight.w700,
                           fontSize: 12,
                         ),
@@ -302,21 +390,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                             padding: const EdgeInsets.only(top: 3),
                             child: RichText(
                               text: TextSpan(
-                                style: const TextStyle(
+                                style: GoogleFonts.outfit(
                                   fontSize: 12,
                                   height: 1.4,
-                                  color: Color(0xFF555555),
+                                  color: const Color(0xFF555555),
                                   fontWeight: FontWeight.w600,
                                 ),
                                 children: [
                                   const TextSpan(text: 'I accept the '),
                                   TextSpan(
                                     text: 'Terms & Conditions and Privacy Policy',
-                                    style: const TextStyle(
-                                      color: Color(0xFFCC0000),
+                                    style: GoogleFonts.outfit(
+                                      color: const Color(0xFFCC0000),
                                       fontWeight: FontWeight.w800,
                                       decoration: TextDecoration.underline,
-                                      decorationColor: Color(0xFFCC0000),
+                                      decorationColor: const Color(0xFFCC0000),
                                     ),
                                     recognizer: TapGestureRecognizer()
                                       ..onTap = () => context.pushNamed('legal'),
@@ -388,6 +476,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
             ),
           ),
         ),
+          ),
+        ],
       ),
     );
   }
