@@ -101,7 +101,7 @@ const LEGAL_DOCUMENTS: Record<'privacy' | 'contract', { title: string; sections:
     ],
   },
   contract: {
-    title: 'Contract for Services: Logistics and App Usage Terms (Part 1)',
+    title: 'Contract for Services: Logistics and App Usage Terms',
     sections: [
       {
         heading: 'Between: L.N Haulage ("The Client") and [Contractor Name/LTD Company] ("The Contractor")\n\n1. Status of the Contractor',
@@ -114,6 +114,22 @@ const LEGAL_DOCUMENTS: Record<'privacy' | 'contract', { title: string; sections:
       {
         heading: '3. Invoicing, Time Logging, and the 50-Minute Inactivity Rule',
         body: '3.1. The Contractor is responsible for accurately recording their service hours using the "Clock In" and "Clock Out" functions within the App.\n\n3.2. While routine breaks during transit are accounted for in the agreed service fees, the App continuously monitors vehicle movement for logistical efficiency and cargo security.\n\n3.3. Inactivity Alert: If the App registers that the Contractor\'s device has remained strictly stationary for 50 consecutive minutes during an active session ("Clocked In"), an automated alert is sent to L.N Haulage Administration.\n\n3.4. Fee Adjustments: Upon receiving an Inactivity Alert, the Client\'s logistics/accounting department reserves the right to review the Contractor\'s time logs. If the 50-minute inactivity period is deemed unauthorized or unjustified (e.g., not related to traffic, loading delays, or mandated legal driving breaks), the Client retains the right to manually modify the logged hours and adjust the final payment/invoice accordingly.\n\n3.5. Dispute Mechanism: If the Contractor\'s logged time is adjusted by the Client, the Contractor will be notified. The Contractor has 48 hours to provide a valid operational reason (e.g., breakdown, accident, road closure) to reinstate the deducted time.',
+      },
+      {
+        heading: '4. Liability, Loss, and Insurance',
+        body: '4.1. The Contractor accepts full responsibility and liability for the safety, security, and condition of the cargo from the moment of collection until the confirmed delivery ("Clock Out" at the destination).\n\n4.2. In the event of loss, theft, or damage to the cargo or Client property caused by the Contractor\'s negligence, the Client reserves the right to deduct the value of the loss from the Contractor\'s pending fees.\n\n4.3. The Contractor must hold and maintain valid operational insurances at their own expense, including but not limited to Commercial Vehicle Insurance, Goods in Transit Insurance, and Public Liability Insurance. Proof of such insurance must be uploaded to the App or provided to the Administration before commencing any work.',
+      },
+      {
+        heading: '5. Confidentiality and Non-Compete',
+        body: '5.1. The Contractor agrees to keep all information obtained through the App and during the provision of services strictly confidential. This includes, but is not limited to: delivery addresses, end-client data, routing logic, pricing, and internal App mechanics.\n\n5.2. The Contractor must not use this confidential information to directly solicit or conduct business with L.N Haulage\'s end-clients outside of this Agreement.',
+      },
+      {
+        heading: '6. Termination of Agreement',
+        body: '6.1. Either party may terminate this Agreement by providing 7 days\' written notice to the other party.\n\n6.2. L.N Haulage reserves the right to terminate this Agreement and revoke App access immediately and without notice in the event of a material breach by the Contractor. Material breaches include, but are not limited to:\n\n• Intentional manipulation, tampering, or unauthorized disabling of the App\'s GPS tracking.\n\n• Theft, severe damage to cargo, or gross negligence.\n\n• Driving under the influence of drugs or alcohol.\n\n• Sharing App login credentials with unauthorized third parties.',
+      },
+      {
+        heading: '7. Governing Law and Jurisdiction',
+        body: '7.1. This Agreement and any dispute or claim arising out of it shall be governed by and construed in accordance with the law of England and Wales.\n\n7.2. The courts of England and Wales shall have exclusive jurisdiction to settle any dispute or claim arising out of this Agreement.',
       },
     ],
   },
@@ -815,11 +831,17 @@ export default function App() {
       };
 
       if (viewLocs && viewLocs.length > 0) {
+        const nowTs = Date.now();
         for (const item of viewLocs) {
-          // Check if driver has an active shift without end_time
-          const drvLatestShift = (mappedShifts || []).find((s: any) => 
-            s.driver_id === item.driver_id || s.driver_id === item.driver_code || s.driver_code === item.driver_code
-          );
+          // Check if driver has an active shift without end_time. Ignore
+          // future-dated rows (bad seed/test data) so a bogus completed
+          // shift can't outrank the driver's real current shift and hide
+          // otherwise-correct live telemetry behind a false "clocked out".
+          const drvLatestShift = (mappedShifts || [])
+            .filter((s: any) => new Date(s.start_time).getTime() <= nowTs)
+            .find((s: any) =>
+              s.driver_id === item.driver_id || s.driver_id === item.driver_code || s.driver_code === item.driver_code
+            );
 
           // If latest shift has an end_time or status is completed, the driver IS CLOCKED OUT! Skip!
           if (drvLatestShift && (drvLatestShift.end_time || drvLatestShift.status === 'completed')) {
@@ -3778,9 +3800,17 @@ export default function App() {
                 </thead>
                 <tbody>
                   {employees.map(drv => {
-                    // Find latest shift for time tracking
+                    // Find latest shift for time tracking. shifts is sorted by
+                    // start_time descending, but a stray future-dated row (bad
+                    // seed/test data) would otherwise outrank the driver's real
+                    // current shift and mask it as "offline" with no clock-out
+                    // path. Ignore anything dated after now, then prefer a
+                    // genuinely open shift over a completed one.
                     const driverShifts = shifts.filter(s => s.driver_id === drv.id || s.driver_id === drv.driver_id);
-                    const latestShift = driverShifts.length > 0 ? driverShifts[0] : null;
+                    const now = Date.now();
+                    const realShifts = driverShifts.filter(s => new Date(s.start_time).getTime() <= now);
+                    const openShift = realShifts.find(s => !s.end_time && s.status !== 'completed');
+                    const latestShift = openShift || realShifts[0] || driverShifts[0] || null;
                     const activeShift = (latestShift && !latestShift.end_time && latestShift.status !== 'completed') ? latestShift : null;
 
                     const formatTime = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -4533,10 +4563,14 @@ export default function App() {
                             // looks at each driver's single latest shift, so it correctly shows
                             // them offline; this table iterates every row, so without this check
                             // the abandoned row keeps rendering as "currently active" forever.
+                            // A future-dated "newer" shift (bad seed/test data) doesn't count —
+                            // it hasn't actually happened yet, so it can't be why this one got
+                            // abandoned, and would otherwise flag every real open shift as stuck.
                             const isStaleOrphan = !shift.end_time && shifts.some(other =>
                               other.driver_id === shift.driver_id &&
                               other.id !== shift.id &&
-                              new Date(other.start_time).getTime() > shiftStartMs
+                              new Date(other.start_time).getTime() > shiftStartMs &&
+                              new Date(other.start_time).getTime() <= Date.now()
                             );
 
                             const isRequested =

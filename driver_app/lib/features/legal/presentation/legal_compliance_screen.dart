@@ -142,6 +142,48 @@ This App is strictly designed for use by independent contractors, self-employed 
 
 3.5. Dispute Mechanism: If the Contractor's logged time is adjusted by the Client, the Contractor will be notified. The Contractor has 48 hours to provide a valid operational reason (e.g., breakdown, accident, road closure) to reinstate the deducted time.''',
   ),
+
+  // ── Contract for Services: Logistics and App Usage Terms (Part 2) ──
+  PolicyPage(
+    document: LegalDocument.contractForServices,
+    title: 'Contract for Services: Logistics and App Usage Terms (Part 2)',
+    body: '''4. LIABILITY, LOSS, AND INSURANCE
+
+4.1. The Contractor accepts full responsibility and liability for the safety, security, and condition of the cargo from the moment of collection until the confirmed delivery ("Clock Out" at the destination).
+
+4.2. In the event of loss, theft, or damage to the cargo or Client property caused by the Contractor's negligence, the Client reserves the right to deduct the value of the loss from the Contractor's pending fees.
+
+4.3. The Contractor must hold and maintain valid operational insurances at their own expense, including but not limited to Commercial Vehicle Insurance, Goods in Transit Insurance, and Public Liability Insurance. Proof of such insurance must be uploaded to the App or provided to the Administration before commencing any work.''',
+  ),
+  PolicyPage(
+    document: LegalDocument.contractForServices,
+    title: '5. Confidentiality and Non-Compete',
+    body: '''5.1. The Contractor agrees to keep all information obtained through the App and during the provision of services strictly confidential. This includes, but is not limited to: delivery addresses, end-client data, routing logic, pricing, and internal App mechanics.
+
+5.2. The Contractor must not use this confidential information to directly solicit or conduct business with L.N Haulage's end-clients outside of this Agreement.''',
+  ),
+  PolicyPage(
+    document: LegalDocument.contractForServices,
+    title: '6. Termination of Agreement',
+    body: '''6.1. Either party may terminate this Agreement by providing 7 days' written notice to the other party.
+
+6.2. L.N Haulage reserves the right to terminate this Agreement and revoke App access immediately and without notice in the event of a material breach by the Contractor. Material breaches include, but are not limited to:
+
+• Intentional manipulation, tampering, or unauthorized disabling of the App's GPS tracking.
+
+• Theft, severe damage to cargo, or gross negligence.
+
+• Driving under the influence of drugs or alcohol.
+
+• Sharing App login credentials with unauthorized third parties.''',
+  ),
+  PolicyPage(
+    document: LegalDocument.contractForServices,
+    title: '7. Governing Law and Jurisdiction',
+    body: '''7.1. This Agreement and any dispute or claim arising out of it shall be governed by and construed in accordance with the law of England and Wales.
+
+7.2. The courts of England and Wales shall have exclusive jurisdiction to settle any dispute or claim arising out of this Agreement.''',
+  ),
 ];
 
 class LegalComplianceScreen extends StatefulWidget {
@@ -224,35 +266,28 @@ class _LegalComplianceScreenState extends State<LegalComplianceScreen> {
               ),
             ),
 
-            // ── Numbered page selector — tap any number to jump straight
-            // to that page. Swipe also works; there is no Previous/Next
-            // button bar.
+            // ── Dot page indicator — tap a dot to jump straight to that
+            // page, or just swipe left/right through the document. No
+            // Previous/Next button bar.
             if (_pageCount > 1)
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
                 child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                  spacing: 6,
+                  runSpacing: 6,
                   children: List.generate(_pageCount, (i) {
                     final isActive = i == _currentPage;
                     return GestureDetector(
                       onTap: () => _goToPage(i),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        width: 30,
-                        height: 30,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: isActive ? const Color(0xFFCC0000) : const Color(0xFFF2F2F6),
-                          shape: BoxShape.circle,
-                          border: isActive ? null : Border.all(color: const Color(0xFFE5E5EA)),
-                        ),
-                        child: Text(
-                          '${i + 1}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            color: isActive ? Colors.white : const Color(0xFF6C6C70),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          width: isActive ? 9 : 7,
+                          height: isActive ? 9 : 7,
+                          decoration: BoxDecoration(
+                            color: isActive ? const Color(0xFF8E8E93) : const Color(0xFFD1D1D6),
+                            shape: BoxShape.circle,
                           ),
                         ),
                       ),

@@ -126,11 +126,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
     }
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: const Color(0xFFFAFAFA),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 32),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
             child: AnimatedBuilder(
               animation: _shakeAnimation,
               builder: (context, child) {
@@ -139,14 +139,25 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                   child: child,
                 );
               },
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.06),
+                      blurRadius: 24,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const SizedBox(height: 24),
-                    
                     // Official ABTSO Image Logo
                     Center(
                       child: Image.asset(
@@ -155,9 +166,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                         fit: BoxFit.contain,
                       ),
                     ),
-                    
-                    const SizedBox(height: 12),
-                    
+
+                    const SizedBox(height: 10),
+
                     Text(
                       'LOGISTICS & TRANSPORT',
                       textAlign: TextAlign.center,
@@ -169,15 +180,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       ),
                     ),
 
-                    const SizedBox(height: 40),
+                    const SizedBox(height: 28),
 
                     // Driver ID / Username Input
                     TextFormField(
                       controller: _driverIdController,
-                      style: const TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.bold),
+                      style: const TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.bold, fontSize: 13),
                       decoration: InputDecoration(
                         hintText: 'USERNAME OR ID (e.g. john.smith)',
+                        hintStyle: const TextStyle(fontSize: 12),
                         counterText: '',
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        prefixIcon: const Icon(Icons.person_outline, color: Color(0xFF888888), size: 18),
+                        prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 18),
                         filled: true,
                         fillColor: const Color(0xFFF5F5F5),
                         enabledBorder: OutlineInputBorder(
@@ -205,10 +221,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                     // PIN Input
                     TextFormField(
                       controller: _pinController,
-                      style: const TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.bold),
+                      style: const TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.bold, fontSize: 13),
                       decoration: InputDecoration(
                         hintText: 'SECURITY PIN (6 DIGITS)',
+                        hintStyle: const TextStyle(fontSize: 12),
                         counterText: '',
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        prefixIcon: const Icon(Icons.lock_outline, color: Color(0xFF888888), size: 18),
+                        prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 18),
                         filled: true,
                         fillColor: const Color(0xFFF5F5F5),
                         enabledBorder: OutlineInputBorder(
@@ -235,7 +256,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                       },
                     ),
 
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 20),
 
                     // Error Message
                     if (authState.status == AuthStatus.error) ...[
@@ -325,7 +346,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        elevation: 0,
+                        elevation: 2,
+                        shadowColor: const Color(0xFFCC0000).withValues(alpha: 0.4),
                       ),
                       child: authState.status == AuthStatus.loading
                           ? const SizedBox(
@@ -346,8 +368,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                             ),
                     ),
 
-                    const SizedBox(height: 48),
-                    
+                    const SizedBox(height: 28),
+
                     // Clean typography footer
                     const Text(
                       'PRIVATE SYSTEM ACCESS\nAUTHORISED EMPLOYEES ONLY',
@@ -359,8 +381,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with SingleTickerProv
                         color: Color(0xFF888888),
                       ),
                     ),
-                    const SizedBox(height: 24),
                   ],
+                  ),
                 ),
               ),
             ),
