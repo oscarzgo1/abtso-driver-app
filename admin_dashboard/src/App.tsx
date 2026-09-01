@@ -57,6 +57,68 @@ const REMEMBERED_EMAIL_KEY = 'admin_remembered_email';
 const loginBrandImage =
   'https://images.unsplash.com/photo-1601584115197-04ecc0da31d7?q=80&w=1000&auto=format&fit=crop';
 
+// L.N Haulage legal documents — same text as the driver app's Legal &
+// Compliance screen (driver_app/lib/features/legal/presentation/
+// legal_compliance_screen.dart). Kept in sync manually since the two apps
+// don't share a content source; update both when the policy changes.
+interface LegalSection {
+  heading: string;
+  body: string;
+}
+
+const LEGAL_DOCUMENTS: Record<'privacy' | 'contract', { title: string; sections: LegalSection[] }> = {
+  privacy: {
+    title: 'L.N Haulage — App Privacy Notice',
+    sections: [
+      {
+        heading: 'Last Updated: 01 September 2026\n\n1. Introduction & Status of the Parties',
+        body: 'This Privacy Notice explains how L.N Haulage ("the Company", "we", "us", or "our") collects, uses, and protects personal data when you use our logistics mobile application ("the App").\n\nThis App is strictly designed for use by independent contractors, self-employed individuals, or representatives of Limited (LTD) companies ("Contractor", "you") providing transport and logistics services to the Company under a separate Contract for Services. You are not an employee of the Company, and nothing in this App or this Privacy Notice implies an employment or worker relationship.',
+      },
+      {
+        heading: '2. Data Controller',
+        body: 'For the purposes of the UK General Data Protection Regulation (UK GDPR) and the Data Protection Act 2018, the Data Controller is:\n\n• Company Name: L.N Haulage\n\n• Registered Office: Bankwood Lane, Rossington, Doncaster, United Kingdom\n\n• Contact Email: lnhaluage@gmail.com',
+      },
+      {
+        heading: '3. The Data We Collect About You',
+        body: 'To ensure the proper functioning of the App and to facilitate the logistics services you provide, we collect and process the following categories of data:\n\n• Identity & Account Data: Full name, login credentials, and internal identification numbers. Initial passwords are created and provided by our Accounting/Logistics departments.\n\n• Location Data (GPS): Real-time geographic location data. The App transmits a GPS signal to our servers at intervals of 2 to 10 minutes exclusively while you are logged into the App. The App will not function if location permissions are disabled. The App also registers timestamps and statuses when the device goes out of network coverage.\n\n• Time & Activity Data: Timestamps of when you "Clock In" and "Clock Out". The App actively monitors physical inactivity and generates an automated alert to the Company if the device remains stationary for 50 consecutive minutes during an active session.\n\n• Device & Technical Data (BYOD): Device status, IP address, and basic diagnostics necessary for the App to function securely on your personal device.',
+      },
+      {
+        heading: '4. Purposes and Lawful Basis for Processing',
+        body: 'We process the data listed above based on the following legal grounds under UK GDPR:\n\n• Performance of a Contract (Article 6(1)(b)): Processing Time & Activity Data to calculate fees owed to you and to verify the logistics services rendered.\n\n• Legitimate Interests (Article 6(1)(f)): Processing Location Data (GPS) and Inactivity Alerts is strictly necessary for our legitimate business interests, which include: ensuring cargo safety, optimizing routing, providing delivery estimates, and preventing fraud.',
+      },
+      {
+        heading: '5. Data Retention and Storage',
+        body: '• Storage Location: All data collected through the App is encrypted and securely stored on Supabase cloud servers located in West-Europe (London, UK). This ensures full compliance with UK data sovereignty laws.\n\n• Retention Period: We retain your GPS and Time & Activity Data for a strict maximum period of 6 months from the date of collection. After this period, the data is automatically and permanently deleted or fully anonymized, unless a longer retention period is required to resolve an ongoing legal dispute or payment query.',
+      },
+      {
+        heading: '6. Data Security and BYOD Policy',
+        body: '• Internal Access Only: Your data is strictly confidential. It is not shared with any third parties. Access is restricted exclusively to authorized internal personnel within the L.N Haulage Logistics and Accounting departments on a "need-to-know" basis.\n\n• Your Device (BYOD): As an independent contractor, you use your personal mobile phone to access the App. You are solely responsible for securing your device (e.g., using PIN codes, biometric locks) against unauthorized access. L.N Haulage accepts no liability for any data breaches, losses, or damages resulting from your personal device being lost, stolen, or compromised.\n\n• Account Security: You are responsible for keeping your App login credentials confidential. Any activity logged under your account (including "Clock In/Out" times) will be treated as performed by you.',
+      },
+      {
+        heading: '7. Your Legal Rights',
+        body: 'Under the UK GDPR, you have rights including:\n\n• The right to access: You can request copies of your personal data held by us.\n\n• The right to rectification: You can request that we correct any information you believe is inaccurate (e.g., requesting a correction to a "Clock Out" time if the App failed due to network loss).\n\n• The right to object: You can object to processing based on legitimate interests; however, given the nature of the transport contract, this may result in the termination of the Contract for Services, as the App cannot function without this data.',
+      },
+    ],
+  },
+  contract: {
+    title: 'Contract for Services: Logistics and App Usage Terms (Part 1)',
+    sections: [
+      {
+        heading: 'Between: L.N Haulage ("The Client") and [Contractor Name/LTD Company] ("The Contractor")\n\n1. Status of the Contractor',
+        body: '1.1. The Contractor is engaged as an independent business entity (self-employed or LTD company) to provide logistics and transport services to L.N Haulage.\n\n1.2. Nothing in this Agreement shall create an employer-employee relationship, worker status, partnership, or joint venture between the parties. The Contractor is solely responsible for their own tax and National Insurance contributions (HMRC compliance).',
+      },
+      {
+        heading: '2. Mandatory Use of the L.N Haulage App',
+        body: '2.1. The provision of logistics services requires the mandatory use of the L.N Haulage mobile application ("the App").\n\n2.2. The Contractor agrees to provide their own mobile device (BYOD) and maintain an active mobile data connection at their own expense.\n\n2.3. The Contractor must ensure that Location Services (GPS) are enabled at all times while logged into the App. Failure to allow GPS tracking or intentionally disabling the App during a transport assignment will be deemed a material breach of this Agreement and may result in immediate termination of services or withholding of service fees for unverified routes.',
+      },
+      {
+        heading: '3. Invoicing, Time Logging, and the 50-Minute Inactivity Rule',
+        body: '3.1. The Contractor is responsible for accurately recording their service hours using the "Clock In" and "Clock Out" functions within the App.\n\n3.2. While routine breaks during transit are accounted for in the agreed service fees, the App continuously monitors vehicle movement for logistical efficiency and cargo security.\n\n3.3. Inactivity Alert: If the App registers that the Contractor\'s device has remained strictly stationary for 50 consecutive minutes during an active session ("Clocked In"), an automated alert is sent to L.N Haulage Administration.\n\n3.4. Fee Adjustments: Upon receiving an Inactivity Alert, the Client\'s logistics/accounting department reserves the right to review the Contractor\'s time logs. If the 50-minute inactivity period is deemed unauthorized or unjustified (e.g., not related to traffic, loading delays, or mandated legal driving breaks), the Client retains the right to manually modify the logged hours and adjust the final payment/invoice accordingly.\n\n3.5. Dispute Mechanism: If the Contractor\'s logged time is adjusted by the Client, the Contractor will be notified. The Contractor has 48 hours to provide a valid operational reason (e.g., breakdown, accident, road closure) to reinstate the deducted time.',
+      },
+    ],
+  },
+};
+
 // Waypoints list representing the HGV route between Rossington Depot and Wheatley Depot
 const routeWaypoints = [
   { latitude: 53.481798, longitude: -1.086552 }, // Rossington Depot Base A
@@ -215,6 +277,8 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [legalModalOpen, setLegalModalOpen] = useState(false);
+  const [legalModalDoc, setLegalModalDoc] = useState<'privacy' | 'contract'>('privacy');
   const [rememberMe, setRememberMe] = useState(() => !!localStorage.getItem(REMEMBERED_EMAIL_KEY));
 
   // Department sign-up
@@ -2519,16 +2583,23 @@ export default function App() {
   };
 
   const getShiftFinancials = (s: Shift) => {
-    // 1. Determine if this shift has a LOCKED historical snapshot.
-    // We only consider it historically locked if there's a custom explicit pay override, 
-    // NOT just because it has a generic base rate which might be stale.
+    // 1. Determine if this shift has a LOCKED historical pay snapshot — a
+    // completed shift with a stored total. Money for these is never
+    // recomputed (see grossPay below): a completed shift's pay should not
+    // silently change just because a rate is edited afterwards.
     const hasStoredPay = s.total_pay !== null && s.total_pay !== undefined;
     const hasHistoricalSnapshot = s.status === 'completed' && hasStoredPay;
 
-    // 2. Resolve the Rate Source
-    const drvRate = hasHistoricalSnapshot 
-      ? null 
-      : (employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver);
+    // 2. Resolve the driver's CURRENT rate profile. This is the source of
+    // truth for how a shift is presented — Fixed vs Hourly, which day-rate
+    // applies, and which agency it's under — exactly as configured in
+    // Rates & Agencies right now. It is deliberately used for BOTH live and
+    // historical shifts: a shift's stored numbers can freeze whatever was
+    // true (or misconfigured) at the moment it closed, and displaying that
+    // frozen state as if it were still current is what produced "£144.00
+    // (Fixed/Shift)" for an hourly driver whose profile was later corrected.
+    // Only the money (grossPay) stays pinned to the historical snapshot.
+    const drvRate = employeeRates[s.driver_id] || (s as any).employee || (s as any).drivers || (s as any).driver;
 
     const startObj = new Date(s.start_time);
     const endObj = s.end_time ? new Date(s.end_time) : null;
@@ -2546,49 +2617,32 @@ export default function App() {
     const storedExtras = Number(s.extras_amount) || 0;
     const historicalBasePay = historicalTotalPay !== null ? (historicalTotalPay - storedNoAmt - storedExtras) : null;
 
-    // Determine historical rate by reverse math if total pay exists
-    const reverseEngineeredRate = (historicalBasePay !== null && s.total_hours) ? (historicalBasePay / s.total_hours) : null;
-
-    // STRICT PRECEDENCE: 1. Explicit Hourly Stamp -> 2. Explicit Fixed Stamp -> 3. Reverse Engineered Fallback
-    const historicalRateValue = Number(s.base_hourly_rate) || Number(s.effective_rate) || reverseEngineeredRate || 0;
-
-    // SMART DETECTION: Is it fixed?
-    const isHistoricallyFixed = hasHistoricalSnapshot && (
-      (s as any).rate_type === 'Fixed Shift Rate (Day Rate)' || 
-      (s as any).rate_type === 'Fixed' || 
-      historicalRateValue > 35 ||
-      (historicalBasePay !== null && s.total_hours && Math.abs(historicalBasePay - (Number(s.total_hours) * historicalRateValue)) > 5)
-    );
-
-    const isFixedRate = isHistoricallyFixed || Boolean(drvRate?.rate_type && (
-      drvRate.rate_type.toLowerCase().includes('fixed') || 
-      drvRate.rate_type.toLowerCase().includes('day') || 
+    // Fixed vs Hourly is decided solely by the driver's current profile —
+    // not by a rate_type string frozen on the shift row, and not by
+    // guessing from the size of a stored number (a full 8-hour hourly
+    // shift routinely totals well over any such threshold).
+    const isFixedRate = Boolean(drvRate?.rate_type && (
+      drvRate.rate_type.toLowerCase().includes('fixed') ||
+      drvRate.rate_type.toLowerCase().includes('day') ||
       drvRate.rate_type.toLowerCase().includes('flat')
     ));
-    
+
     const startDay = startObj.getDay();
     const endDay = endObj ? endObj.getDay() : startDay;
 
-    // 3. Rate determination logic
+    // 3. Rate determination logic — always from the current profile.
     const getRateForDay = (day: number) => {
-      // If historically fixed, return the flat pay, BUT if it's a split boundary, show the full original rate
-      if (hasHistoricalSnapshot && isHistoricallyFixed) {
-        if ((s as any).is_week_boundary) {
-          return Number(s.effective_rate) || Number(s.base_hourly_rate) || 150.00;
-        }
-        return historicalBasePay !== null ? historicalBasePay : historicalRateValue;
-      }
-
-      // Use explicit profile rates based strictly on the day of the week
       if (drvRate) {
         if (isFixedRate) return Number(drvRate.fixed_rate) || Number((drvRate as any).hourly_rate) || Number(drvRate.mon_fri_rate) || 16.00;
         if (day === 0) return Number(drvRate.sunday_rate)   || Number(drvRate.sun_rate)  || Number(drvRate.mon_fri_rate) || 18.00;
         if (day === 6) return Number(drvRate.saturday_rate) || Number(drvRate.sat_rate)  || Number(drvRate.mon_fri_rate) || 17.00;
         return Number(drvRate.mon_fri_rate) || 16.00;
       }
-      
-      // Fallback to absolute DB values only if no profile exists
-      return historicalRateValue || 16.00;
+
+      // No profile at all (e.g. driver record missing) — fall back to
+      // whatever per-hour figure can be reverse-engineered from the total.
+      const reverseEngineeredRate = (historicalBasePay !== null && s.total_hours) ? (historicalBasePay / s.total_hours) : null;
+      return Number(s.base_hourly_rate) || Number(s.effective_rate) || reverseEngineeredRate || 16.00;
     };
 
     const startRateVal = getRateForDay(startDay);
@@ -2602,43 +2656,39 @@ export default function App() {
       basePay = Number(drvRate?.fixed_rate)
         || Number((drvRate as any)?.hourly_rate)
         || startRateVal;
+    } else if (hasHistoricalSnapshot) {
+      // Trust the stored snapshot for completed shifts' base pay — this is
+      // the money that was actually paid and must not move retroactively.
+      basePay = historicalBasePay !== null ? historicalBasePay : (liveOrTotalHours * startRateVal);
+      if (basePay < 0) basePay = liveOrTotalHours * startRateVal;
     } else {
-      // If shift is completed and has a hardcoded total pay snapshot, use it (unless we are manually editing extras right now)
-      if (hasHistoricalSnapshot && s.total_pay !== null && s.total_pay !== undefined && !isFixedRate) {
-        const storedNoAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
-        const storedExtras = Number(s.extras_amount) || 0;
-        basePay = Number(s.total_pay) - storedNoAmt - storedExtras;
-        
-        if (basePay < 0) basePay = (s.total_hours || 0) * startRateVal;
-      } else {
-        basePay = s.end_time 
-          ? calculateSplitShiftPay(s.start_time, s.end_time, drvRate)
-          : liveOrTotalHours * startRateVal;
-      }
+      basePay = s.end_time
+        ? calculateSplitShiftPay(s.start_time, s.end_time, drvRate)
+        : liveOrTotalHours * startRateVal;
     }
 
     const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
     const extrasAmt = Number(s.extras_amount) || 0;
-    
+
     let grossPay = 0;
-    if (hasHistoricalSnapshot && s.total_pay !== null && s.total_pay !== undefined) {
+    if (hasHistoricalSnapshot) {
         // Trust the database completely. The total_pay already includes all extras and allowances.
         grossPay = Number(s.total_pay);
     } else {
         grossPay = Number((basePay + noAmt + extrasAmt).toFixed(2));
     }
 
-    return { 
-      rate: startRateVal, 
-      startRateVal, 
-      endRateVal, 
-      startDay, 
-      endDay, 
+    return {
+      rate: startRateVal,
+      startRateVal,
+      endRateVal,
+      startDay,
+      endDay,
       isFixedRate,
-      noAmt, 
+      noAmt,
       extrasAmt,
       extrasNote: s.extras_note,
-      grossPay, 
+      grossPay,
       agency: drvRate?.agency_name || 'Direct',
       liveHours: liveOrTotalHours
     };
@@ -3161,6 +3211,18 @@ export default function App() {
               </button>
             </div>
 
+            <div className="login-utils" style={{ marginTop: '4px', justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="login-forgot"
+                style={{ color: 'var(--charcoal-mid)', textDecoration: 'underline' }}
+                onClick={() => { setLegalModalDoc('privacy'); setLegalModalOpen(true); }}
+              >
+                <FileText size={12} style={{ verticalAlign: '-2px', marginRight: '4px' }} />
+                Privacy Policy &amp; Contract for Services
+              </button>
+            </div>
+
             <p className="login-footnote">Multi-Factor Authentication enabled for enhanced security</p>
 
             {isMockMode && (
@@ -3181,6 +3243,69 @@ export default function App() {
             <div className="login-brand-overlay" />
           </div>
         </div>
+
+        {/* ── Legal & Compliance modal — viewable before login, no
+             acceptance is required here: this is ABTSO staff signing in to
+             the dispatch console, not a contractor accepting the terms
+             that govern the driver app. ────────────────────────────── */}
+        {legalModalOpen && (
+          <div
+            className="modal-overlay"
+            style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px' }}
+            onClick={() => setLegalModalOpen(false)}
+          >
+            <div
+              className="modal-content glass-panel"
+              style={{ width: '620px', maxWidth: '100%', maxHeight: '85vh', display: 'flex', flexDirection: 'column', borderRadius: '16px', backgroundColor: '#FFFFFF', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', border: '1px solid #E5E7EB', overflow: 'hidden' }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 20px', borderBottom: '1px solid #E5E7EB' }}>
+                <span className="font-black text-primary" style={{ fontSize: '15px' }}>Legal &amp; Compliance</span>
+                <button
+                  type="button"
+                  onClick={() => setLegalModalOpen(false)}
+                  aria-label="Close"
+                  style={{ background: 'none', border: 0, cursor: 'pointer', color: 'var(--charcoal-light)', display: 'flex' }}
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', padding: '14px 20px 0' }}>
+                <button
+                  type="button"
+                  className={`payroll-pill-btn ${legalModalDoc === 'privacy' ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
+                  onClick={() => setLegalModalDoc('privacy')}
+                >
+                  Privacy Policy
+                </button>
+                <button
+                  type="button"
+                  className={`payroll-pill-btn ${legalModalDoc === 'contract' ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
+                  onClick={() => setLegalModalDoc('contract')}
+                >
+                  Contract for Services
+                </button>
+              </div>
+
+              <div style={{ padding: '20px', overflowY: 'auto' }}>
+                <h3 className="font-black text-primary" style={{ fontSize: '16px', margin: '0 0 16px' }}>
+                  {LEGAL_DOCUMENTS[legalModalDoc].title}
+                </h3>
+                {LEGAL_DOCUMENTS[legalModalDoc].sections.map((section, i) => (
+                  <div key={i} style={{ marginBottom: '20px' }}>
+                    <div className="font-bold text-primary" style={{ fontSize: '13px', marginBottom: '6px', whiteSpace: 'pre-line' }}>
+                      {section.heading}
+                    </div>
+                    <div className="text-secondary" style={{ fontSize: '13px', lineHeight: 1.6, whiteSpace: 'pre-line' }}>
+                      {section.body}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -4401,6 +4526,19 @@ export default function App() {
                             const shiftStartMs = new Date(shift.start_time).getTime();
                             const isFlagged = ((shiftEndMs - shiftStartMs) / (1000 * 60 * 60)) > 18;
 
+                            // An "ongoing" shift (no end_time) whose driver has since started a
+                            // NEWER shift is not actually in progress — it's a session that was
+                            // never properly closed (app killed, phone died, lost connection
+                            // before the clock-out call went through). Driver Profiles only
+                            // looks at each driver's single latest shift, so it correctly shows
+                            // them offline; this table iterates every row, so without this check
+                            // the abandoned row keeps rendering as "currently active" forever.
+                            const isStaleOrphan = !shift.end_time && shifts.some(other =>
+                              other.driver_id === shift.driver_id &&
+                              other.id !== shift.id &&
+                              new Date(other.start_time).getTime() > shiftStartMs
+                            );
+
                             const isRequested =
                               shift.night_out_requested === true ||
                               (shift as any).has_requested_night_out === true ||
@@ -4411,7 +4549,9 @@ export default function App() {
 
                             // Determine row background color based on priority
                             let rowStyle: React.CSSProperties = {};
-                            if (isFlagged) {
+                            if (isStaleOrphan) {
+                              rowStyle = { backgroundColor: 'rgba(139, 92, 246, 0.08)' }; // Violet tint — data issue, not a pay flag
+                            } else if (isFlagged) {
                               rowStyle = { backgroundColor: 'rgba(239, 68, 68, 0.08)' }; // Red tint
                             } else if (hasNightOut) {
                               rowStyle = { backgroundColor: 'rgba(245, 158, 11, 0.08)' }; // Orange tint
@@ -4491,6 +4631,11 @@ export default function App() {
                                 <td>
                                   {shift.end_time ? (
                                     `${(shift.total_hours || 0).toFixed(2)} hrs`
+                                  ) : isStaleOrphan ? (
+                                    <span className="font-bold" style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#7C3AED' }}>
+                                      <span style={{ width: '6px', height: '6px', backgroundColor: '#7C3AED', borderRadius: '50%', display: 'inline-block' }}></span>
+                                      {liveHours.toFixed(2)} hrs (stuck)
+                                    </span>
                                   ) : (
                                     <span className="text-success font-bold" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                                       <span style={{ width: '6px', height: '6px', backgroundColor: '#10B981', borderRadius: '50%', display: 'inline-block', boxShadow: '0 0 6px #10B981' }}></span>
@@ -4529,6 +4674,24 @@ export default function App() {
                                       </span>
                                     )}
                                     {isFlagged && <span className="badge badge-danger text-xs" style={{ backgroundColor: '#FEE2E2', color: '#991B1B', border: '1px solid #FCA5A5' }}>&gt;18h</span>}
+                                    {isStaleOrphan && (
+                                      <span
+                                        className="badge text-xs font-bold"
+                                        style={{ backgroundColor: '#EDE9FE', color: '#6D28D9', border: '1px solid #C4B5FD' }}
+                                        title="This driver has a newer shift — this one was never closed and is not actually in progress."
+                                      >
+                                        ⚠ STUCK — NEVER CLOCKED OUT
+                                      </span>
+                                    )}
+                                    {!shift.end_time && (
+                                      <button
+                                        className="payroll-mini-btn"
+                                        style={isStaleOrphan ? { borderColor: '#C4B5FD', color: '#6D28D9' } : undefined}
+                                        onClick={() => handleManualClockOut(shift.driver_id, shift.real_id || shift.id)}
+                                      >
+                                        <LogOut size={11} /> FORCE CLOCK OUT
+                                      </button>
+                                    )}
                                     <button
                                       className="payroll-mini-btn"
                                       onClick={() => handleEditShiftTime(shift.real_id || shift.id, shift.start_time, shift.end_time)}

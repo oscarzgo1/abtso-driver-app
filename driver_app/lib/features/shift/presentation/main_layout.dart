@@ -1062,18 +1062,26 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
             const SizedBox(height: 24),
 
             // ── GROUP 4: LEGAL & COMPLIANCE ──
+            // One button per document — each opens straight to that
+            // document only, so reading one never silently continues
+            // into a different one.
             _buildSectionHeader('LEGAL & COMPLIANCE'),
             _buildSettingsGroup([
-              _buildSettingsRow(
-                icon: Icons.shield_outlined,
-                title: 'Privacy Policy & Terms of Use',
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (_) => const LegalComplianceScreen()),
-                  );
-                },
-              ),
+              for (var i = 0; i < LegalDocument.values.length; i++) ...[
+                if (i > 0) _buildDivider(),
+                _buildSettingsRow(
+                  icon: LegalDocument.values[i].icon,
+                  title: LegalDocument.values[i].label,
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => LegalComplianceScreen(document: LegalDocument.values[i]),
+                      ),
+                    );
+                  },
+                ),
+              ],
             ]),
             const SizedBox(height: 24),
 
