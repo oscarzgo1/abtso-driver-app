@@ -1294,3 +1294,10 @@ body {
   color: #1E293B;
 }
 .payroll-stat-value--money { color: #991B1B; }
+
+/* Required OpenFreeMap/OpenMapTiles/OSM map credit — kept small and subtle */
+.leaflet-control-attribution {
+  font-size: 9px;
+  padding: 1px 5px;
+  line-height: 1.4;
+}

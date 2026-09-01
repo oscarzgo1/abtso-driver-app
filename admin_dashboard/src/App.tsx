@@ -2801,6 +2801,12 @@ export default function App() {
     if (!mapRef.current) {
       mapRef.current = L.map('live-dispatch-map', { maxZoom: 20 }).setView([53.5160, -1.0880], 11);
 
+      // Drop Leaflet's own "Leaflet" branding link from the attribution
+      // control — not required by anyone, just the library's default credit.
+      // The OpenFreeMap/OpenMapTiles/OSM text below still shows; that part is
+      // required by their terms and stays.
+      mapRef.current.attributionControl.setPrefix(false);
+
       // OpenFreeMap Positron vector tiles — keyless, unmetered, commercial use permitted.
       // Rendered through MapLibre GL; all Leaflet overlays below stay on Leaflet panes.
       L.maplibreGL({

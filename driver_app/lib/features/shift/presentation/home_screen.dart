@@ -660,13 +660,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         ],
                       ),
 
-                      // Attribution is required by OpenFreeMap / OpenMapTiles / OSM terms
-                      const SimpleAttributionWidget(
-                        source: Text(
-                          'OpenFreeMap © OpenMapTiles Data from OpenStreetMap',
-                          style: TextStyle(fontSize: 9),
+                      // Required by OpenFreeMap / OpenMapTiles / OSM terms — kept
+                      // minimal (no flutter_map package branding) and small.
+                      Align(
+                        alignment: Alignment.bottomRight,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                          color: const Color(0x99FFFFFF),
+                          child: const Text(
+                            '© OpenFreeMap, OpenMapTiles, OpenStreetMap',
+                            style: TextStyle(fontSize: 7, color: Color(0xFF888888)),
+                          ),
                         ),
-                        backgroundColor: Color(0xCCFFFFFF),
                       ),
                     ],
                   ),
