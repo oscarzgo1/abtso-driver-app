@@ -25,6 +25,7 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderStateMixin {
+  final _companyCodeController = TextEditingController();
   final _driverIdController = TextEditingController();
   final _pinController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
@@ -80,6 +81,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
 
   @override
   void dispose() {
+    _companyCodeController.dispose();
     _driverIdController.dispose();
     _pinController.dispose();
     _shakeController.dispose();
@@ -133,6 +135,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
     if (_formKey.currentState!.validate()) {
       FocusScope.of(context).unfocus();
       ref.read(authProvider.notifier).login(
+            _companyCodeController.text,
             _driverIdController.text,
             _pinController.text,
           );
@@ -166,7 +169,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Image.asset('assets/images/abtso_logo_transparent.png', height: 48, fit: BoxFit.contain),
+              Image.asset('assets/images/tachyo_logo.png', height: 40, fit: BoxFit.contain),
               const SizedBox(height: 24),
               const SizedBox(
                 width: 24,
@@ -246,13 +249,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // Official ABTSO Image Logo
+                    // Brand mark
                     Center(
-                      child: Image.asset(
-                        'assets/images/abtso_logo_transparent.png',
-                        height: 54,
-                        fit: BoxFit.contain,
-                      ),
+                      child: Image.asset('assets/images/tachyo_logo.png', height: 44, fit: BoxFit.contain),
                     ),
 
                     const SizedBox(height: 10),
@@ -269,6 +268,44 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                     ),
 
                     const SizedBox(height: 28),
+
+                    // Company Code Input — namespaces every driver ID by
+                    // employer, since driver IDs are only unique within a
+                    // single company.
+                    TextFormField(
+                      controller: _companyCodeController,
+                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: 'COMPANY CODE',
+                        hintStyle: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
+                        counterText: '',
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        prefixIcon: const Icon(Icons.apartment_outlined, color: Color(0xFF888888), size: 18),
+                        prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 18),
+                        filled: true,
+                        fillColor: const Color(0xFFF5F5F5),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Color(0xFFBBBBBB), width: 1.5),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Color(0xFF333333), width: 2),
+                        ),
+                      ),
+                      textCapitalization: TextCapitalization.none,
+                      autocorrect: false,
+                      maxLength: 40,
+                      validator: (value) {
+                        if (value == null || value.trim().isEmpty) {
+                          return 'COMPANY CODE REQUIRED';
+                        }
+                        return null;
+                      },
+                    ),
+
+                    const SizedBox(height: 12),
 
                     // Driver ID / Username Input
                     TextFormField(

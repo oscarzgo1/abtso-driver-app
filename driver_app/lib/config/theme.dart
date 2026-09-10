@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-/// ABTSO Design System — Brand identity aligned with Concept B logo
+/// Tachyo Design System — Brand identity aligned with Concept B logo
 /// Palette: White (#FFFFFF) · Charcoal (#333333) · Brand Red (#CC0000)
-class ABTSOTheme {
-  ABTSOTheme._();
+class TachyoTheme {
+  TachyoTheme._();
 
   // ── Brand Palette ─────────────────────────────────────────
   static const Color white       = Color(0xFFFFFFFF);

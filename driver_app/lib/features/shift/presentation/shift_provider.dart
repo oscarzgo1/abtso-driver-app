@@ -169,7 +169,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       ),
       android: tl.AndroidConfig(
         foregroundService: tl.ForegroundServiceConfig(
-          notificationTitle: 'ABTSO Logistics',
+          notificationTitle: 'Tachyo',
           notificationText: 'Shift active. Tracking location in background.',
         ),
       ),

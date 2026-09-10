@@ -1,6 +1,6 @@
 {
-    "name": "abtso_driver",
-    "short_name": "abtso_driver",
+    "name": "tachyo_driver",
+    "short_name": "tachyo_driver",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#1E293B",

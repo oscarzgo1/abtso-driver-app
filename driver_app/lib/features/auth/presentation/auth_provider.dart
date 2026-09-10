@@ -200,9 +200,17 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  Future<void> login(String driverId, String pin) async {
+  Future<void> login(String companyCode, String driverId, String pin) async {
     // Validation
+    final cleanCompanyCode = companyCode.trim();
     final cleanId = driverId.trim();
+    if (cleanCompanyCode.isEmpty) {
+      state = const AuthState(
+        status: AuthStatus.error,
+        errorMessage: 'Please enter your Company Code',
+      );
+      return;
+    }
     if (cleanId.isEmpty) {
       state = const AuthState(
         status: AuthStatus.error,
@@ -221,6 +229,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     state = const AuthState(status: AuthStatus.loading);
 
     final result = await SupabaseService.driverLogin(
+      companyCode: cleanCompanyCode,
       driverId: cleanId,
       pin: pin.trim(),
     );
@@ -230,6 +239,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
       // checkSession() on every future launch; there is no expiry to enforce.
       try {
         final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('session_company_code', cleanCompanyCode);
         await prefs.setString('session_driver_id', cleanId);
         await prefs.setString('session_login_time', DateTime.now().toIso8601String());
       } catch (_) {
@@ -259,6 +269,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     // network call (see checkSession, which deliberately does not call this).
     try {
       final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('session_company_code');
       await prefs.remove('session_driver_id');
       await prefs.remove('session_login_time');
       await prefs.remove('session_driver_cache');

@@ -11,7 +11,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
-        android:label="abtso_driver"
+        android:label="Tachyo Driver"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

@@ -414,7 +414,7 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
         title: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Image.asset('assets/images/abtso_logo_transparent.png', height: 26, fit: BoxFit.contain),
+            Image.asset('assets/images/tachyo_logo.png', height: 24, fit: BoxFit.contain),
           ],
         ),
         bottom: PreferredSize(
@@ -1175,7 +1175,7 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
               // Plain Material Switch, not .adaptive — the adaptive variant
               // renders the full-size Cupertino control on iOS/web (visibly
               // larger than everything else on this screen) and hardcodes
-              // iOS system green, bypassing ABTSOTheme's brand-red
+              // iOS system green, bypassing TachyoTheme's brand-red
               // switchTheme entirely. Scaled down to sit comfortably next
               // to the 20px row icons instead of dominating the row.
               Transform.scale(
@@ -1183,7 +1183,7 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
                 child: Switch(
                   value: toggleValue,
                   // Fully explicit per-state colors here rather than relying
-                  // on ABTSOTheme.switchTheme + convenience props together —
+                  // on TachyoTheme.switchTheme + convenience props together —
                   // the two can silently disagree on precedence. White thumb
                   // throughout; brand red track when on, light grey when off.
                   thumbColor: const WidgetStatePropertyAll(Colors.white),

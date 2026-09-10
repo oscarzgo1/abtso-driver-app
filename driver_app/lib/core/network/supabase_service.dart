@@ -22,8 +22,11 @@ class SupabaseService {
   static Map<String, dynamic>? _mockActiveShift;
   static const String _mockRateProfile = 'LWR';
 
-  /// Authenticate driver with ID + PIN via Edge Function (or Offline Mock fallback)
+  /// Authenticate driver with company code + ID + PIN (or Offline Mock fallback).
+  /// The company code namespaces the synthetic Supabase Auth email so two
+  /// different companies can each have their own "DRV-001".
   static Future<Map<String, dynamic>> driverLogin({
+    required String companyCode,
     required String driverId,
     required String pin,
   }) async {
@@ -46,12 +49,13 @@ class SupabaseService {
       }
       return {
         'success': false,
-        'error': 'Invalid Employee ID or PIN (Mock Hint: use EMP-001 / 123456)',
+        'error': 'Invalid Company Code, Employee ID or PIN (Mock Hint: use any company code with DRV-001 / 123456)',
       };
     }
 
     try {
-      final email = '${driverId.trim().toLowerCase()}@driver.abtso';
+      final cleanCompanyCode = companyCode.trim().toLowerCase();
+      final email = '${driverId.trim().toLowerCase()}@$cleanCompanyCode.driver.internal';
       final response = await client.auth.signInWithPassword(
         email: email,
         password: pin.trim(),

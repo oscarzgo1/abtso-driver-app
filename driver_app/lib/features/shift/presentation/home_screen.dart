@@ -258,17 +258,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    border: Border.all(color: ABTSOTheme.success, width: 1.5),
+                    border: Border.all(color: TachyoTheme.success, width: 1.5),
                   ),
                   child: Row(
                     children: [
-                      const Icon(Icons.star, color: ABTSOTheme.success, size: 18),
+                      const Icon(Icons.star, color: TachyoTheme.success, size: 18),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           'WEEKEND RATE OVERRIDE APPLIED (£18.00/HR)',
                           style: theme.textTheme.bodyMedium?.copyWith(
-                            color: ABTSOTheme.success,
+                            color: TachyoTheme.success,
                             fontWeight: FontWeight.w800,
                             fontSize: 11,
                           ),
@@ -310,7 +310,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
           style: theme.textTheme.titleLarge?.copyWith(
             fontWeight: FontWeight.w900,
             color: highlighted
-                ? ABTSOTheme.success
+                ? TachyoTheme.success
                 : (isDark ? Colors.white : Colors.black),
             fontSize: highlighted ? 20 : 15,
           ),
@@ -486,7 +486,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         backgroundColor: Colors.white,
         elevation: 0,
         centerTitle: true,
-        title: Image.asset('assets/images/abtso_logo_transparent.png', height: 28, fit: BoxFit.contain),
+        title: Image.asset('assets/images/tachyo_logo.png', height: 26, fit: BoxFit.contain),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
           child: Container(height: 1, color: const Color(0xFFE0E0E0)),
@@ -616,10 +616,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                             radius: depot.geofenceRadiusM.toDouble(),
                             useRadiusInMeter: true,
                             color: isNearest && state.isNearDepot
-                                ? ABTSOTheme.success.withValues(alpha: 0.12)
+                                ? TachyoTheme.success.withValues(alpha: 0.12)
                                 : (isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03)),
                             borderColor: isNearest && state.isNearDepot
-                                ? ABTSOTheme.success
+                                ? TachyoTheme.success
                                 : (isDark ? Colors.white54 : Colors.black54),
                             borderStrokeWidth: 1.5,
                           );
@@ -783,7 +783,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               decoration: BoxDecoration(
                 border: Border(
                   top: BorderSide(
-                    color: isDark ? ABTSOTheme.darkBorder : ABTSOTheme.lightBorder,
+                    color: isDark ? TachyoTheme.darkBorder : TachyoTheme.lightBorder,
                     width: 1,
                   ),
                 ),
@@ -810,7 +810,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         style: theme.textTheme.bodyMedium?.copyWith(
                           fontSize: 9,
                           fontWeight: FontWeight.w900,
-                          color: state.isNearDepot ? ABTSOTheme.success : const Color(0xFF888888),
+                          color: state.isNearDepot ? TachyoTheme.success : const Color(0xFF888888),
                           letterSpacing: 0.5,
                         ),
                       ),
@@ -1121,12 +1121,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                                 },
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: state.isPlaybackRunning
-                                      ? ABTSOTheme.success
+                                      ? TachyoTheme.success
                                       : (isDark ? Colors.white24 : Colors.black12),
                                   foregroundColor: isDark ? Colors.white : Colors.black,
                                   side: BorderSide(
                                     color: state.isPlaybackRunning
-                                        ? ABTSOTheme.success
+                                        ? TachyoTheme.success
                                         : (isDark ? Colors.white30 : Colors.black26),
                                     width: 1,
                                   ),

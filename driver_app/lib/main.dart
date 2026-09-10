@@ -21,13 +21,13 @@ Future<void> main() async {
 
   runApp(
     const ProviderScope(
-      child: ABTSOApp(),
+      child: DriverApp(),
     ),
   );
 }
 
-class ABTSOApp extends StatelessWidget {
-  const ABTSOApp({super.key});
+class DriverApp extends StatelessWidget {
+  const DriverApp({super.key});
 
   ThemeMode get _currentThemeMode {
     final hour = DateTime.now().hour;
@@ -41,10 +41,10 @@ class ABTSOApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp.router(
-      title: 'ABTSO Employee',
+      title: 'Tachyo Driver',
       debugShowCheckedModeBanner: false,
-      theme: ABTSOTheme.lightTheme,
-      darkTheme: ABTSOTheme.darkTheme,
+      theme: TachyoTheme.lightTheme,
+      darkTheme: TachyoTheme.darkTheme,
       themeMode: _currentThemeMode,
       routerConfig: appRouter,
     );

@@ -4,18 +4,27 @@ import 'package:flutter/material.dart';
 /// own dedicated entry point (a button in Settings → Legal & Compliance)
 /// and its own self-contained screen — a user reading one document never
 /// silently scrolls into a different one.
-enum LegalDocument { privacyNotice, contractForServices }
+///
+/// DRAFT CONTENT — not yet reviewed by a solicitor. See legal/*.md at the
+/// repo root for the canonical versions and the caveats that apply to
+/// all of them. Tachyo is a SaaS platform: the driver's employer is the
+/// controller of their data (decides what's tracked and why); Tachyo is
+/// the processor that builds and runs the app on the employer's
+/// instructions. `appTermsOfUse` is deliberately NOT an employment or
+/// engagement contract — that stays entirely between the driver and
+/// their employer, outside this app.
+enum LegalDocument { privacyNotice, appTermsOfUse }
 
 extension LegalDocumentLabel on LegalDocument {
   /// Short label used on the Settings button and in the AppBar.
   String get label => switch (this) {
         LegalDocument.privacyNotice => 'Privacy Policy',
-        LegalDocument.contractForServices => 'Contract for Services',
+        LegalDocument.appTermsOfUse => 'App Terms of Use',
       };
 
   IconData get icon => switch (this) {
         LegalDocument.privacyNotice => Icons.privacy_tip_outlined,
-        LegalDocument.contractForServices => Icons.description_outlined,
+        LegalDocument.appTermsOfUse => Icons.description_outlined,
       };
 }
 
@@ -33,156 +42,89 @@ class PolicyPage {
   const PolicyPage({required this.document, required this.title, required this.body});
 }
 
-/// L.N Haulage legal documents.
+/// Tachyo driver-facing legal documents.
 const List<PolicyPage> _policyPages = [
-  // ── L.N Haulage — App Privacy Notice (last updated 01 September 2026) ──
+  // ── Driver Privacy Notice ──
   PolicyPage(
     document: LegalDocument.privacyNotice,
-    title: 'L.N Haulage — App Privacy Notice',
-    body: '''Last Updated: 01 September 2026
+    title: 'Driver Privacy Notice',
+    body: '''Last Updated: [INSERT DATE ON PUBLICATION]
 
-1. INTRODUCTION & STATUS OF THE PARTIES
+WHO'S RESPONSIBLE FOR YOUR DATA
 
-This Privacy Notice explains how L.N Haulage ("the Company", "we", "us", or "our") collects, uses, and protects personal data when you use our logistics mobile application ("the App").
+You're using this app because the company you drive for ("your employer") uses Tachyo to run dispatch and payroll. Your employer decides what's tracked and why — Tachyo just builds and operates the app on their instructions. In data protection terms, your employer is the "controller" of your data, and Tachyo is a "processor".
 
-This App is strictly designed for use by independent contractors, self-employed individuals, or representatives of Limited (LTD) companies ("Contractor", "you") providing transport and logistics services to the Company under a separate Contract for Services. You are not an employee of the Company, and nothing in this App or this Privacy Notice implies an employment or worker relationship.''',
-  ),
-  PolicyPage(
-    document: LegalDocument.privacyNotice,
-    title: '2. Data Controller',
-    body: '''For the purposes of the UK General Data Protection Regulation (UK GDPR) and the Data Protection Act 2018, the Data Controller is:
-
-• Company Name: L.N Haulage
-
-• Registered Office: Bankwood Lane, Rossington, Doncaster, United Kingdom
-
-• Contact Email: lnhaluage@gmail.com''',
+If you have a question about how your data is used, your first point of contact should be your employer. Tachyo will help them answer it.''',
   ),
   PolicyPage(
     document: LegalDocument.privacyNotice,
-    title: '3. The Data We Collect About You',
-    body: '''To ensure the proper functioning of the App and to facilitate the logistics services you provide, we collect and process the following categories of data:
+    title: 'What This App Collects',
+    body: '''• Your name, driver ID, and phone number, as entered by your employer.
 
-• Identity & Account Data: Full name, login credentials, and internal identification numbers. Initial passwords are created and provided by our Accounting/Logistics departments.
+• A PIN you set to log in. Tachyo stores this as a scrambled (hashed) value it can't reverse — nobody at Tachyo can see your actual PIN.
 
-• Location Data (GPS): Real-time geographic location data. The App transmits a GPS signal to our servers at intervals of 2 to 10 minutes exclusively while you are logged into the App. The App will not function if location permissions are disabled. The App also registers timestamps and statuses when the device goes out of network coverage.
+• Your location, while you're clocked in on an active shift — used to show your employer's dispatch team where you are, confirm you're at the right depot, and calculate your shift accurately.
 
-• Time & Activity Data: Timestamps of when you "Clock In" and "Clock Out". The App actively monitors physical inactivity and generates an automated alert to the Company if the device remains stationary for 50 consecutive minutes during an active session.
+• Clock in/out times.
 
-• Device & Technical Data (BYOD): Device status, IP address, and basic diagnostics necessary for the App to function securely on your personal device.''',
+• An automatic alert if your device stays completely still for 50 minutes while you're clocked in (this helps flag things like breakdowns or unplanned long stops), or if you raise an SOS alert.
+
+Location tracking only happens while you are clocked in on a shift — not before you clock in or after you clock out.''',
   ),
   PolicyPage(
     document: LegalDocument.privacyNotice,
-    title: '4. Purposes and Lawful Basis for Processing',
-    body: '''We process the data listed above based on the following legal grounds under UK GDPR:
-
-• Performance of a Contract (Article 6(1)(b)): Processing Time & Activity Data to calculate fees owed to you and to verify the logistics services rendered.
-
-• Legitimate Interests (Article 6(1)(f)): Processing Location Data (GPS) and Inactivity Alerts is strictly necessary for our legitimate business interests, which include: ensuring cargo safety, optimizing routing, providing delivery estimates, and preventing fraud.''',
+    title: 'How Long It\'s Kept',
+    body: '''Your location and shift history is kept for 12 months, mainly so that if there's ever a dispute about a shift's pay, or your employer wants to review performance over time, the record is still available. After 12 months it's deleted or anonymised, unless it's still needed for an active dispute.''',
   ),
   PolicyPage(
     document: LegalDocument.privacyNotice,
-    title: '5. Data Retention and Storage',
-    body: '''• Storage Location: All data collected through the App is encrypted and securely stored on Supabase cloud servers located in West-Europe (London, UK). This ensures full compliance with UK data sovereignty laws.
-
-• Retention Period: We retain your GPS and Time & Activity Data for a strict maximum period of 6 months from the date of collection. After this period, the data is automatically and permanently deleted or fully anonymized, unless a longer retention period is required to resolve an ongoing legal dispute or payment query.''',
+    title: 'Who Can See It',
+    body: '''Your employer's dispatch and payroll staff, through the admin dashboard. Tachyo staff do not routinely access your data, and only do so to provide technical support, under the same confidentiality obligations as your employer's own staff.''',
   ),
   PolicyPage(
     document: LegalDocument.privacyNotice,
-    title: '6. Data Security and BYOD Policy',
-    body: '''• Internal Access Only: Your data is strictly confidential. It is not shared with any third parties. Access is restricted exclusively to authorized internal personnel within the L.N Haulage Logistics and Accounting departments on a "need-to-know" basis.
+    title: 'Your Rights',
+    body: '''You can ask to see, correct, or ask about deleting your data — start with your employer, since they control it. You also have the right to complain to the UK Information Commissioner's Office (ico.org.uk).
 
-• Your Device (BYOD): As an independent contractor, you use your personal mobile phone to access the App. You are solely responsible for securing your device (e.g., using PIN codes, biometric locks) against unauthorized access. L.N Haulage accepts no liability for any data breaches, losses, or damages resulting from your personal device being lost, stolen, or compromised.
-
-• Account Security: You are responsible for keeping your App login credentials confidential. Any activity logged under your account (including "Clock In/Out" times) will be treated as performed by you.''',
-  ),
-  PolicyPage(
-    document: LegalDocument.privacyNotice,
-    title: '7. Your Legal Rights',
-    body: '''Under the UK GDPR, you have rights including:
-
-• The right to access: You can request copies of your personal data held by us.
-
-• The right to rectification: You can request that we correct any information you believe is inaccurate (e.g., requesting a correction to a "Clock Out" time if the App failed due to network loss).
-
-• The right to object: You can object to processing based on legitimate interests; however, given the nature of the transport contract, this may result in the termination of the Contract for Services, as the App cannot function without this data.''',
+Questions about the app itself: [INSERT contact email]''',
   ),
 
-  // ── Contract for Services: Logistics and App Usage Terms (Part 1) ──
+  // ── App Terms of Use ──
   PolicyPage(
-    document: LegalDocument.contractForServices,
-    title: 'Contract for Services: Logistics and App Usage Terms (Part 1)',
-    body: '''Between: L.N Haulage ("The Client") and [Contractor Name/LTD Company] ("The Contractor")
+    document: LegalDocument.appTermsOfUse,
+    title: 'Driver App — Terms of Use (Part 1)',
+    body: '''Last Updated: [INSERT DATE ON PUBLICATION]
 
-1. STATUS OF THE CONTRACTOR
+These Terms of Use are between you (the driver using this app) and Tachyo, and cover your use of the Tachyo Driver App itself. They are not, and are not intended to be, an employment or engagement contract — your working relationship, pay, and terms of engagement are agreed entirely between you and your employer, separately from this app.
 
-1.1. The Contractor is engaged as an independent business entity (self-employed or LTD company) to provide logistics and transport services to L.N Haulage.
+USING THE APP
 
-1.2. Nothing in this Agreement shall create an employer-employee relationship, worker status, partnership, or joint venture between the parties. The Contractor is solely responsible for their own tax and National Insurance contributions (HMRC compliance).''',
+• You're given access to this app by your employer, and your account should only be used by you.
+
+• Keep your PIN confidential. Activity logged under your account (including clock in/out times) is treated as carried out by you.
+
+• Use the app honestly — don't try to falsify clock in/out times, location, or other records.
+
+• The app requires location access to function while you're clocked in; if you disable it, features like clock-in and live dispatch tracking won't work. This doesn't change your obligations to your employer, which are set separately between you and them.''',
   ),
   PolicyPage(
-    document: LegalDocument.contractForServices,
-    title: '2. Mandatory Use of the L.N Haulage App',
-    body: '''2.1. The provision of logistics services requires the mandatory use of the L.N Haulage mobile application ("the App").
+    document: LegalDocument.appTermsOfUse,
+    title: 'Driver App — Terms of Use (Part 2)',
+    body: '''WHAT TACHYO PROVIDES
 
-2.2. The Contractor agrees to provide their own mobile device (BYOD) and maintain an active mobile data connection at their own expense.
+Tachyo provides the app "as is" and will use reasonable efforts to keep it working, but doesn't guarantee it will always be available or error-free (for example, due to your own network connectivity, device issues, or planned maintenance).
 
-2.3. The Contractor must ensure that Location Services (GPS) are enabled at all times while logged into the App. Failure to allow GPS tracking or intentionally disabling the App during a transport assignment will be deemed a material breach of this Agreement and may result in immediate termination of services or withholding of service fees for unverified routes.''',
-  ),
-  PolicyPage(
-    document: LegalDocument.contractForServices,
-    title: '3. Invoicing, Time Logging, and the 50-Minute Inactivity Rule',
-    body: '''3.1. The Contractor is responsible for accurately recording their service hours using the "Clock In" and "Clock Out" functions within the App.
+YOUR DATA
 
-3.2. While routine breaks during transit are accounted for in the agreed service fees, the App continuously monitors vehicle movement for logistical efficiency and cargo security.
+See the separate Driver Privacy Notice in this app for how your data is collected and used.
 
-3.3. Inactivity Alert: If the App registers that the Contractor's device has remained strictly stationary for 50 consecutive minutes during an active session ("Clocked In"), an automated alert is sent to L.N Haulage Administration.
+LIABILITY
 
-3.4. Fee Adjustments: Upon receiving an Inactivity Alert, the Client's logistics/accounting department reserves the right to review the Contractor's time logs. If the 50-minute inactivity period is deemed unauthorized or unjustified (e.g., not related to traffic, loading delays, or mandated legal driving breaks), the Client retains the right to manually modify the logged hours and adjust the final payment/invoice accordingly.
+To the extent permitted by law, Tachyo is not liable for losses arising from your use of your own personal device, network connectivity issues outside Tachyo's control, or decisions your employer makes using data from the app. Nothing here limits liability for death or personal injury caused by negligence, fraud, or anything else that can't lawfully be limited.
 
-3.5. Dispute Mechanism: If the Contractor's logged time is adjusted by the Client, the Contractor will be notified. The Contractor has 48 hours to provide a valid operational reason (e.g., breakdown, accident, road closure) to reinstate the deducted time.''',
-  ),
+CHANGES AND CONTACT
 
-  // ── Contract for Services: Logistics and App Usage Terms (Part 2) ──
-  PolicyPage(
-    document: LegalDocument.contractForServices,
-    title: 'Contract for Services: Logistics and App Usage Terms (Part 2)',
-    body: '''4. LIABILITY, LOSS, AND INSURANCE
-
-4.1. The Contractor accepts full responsibility and liability for the safety, security, and condition of the cargo from the moment of collection until the confirmed delivery ("Clock Out" at the destination).
-
-4.2. In the event of loss, theft, or damage to the cargo or Client property caused by the Contractor's negligence, the Client reserves the right to deduct the value of the loss from the Contractor's pending fees.
-
-4.3. The Contractor must hold and maintain valid operational insurances at their own expense, including but not limited to Commercial Vehicle Insurance, Goods in Transit Insurance, and Public Liability Insurance. Proof of such insurance must be uploaded to the App or provided to the Administration before commencing any work.''',
-  ),
-  PolicyPage(
-    document: LegalDocument.contractForServices,
-    title: '5. Confidentiality and Non-Compete',
-    body: '''5.1. The Contractor agrees to keep all information obtained through the App and during the provision of services strictly confidential. This includes, but is not limited to: delivery addresses, end-client data, routing logic, pricing, and internal App mechanics.
-
-5.2. The Contractor must not use this confidential information to directly solicit or conduct business with L.N Haulage's end-clients outside of this Agreement.''',
-  ),
-  PolicyPage(
-    document: LegalDocument.contractForServices,
-    title: '6. Termination of Agreement',
-    body: '''6.1. Either party may terminate this Agreement by providing 7 days' written notice to the other party.
-
-6.2. L.N Haulage reserves the right to terminate this Agreement and revoke App access immediately and without notice in the event of a material breach by the Contractor. Material breaches include, but are not limited to:
-
-• Intentional manipulation, tampering, or unauthorized disabling of the App's GPS tracking.
-
-• Theft, severe damage to cargo, or gross negligence.
-
-• Driving under the influence of drugs or alcohol.
-
-• Sharing App login credentials with unauthorized third parties.''',
-  ),
-  PolicyPage(
-    document: LegalDocument.contractForServices,
-    title: '7. Governing Law and Jurisdiction',
-    body: '''7.1. This Agreement and any dispute or claim arising out of it shall be governed by and construed in accordance with the law of England and Wales.
-
-7.2. The courts of England and Wales shall have exclusive jurisdiction to settle any dispute or claim arising out of this Agreement.''',
+We may update these Terms of Use from time to time; continued use of the app after an update means you accept the change. Questions: [INSERT contact email]''',
   ),
 ];
 

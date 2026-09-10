@@ -9,7 +9,7 @@ workflows:
       # signing identities > Android in the Codemagic dashboard. Must match
       # the name given to that upload exactly.
       android_signing:
-        - abtso_driver_keystore
+        - tachyo_driver_keystore
     triggering:
       events:
         - push
