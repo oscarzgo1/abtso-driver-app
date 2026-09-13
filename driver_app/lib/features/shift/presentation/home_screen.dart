@@ -339,6 +339,70 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     }
   }
 
+  /// A single accidental tap on the app-bar logout icon used to end the
+  /// session immediately with no way back short of re-entering Company
+  /// Code + Driver ID + 6-digit PIN — this confirms first, matching the
+  /// same dialog pattern already used for SOS below.
+  void _handleLogoutAction(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(
+              color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+              width: 1.5,
+            ),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.logout_rounded, color: Color(0xFF333333), size: 26),
+              SizedBox(width: 12),
+              Text(
+                'LOG OUT',
+                style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5, fontSize: 18),
+              ),
+            ],
+          ),
+          content: const Text(
+            'Are you sure you want to log out? You\'ll need your Company Code, Driver ID, and PIN to sign back in.',
+            style: TextStyle(fontSize: 14, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: Text(
+                'CANCEL',
+                style: TextStyle(color: isDark ? Colors.white60 : Colors.black54, fontWeight: FontWeight.bold),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _cleanupRealtimeListeners();
+                ref.read(authProvider.notifier).logout();
+                context.goNamed('login');
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFCC0000),
+                foregroundColor: Colors.white,
+                minimumSize: const Size(100, 40),
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('LOG OUT'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   void _handleSOSAction(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
@@ -494,11 +558,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         actions: [
           IconButton(
             icon: const Icon(Icons.logout, size: 18, color: Color(0xFF333333)),
-            onPressed: () {
-              _cleanupRealtimeListeners();
-              ref.read(authProvider.notifier).logout();
-              context.goNamed('login');
-            },
+            onPressed: () => _handleLogoutAction(context),
           ),
           const SizedBox(width: 4),
         ],
@@ -558,23 +618,57 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                     decoration: BoxDecoration(
                       border: Border.all(
-                        color: isClockedIn ? const Color(0xFF2E7D32) : const Color(0xFFBBBBBB),
+                        color: isClockedIn
+                            ? const Color(0xFF2E7D32)
+                            : (state.pendingAction?.type == 'clock_in' ? const Color(0xFFF59E0B) : const Color(0xFFBBBBBB)),
                         width: 1.5,
                       ),
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
-                      isClockedIn ? 'ACTIVE SHIFT' : 'OFF DUTY',
+                      isClockedIn
+                          ? 'ACTIVE SHIFT'
+                          : (state.pendingAction?.type == 'clock_in' ? 'SYNCING…' : 'OFF DUTY'),
                       style: theme.textTheme.bodyMedium?.copyWith(
                         fontSize: 10,
                         fontWeight: FontWeight.w800,
-                        color: isClockedIn ? const Color(0xFF2E7D32) : const Color(0xFF888888),
+                        color: isClockedIn
+                            ? const Color(0xFF2E7D32)
+                            : (state.pendingAction?.type == 'clock_in' ? const Color(0xFFF59E0B) : const Color(0xFF888888)),
                       ),
                     ),
                   ),
                 ],
               ),
             ),
+
+            // Offline clock-in/out awaiting sync — shown for either
+            // direction; only the fact that a tap was captured and the time
+            // it happened, never an invented shift id or pay figure.
+            if (state.pendingAction != null)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                color: const Color(0xFFFFF7E6),
+                child: Row(
+                  children: [
+                    const Icon(Icons.cloud_off_rounded, size: 16, color: Color(0xFFB45309)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        state.pendingAction!.type == 'clock_in'
+                            ? 'Clock-in recorded at ${DateFormat('HH:mm').format(state.pendingAction!.timestamp.toLocal())} — will sync once you\'re back online.'
+                            : 'Clock-out recorded at ${DateFormat('HH:mm').format(state.pendingAction!.timestamp.toLocal())} — will sync once you\'re back online.',
+                        style: GoogleFonts.outfit(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFFB45309),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
 
             // Live map (High Contrast Grid)
             Expanded(
@@ -936,7 +1030,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
                     // Clock Out Button (Dynamically enabled/disabled based on geofence)
                     ElevatedButton(
-                      onPressed: (state.isLoading || !state.isNearDepot)
+                      onPressed: (state.isLoading || !state.isNearDepot || state.pendingAction != null)
                           ? null
                           : () => ref.read(shiftProvider.notifier).clockOut(),
                       style: ElevatedButton.styleFrom(
@@ -1001,7 +1095,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   ] else ...[
                     // ── Inactive Shift Controls (Clock In Only) ──
                     ElevatedButton(
-                      onPressed: (state.isLoading || !state.isNearDepot)
+                      onPressed: (state.isLoading || !state.isNearDepot || state.pendingAction != null)
                           ? null
                           : () => ref.read(shiftProvider.notifier).clockIn(),
                       style: ElevatedButton.styleFrom(

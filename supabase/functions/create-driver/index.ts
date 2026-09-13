@@ -1,8 +1,14 @@
 // ============================================================
-// ABTSO Logistics — Edge Function: Create / Delete Driver
+// Edge Function: Create / Update / Delete Driver
 // ============================================================
 // Requires a valid Supabase Auth JWT (any authenticated admin user).
 // Uses Service Role Key for all DB writes — bypasses RLS entirely.
+//
+// Drivers are scoped to the caller's own organization: driver_id is
+// only unique *within* a company (see migration 033), and each
+// driver's synthetic Supabase Auth email is built from their
+// company's slug (`<driverId>@<orgSlug>.driver.internal`) so two
+// companies can each have their own "DRV-001" without colliding.
 // ============================================================
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -54,6 +60,36 @@ serve(async (req: Request) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
+    // ── 2b. Resolve the caller's own company ─────────────────
+    const { data: callerRole } = await supabaseAdmin
+      .from("user_roles")
+      .select("organization_id")
+      .eq("email", callerEmail)
+      .limit(1)
+      .maybeSingle();
+
+    const callerOrgId = callerRole?.organization_id;
+    if (!callerOrgId) {
+      return new Response(
+        JSON.stringify({ error: "Your account is not assigned to a company." }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const { data: callerOrg } = await supabaseAdmin
+      .from("organizations")
+      .select("slug")
+      .eq("id", callerOrgId)
+      .single();
+
+    const orgSlug = callerOrg?.slug;
+    if (!orgSlug) {
+      return new Response(
+        JSON.stringify({ error: "Could not resolve your company." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     // ── 3. Parse request body ────────────────────────────────
     const body = await req.json();
     const { action, driver_id, full_name, phone, pin, id: targetId } = body;
@@ -77,11 +113,20 @@ serve(async (req: Request) => {
       await supabaseAdmin.from("shifts").delete().eq("driver_id", targetId);
       await supabaseAdmin.from("employee_rates").delete().eq("driver_id", targetId);
 
-      // Delete from public.drivers
-      const { error: deleteError } = await supabaseAdmin
+      // Delete from public.drivers — scoped to the caller's own company so
+      // an id from another organization can't be targeted.
+      const { error: deleteError, count: deleteCount } = await supabaseAdmin
         .from("drivers")
-        .delete()
-        .eq("id", targetId);
+        .delete({ count: "exact" })
+        .eq("id", targetId)
+        .eq("organization_id", callerOrgId);
+
+      if (!deleteError && deleteCount === 0) {
+        return new Response(
+          JSON.stringify({ error: "Driver not found in your company." }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
 
       if (deleteError) {
         console.error("Delete error:", deleteError.message);
@@ -112,16 +157,30 @@ serve(async (req: Request) => {
         );
       }
 
+      // A PIN shorter than 6 digits would be silently unusable: the driver
+      // app's own login screen and in-app "Change PIN" screen both require
+      // exactly 6 digits before they'll even submit, and Supabase Auth's
+      // own password minimum is 6 characters. Accepting anything shorter
+      // here previously created accounts the driver could never log into —
+      // reject clearly instead of silently no-op'ing the change.
+      if (pin && pin.trim().length > 0 && pin.trim().length !== 6) {
+        return new Response(
+          JSON.stringify({ error: "PIN must be exactly 6 digits." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+
       const updatePayload: Record<string, any> = {};
       if (full_name) updatePayload.full_name = full_name.trim();
       if (driver_id) updatePayload.driver_id = driver_id.trim();
       if (phone !== undefined) updatePayload.phone = phone.trim();
-      if (pin && pin.trim().length >= 4) updatePayload.pin_hash = pin.trim();
+      if (pin && pin.trim().length === 6) updatePayload.pin_hash = pin.trim();
 
       const { data: updatedDriver, error: updateError } = await supabaseAdmin
         .from("drivers")
         .update(updatePayload)
         .eq("id", targetId)
+        .eq("organization_id", callerOrgId)
         .select()
         .single();
 
@@ -135,11 +194,11 @@ serve(async (req: Request) => {
 
       // If PIN is provided or username changed, update Auth user credentials
       const authUpdates: Record<string, any> = {};
-      if (pin && pin.trim().length >= 4) {
+      if (pin && pin.trim().length === 6) {
         authUpdates.password = pin.trim();
       }
       if (driver_id) {
-        const cleanEmail = `${driver_id.trim().toLowerCase()}@driver.abtso`;
+        const cleanEmail = `${driver_id.trim().toLowerCase()}@${orgSlug}.driver.internal`;
         authUpdates.email = cleanEmail;
       }
 
@@ -166,31 +225,37 @@ serve(async (req: Request) => {
       );
     }
 
-    if (pin.trim().length < 4) {
+    // Must match exactly what the driver app's login screen requires (6
+    // digits) — a shorter PIN would let this account be created but never
+    // actually logged into.
+    if (pin.trim().length !== 6) {
       return new Response(
-        JSON.stringify({ error: "PIN must be at least 4 digits" }),
+        JSON.stringify({ error: "PIN must be exactly 6 digits" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const cleanDriverId = driver_id.trim().toUpperCase();
 
-    // Pre-flight: Check for duplicate driver_id
+    // Pre-flight: Check for duplicate driver_id — scoped to the caller's own
+    // company, since driver_id is only unique per organization (migration 033).
     const { data: existing } = await supabaseAdmin
       .from("drivers")
       .select("driver_id")
       .eq("driver_id", cleanDriverId)
+      .eq("organization_id", callerOrgId)
       .maybeSingle();
 
     if (existing) {
       return new Response(
-        JSON.stringify({ error: `Driver ID ${cleanDriverId} already exists.` }),
+        JSON.stringify({ error: `Driver ID ${cleanDriverId} already exists in your company.` }),
         { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Synthetic email for Supabase Auth (internal use only)
-    const authEmail = `${cleanDriverId.toLowerCase()}@driver.abtso`;
+    // Synthetic email for Supabase Auth (internal use only) — namespaced by
+    // company slug so two companies can each have their own "DRV-001".
+    const authEmail = `${cleanDriverId.toLowerCase()}@${orgSlug}.driver.internal`;
 
     // Create Supabase Auth user
     const { data: authUser, error: createAuthError } = await supabaseAdmin.auth.admin.createUser({
@@ -218,6 +283,7 @@ serve(async (req: Request) => {
       .from("drivers")
       .insert({
         id: authUser.user.id,
+        organization_id: callerOrgId,
         driver_id: cleanDriverId,
         pin_hash: pin.trim(),
         full_name: full_name.trim(),

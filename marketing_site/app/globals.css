@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+/* Same brand palette as the admin dashboard (admin_dashboard/src/index.css)
+   — Charcoal / Brand Red / White, nothing else. Keeping the marketing site
+   and the product visually the same family, not a separate "marketing
+   palette" that would feel disconnected once a visitor converts. */
+:root {
+  --brand-red: #cc0000;
+  --brand-red-dark: #a30000;
+  --brand-red-light: rgba(204, 0, 0, 0.08);
+  --charcoal: #333333;
+  --charcoal-mid: #555555;
+  --charcoal-light: #888888;
+
+  --bg: #ffffff;
+  --bg-alt: #fafafa;
+  --border-color: #e5e5e5;
+
+  --color-background: var(--bg);
+  --color-foreground: var(--charcoal);
+}
+
+@theme inline {
+  --color-brand-red: var(--brand-red);
+  --color-brand-red-dark: var(--brand-red-dark);
+  --color-charcoal: var(--charcoal);
+  --color-charcoal-mid: var(--charcoal-mid);
+  --color-charcoal-light: var(--charcoal-light);
+  --color-bg: var(--bg);
+  --color-bg-alt: var(--bg-alt);
+  --color-border: var(--border-color);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--bg);
+  color: var(--charcoal);
+  font-family: var(--font-geist-sans), "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--brand-red);
+  color: #fff;
+}

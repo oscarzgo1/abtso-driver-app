@@ -10,7 +10,7 @@ async function run() {
 
   // Authenticate as admin to bypass RLS policies
   const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-    email: 'admin@abtso.co.uk',
+    email: 'admin@example.com',
     password: 'admin123'
   });
 

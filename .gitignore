@@ -11,6 +11,7 @@ driver_app/android/local.properties
 admin_dashboard/node_modules/
 admin_dashboard/dist/
 admin_dashboard/.env
+admin_dashboard/.env.local
 
 # General exclusions
 .DS_Store

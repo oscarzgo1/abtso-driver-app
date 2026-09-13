@@ -1,11 +1,108 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap');
+/* Inter, not Outfit — Outfit's rounded-geometric letterforms read as
+   friendly/consumer-app rather than the crisp, neutral, high-legibility
+   look expected of a "high quality" B2B dashboard (Inter is the de facto
+   standard for that register — Linear, Vercel, Stripe's own dashboard,
+   etc). Same weight range pulled (300–800) so every existing font-*
+   utility class keeps working unchanged. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;700&display=swap');
+
+/* Explicit cascade-layer order — must come before anything that puts
+   rules into these layers. Without this, layers take priority in
+   first-declared order, which would put `base` (declared further down,
+   after `utilities`) ABOVE utilities and let it win — the opposite of
+   what a preflight-style base layer needs (utilities must be able to
+   override it). This pins theme < base < utilities regardless of where
+   each layer's rules physically appear in the file. */
+@layer theme, base, utilities;
+
+/* Tailwind, utilities-only: the rest of this file is a mature hand-written
+   design system with no global box-sizing/margin reset of its own — pulling
+   in Tailwind's preflight would silently change sizing/spacing across the
+   whole dashboard. Importing only theme+utilities gets shadcn components
+   (which are plain utility classes) rendering correctly without that risk. */
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* Tailwind v4 CSS-first theme tokens, mapped to Tachyo's real brand
+   colors (see :root below) instead of shadcn's default neutral/dark
+   palette. Any --color-* here auto-generates the matching bg-/text-/
+   border-/ring- utilities Tailwind v4 needs — this is what lets shadcn
+   component copy-pastes (Popover, Command, DropdownMenu, Checkbox, etc.)
+   render correctly with brand colors instead of invisible/undefined
+   ones, without hand-rewriting every className in every copied file. */
+@theme {
+  --color-background: var(--bg);
+  --color-foreground: var(--charcoal);
+  --color-card: var(--card-bg);
+  --color-card-foreground: var(--charcoal);
+  --color-popover: var(--card-bg);
+  --color-popover-foreground: var(--charcoal);
+  --color-primary: var(--brand-red);
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: var(--card-bg-hover);
+  --color-secondary-foreground: var(--charcoal);
+  --color-muted: var(--card-bg-hover);
+  --color-muted-foreground: var(--charcoal-light);
+  --color-accent: var(--brand-red-light);
+  --color-accent-foreground: var(--brand-red);
+  --color-destructive: #DC2626;
+  --color-destructive-foreground: #FFFFFF;
+  --color-border: var(--border-color);
+  --color-input: var(--border-color);
+  --color-ring: var(--brand-red);
+}
+
+/* Narrow form-control reset — the exact "forms" slice of Tailwind's own
+   preflight (button/input/select/textarea appearance only), not the full
+   preflight. Without this, a plain <button> or <input> with no explicit
+   background/border of its own (e.g. shadcn's "ghost" Button variant,
+   which assumes preflight already zeroed this out) falls back to the
+   browser's native 3D button chrome / default input border instead of
+   looking blank until a utility class colors it in. Every one of
+   Tachyo's own hand-written controls (.btn, .input-field, .nav-item,
+   etc.) already sets its own explicit background/border/padding, so
+   this reset only affects elements that don't — precisely the shadcn
+   copy-pastes that need it. This does NOT touch box-sizing, margins, or
+   headings, so it carries none of the layout-wide risk full preflight
+   would (see note above the Tailwind imports).  */
+@layer base {
+  body {
+    font-family: 'Geist Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer base {
+  button, input, optgroup, select, textarea {
+    font-family: inherit;
+    font-size: 100%;
+    font-weight: inherit;
+    line-height: inherit;
+    color: inherit;
+    margin: 0;
+    padding: 0;
+    border-width: 0;
+    border-style: solid;
+    border-color: currentColor;
+  }
+  button, select {
+    text-transform: none;
+  }
+  button, [type='button'], [type='reset'], [type='submit'] {
+    -webkit-appearance: button;
+    appearance: button;
+    background-color: transparent;
+    background-image: none;
+  }
+}
 
 :root {
-  font-family: 'Outfit', sans-serif;
+  font-family: 'Inter', sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
-  /* ── ABTSO Brand Palette (Concept B Logo) ──────────────────
+  /* ── Brand Palette (Concept B Logo) ──────────────────
      White · Charcoal #333333 · Brand Red #CC0000
   ─────────────────────────────────────────────────────────── */
   --brand-red:       #CC0000;
@@ -17,12 +114,17 @@
 
   --bg:              #FFFFFF;
   --bg-sidebar:      #FAFAFA;
+  /* Translucent sidebar fill, paired with a backdrop-filter blur for a
+     glass effect — a separate rgba token rather than adding alpha to
+     --bg-sidebar itself, since that hex is still used solid elsewhere. */
+  --bg-sidebar-glass: rgba(250, 250, 250, 0.65);
   --text-primary:    #333333;
   --text-secondary:  #555555;
   --text-muted:      #888888;
   --border-color:    #E0E0E0;
   --card-bg:         #FFFFFF;
   --card-bg-hover:   #F5F5F5;
+  --card-bg-glass:   rgba(255, 255, 255, 0.78);
   --input-bg:        #F5F5F5;
 
   --btn-primary-bg:   #333333;
@@ -35,7 +137,11 @@
   background-color: var(--bg);
 }
 
-/* No dark-mode override — app is light-first to match brand */
+/* Dark mode overrides live at the end of this file, keyed off
+   [data-theme="dark"] on <html> (see src/components/ui/theme-toggle.tsx) —
+   kept there rather than interleaved here so this light palette (still
+   the default/primary brand experience) stays the readable source of
+   truth. */
 
 body {
   margin: 0;
@@ -80,7 +186,7 @@ body {
   box-shadow: none !important;
 }
 .leaflet-bar a {
-  background-color: #FFFFFF !important;
+  background-color: var(--card-bg) !important;
   color: var(--charcoal) !important;
   border-bottom: 1px solid var(--border-color) !important;
 }
@@ -88,31 +194,32 @@ body {
   background-color: var(--card-bg-hover) !important;
 }
 .leaflet-popup-content-wrapper {
-  background: #FFFFFF !important;
+  background: var(--card-bg) !important;
   color: var(--charcoal) !important;
   border: 1px solid var(--border-color) !important;
   border-radius: 8px !important;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1) !important;
 }
 .leaflet-popup-tip {
-  background: #FFFFFF !important;
+  background: var(--card-bg) !important;
 }
 
-/* Active alert pulse — brand red */
+/* Active alert pulse — brand red. Only pulses the glow: the old version
+   also pulsed `background-color` down to 6-14% opacity red via
+   `!important`, which stomped the Alert component's solid `#DC2626` fill
+   for unacknowledged SOS cards — leaving white alert-title text sitting on
+   a near-transparent (mostly page-background-coloured) card, i.e. barely
+   readable. Background now stays fully solid; only the glow pulses. */
 @keyframes alertPulse {
   0%, 100% {
-    background-color: rgba(204, 0, 0, 0.06);
-    border-color: rgba(204, 0, 0, 0.25);
+    box-shadow: 0 0 0 0 rgba(204, 0, 0, 0.45);
   }
   50% {
-    background-color: rgba(204, 0, 0, 0.14);
-    border-color: rgba(204, 0, 0, 0.7);
-    box-shadow: 0 0 12px rgba(204, 0, 0, 0.2);
+    box-shadow: 0 0 16px 3px rgba(204, 0, 0, 0.65);
   }
 }
 .alert-pulse-card {
-  animation: alertPulse 2s infinite ease-in-out;
-  border: 1px solid rgba(204, 0, 0, 0.25) !important;
+  animation: alertPulse 1.8s infinite ease-in-out;
 }
 
 /* Driver marker pulse — charcoal for moving, brand red for idle */
@@ -340,7 +447,7 @@ body {
 }
 
 .input-field {
-  background: #F5F5F5;
+  background: var(--input-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   color: var(--charcoal);
@@ -351,12 +458,12 @@ body {
 }
 .input-field:focus {
   outline: none;
-  border-color: #333333;
+  border-color: var(--charcoal);
 }
 
 .select-field {
   appearance: none;
-  background: #F5F5F5;
+  background: var(--input-bg);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   color: var(--charcoal);
@@ -368,16 +475,30 @@ body {
 }
 .select-field:focus {
   outline: none;
-  border-color: #333333;
+  border-color: var(--charcoal);
 }
 
 /* ── Sidebar & Navigation ────────────────────────────────── */
+/* Desktop/mobile display toggle for the collapsible sidebar component,
+   handled here rather than via Tailwind's hidden/md:flex/md:hidden utilities
+   — in this project's utilities-only Tailwind setup (no preflight) those
+   don't reliably override each other's `display`, so the desktop and mobile
+   variants ended up rendering simultaneously. Plain, unlayered CSS always
+   wins the cascade, so it's the reliable choice here. */
+.sidebar-desktop-only { display: none; }
+.sidebar-mobile-only { display: flex; }
+@media (min-width: 768px) {
+  .sidebar-desktop-only { display: flex; }
+  .sidebar-mobile-only { display: none; }
+}
+
 .sidebar {
-  border-right: 1px solid #E5E7EB;
   height: 100vh;
   position: sticky;
   top: 0;
-  background: #FFFFFF;
+  background: var(--bg-sidebar-glass);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   box-shadow: none;
 }
 
@@ -392,35 +513,42 @@ body {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  color: #475569;
+  color: var(--charcoal-mid);
   font-weight: 600;
   cursor: pointer;
+  /* These are <a> tags now (for the collapsible sidebar), which carry a
+     default underline — this is a nav row, not inline text, so drop it. */
+  text-decoration: none;
   transition: background-color 0.16s ease-out, color 0.16s ease-out,
-    border-left-color 0.2s ease-out, transform 0.12s ease-out;
+    border-left-color 0.2s ease-out, transform 0.12s ease-out,
+    box-shadow 0.16s ease-out;
   font-size: 13.5px;
 }
 .nav-item:hover {
-  background: #F1F5F9;
-  color: #334155;
+  background: var(--card-bg-hover);
+  color: var(--charcoal);
   /* Nudges the whole row toward the red accent edge — a small directional
      cue that reads as "this is clickable" without a border or shadow. */
   transform: translateX(3px);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
 }
 .nav-item:active {
   transform: translateX(3px) scale(0.98);
   transition-duration: 0.05s;
 }
 .nav-item.active {
-  background: #FEF2F2;
-  color: #B91C1C;
+  background: var(--brand-red-light);
+  color: var(--brand-red);
   font-weight: 700;
-  border-left-color: #DC2626;
+  border-left-color: var(--brand-red);
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.18);
 }
 .nav-item.active:hover {
   /* The active row already sits at the front of the stack (red border,
      tinted fill) — sliding it too would fight that, not reinforce it. */
   transform: none;
-  background: #FEF2F2;
+  background: var(--brand-red-mid);
+  box-shadow: 0 4px 14px rgba(220, 38, 38, 0.24);
 }
 
 /* Bell icon wrapper — carries the unread dot */
@@ -465,17 +593,6 @@ body {
 .nav-item:hover .nav-dot { box-shadow: 0 0 0 2px #F1F5F9; }
 .nav-item.active .nav-dot { box-shadow: 0 0 0 2px #FEF2F2; }
 
-/* Sidebar header */
-.sidebar-title {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1.5;
-  text-transform: uppercase;
-  letter-spacing: 1.6px;
-  color: #64748B;
-}
-
 /* ── Tables ──────────────────────────────────────────────── */
 .table-container {
   overflow-x: auto;
@@ -490,7 +607,7 @@ body {
 }
 
 .data-table th {
-  background: #FAFAFA;
+  background: var(--card-bg-hover);
   color: var(--charcoal-light);
   font-size: 10px;
   font-weight: 800;
@@ -512,21 +629,20 @@ body {
 }
 
 .data-table tr:hover td {
-  background: #F5F5F5;
+  background: var(--card-bg-hover);
 }
 
-.agency-group-header-row td {
-  background: #F5F4FE;
-  padding: 8px 16px;
-  border-bottom: 1px solid #E4E1FB;
+/* Scoped size-up for tables that need to read and edit comfortably at a
+   glance (currently just Shift Revenue) — a modifier rather than changing
+   .data-table itself, since every other table in the app relies on the
+   compact default. */
+.data-table--lg th {
+  font-size: 11px;
+  padding: 14px 18px;
 }
-
-.agency-group-header-row:hover td {
-  background: #F5F4FE;
-}
-
-.agency-group-header-row:first-child td {
-  border-top: none;
+.data-table--lg td {
+  font-size: 14.5px;
+  padding: 16px 18px;
 }
 
 .stats-grid {
@@ -549,6 +665,26 @@ body {
   animation: spin 1s linear infinite;
 }
 
+/* Plays once on mount — used by every icon in animated-state-icons.tsx,
+   which are conditionally mounted rather than prop-toggled (see the file's
+   header comment for why). */
+@keyframes state-icon-pop-in {
+  from { opacity: 0; transform: scale(0.5); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* NotificationIcon's ring flourish — replayed by remounting via a `key`
+   change, not by a prop toggle (see animated-state-icons.tsx). */
+@keyframes bell-shake {
+  0% { transform: rotate(0deg); }
+  15% { transform: rotate(8deg); }
+  30% { transform: rotate(-8deg); }
+  45% { transform: rotate(6deg); }
+  60% { transform: rotate(-6deg); }
+  80% { transform: rotate(3deg); }
+  100% { transform: rotate(0deg); }
+}
+
 /* ── Admin Login — split-screen console ─────────────────── */
 .login-shell {
   min-height: 100vh;
@@ -557,6 +693,12 @@ body {
   justify-content: center;
   padding: 24px;
   background-color: #273142;
+  /* Warmer, more humanist than the dashboard's default Geist Sans — see
+     the import comment in main.tsx. Everything in this auth-flow family
+     (login, register company, save codes, set new password all share
+     .login-shell) inherits it, since font-family: inherit is how every
+     descendant control in this app already picks up its font. */
+  font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   /* Placeholder map texture: swap the two background layers below for a
      world-map SVG asset when one is available. */
   background-image:
@@ -567,10 +709,10 @@ body {
 
 .login-card {
   display: grid;
-  grid-template-columns: minmax(0, 452px) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   width: 100%;
   max-width: 1020px;
-  background: #FFFFFF;
+  background: var(--card-bg);
   border-radius: 16px;
   overflow: hidden;
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.55);
@@ -615,7 +757,7 @@ body {
 .login-input {
   width: 100%;
   box-sizing: border-box;
-  background: #F1F3F5;
+  background: var(--input-bg);
   border: 1px solid transparent;
   border-radius: 10px;
   padding: 12px 14px 12px 42px;
@@ -624,10 +766,10 @@ body {
   color: var(--charcoal);
   transition: border-color 0.15s, background 0.15s;
 }
-.login-input::placeholder { color: #A8AEB8; }
+.login-input::placeholder { color: var(--charcoal-light); }
 .login-input:focus {
   outline: none;
-  background: #FFFFFF;
+  background: var(--card-bg);
   border-color: var(--charcoal);
 }
 .login-input--with-toggle { padding-right: 44px; }
@@ -713,30 +855,11 @@ body {
   color: var(--charcoal-mid);
 }
 
-/* Right-hand branding column */
-.login-brand {
-  position: relative;
-  min-height: 520px;
-  background-size: cover;
-  background-position: center;
-}
-.login-brand-overlay {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    rgba(120, 0, 0, 0.92) 0%,
-    rgba(160, 12, 12, 0.48) 38%,
-    rgba(0, 0, 0, 0.10) 100%
-  );
-}
-
 @media (max-width: 860px) {
   .login-card {
     grid-template-columns: minmax(0, 1fr);
     max-width: 452px;
   }
-  .login-brand { display: none; }
   .login-form-col { padding: 36px 26px; }
 }
 
@@ -781,6 +904,18 @@ body {
   max-width: 452px;
 }
 
+/* Frosted-glass card variant — the standalone login form floating over
+   the full-bleed globe hero background needs to stay legible against
+   whatever's moving behind it, so it gets a translucent + blurred
+   surface instead of the normal solid --card-bg. */
+.login-card--glass {
+  background: var(--card-bg-glass);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.6);
+}
+
 /* -- KPI Cards (dashboard header row) --------------------- */
 .kpi-grid {
   display: grid;
@@ -792,12 +927,20 @@ body {
 .kpi-card {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 14px;
-  background: #FFFFFF;
+  background: var(--card-bg);
   border-radius: 12px;
   border-left: 4px solid #DC2626;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   padding: 16px 18px;
+}
+
+.kpi-card-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
 }
 
 .kpi-icon {
@@ -817,7 +960,7 @@ body {
   margin: 0;
   font-size: 22px;
   font-weight: 800;
-  color: #1E293B;
+  color: var(--charcoal);
   line-height: 1.2;
   /* Values are short numbers in practice (counts, currency). Wrapping is a
      fallback for an unusually long one, not the intended layout — that
@@ -827,7 +970,7 @@ body {
 
 .kpi-label {
   font-size: 11.5px;
-  color: #94A3B8;
+  color: var(--charcoal-light);
 }
 
 .kpi-trend-col {
@@ -852,11 +995,160 @@ body {
 .kpi-trend--down { background: #FEF2F2; color: #DC2626; }
 .kpi-trend--flat { background: #F1F5F9; color: #64748B; }
 
+/* -- Analytics tab ------------------------------------------
+   Structure/spacing deliberately mirrors the reference catalogue
+   component's own Tailwind spec (rounded-3xl cards, gap-8, max-w-6xl,
+   rounded-2xl KPI tiles with no left accent strip) — only the palette
+   is Tachyo's (red accents instead of the reference's neutral zinc),
+   and the content is real fleet/payroll data instead of demo SaaS
+   metrics. See analytics-kpi-tile below for why change badges are
+   omitted on those four cards. */
+.analytics-container {
+  max-width: 1152px;
+  margin: 0;
+  width: 100%;
+}
+
+.analytics-chart-card {
+  background: var(--card-bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 24px;
+  padding: 32px;
+}
+
+.analytics-kpi-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--charcoal-light);
+  margin: 0 0 8px;
+}
+
+.analytics-kpi-value {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--charcoal);
+  margin: 0;
+}
+
+/* Profitability Cockpit — one compact, read-only row of five stats (no
+   click/active states; there's a single chart below now, not a
+   metric-switcher choosing what it plots). */
+.cockpit-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+@media (min-width: 700px) {
+  .cockpit-kpi-strip { grid-template-columns: repeat(5, 1fr); }
+}
+
+.cockpit-kpi-tile {
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+  font: inherit;
+}
+.cockpit-kpi-tile:hover {
+  background: var(--card-bg-hover);
+}
+.cockpit-kpi-tile--active {
+  background: var(--brand-red-light);
+  border-color: var(--brand-red);
+}
+.cockpit-kpi-tile--active:hover {
+  background: var(--brand-red-light);
+}
+
+/* -- Settings modal: left nav rail --------------------------
+   Adapted from the "v-card-17" catalogue pattern's sidebar-nav +
+   detail-panel layout — widened from its original compact w-36/max-w-sm
+   card since our panels hold real tables/forms (esp. Depots), not just a
+   title + one line of description. */
+/* Adapted from the "Vertical Settings Tabs" catalogue component
+   (cnippet-dev, v-tabs-13) — a vertical tab list whose active state is a
+   left-edge accent bar next to bold ink text, rather than a filled pill.
+   Re-skinned from the reference's plain black bar to this app's own
+   brand red, matching the same accent already used for every other
+   "active" indicator in the dashboard (KPI tiles, filter chips). */
+.settings-nav {
+  width: 200px;
+  flex-shrink: 0;
+  padding: 16px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-nav-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--charcoal-light);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.14s ease-in-out, color 0.14s ease-in-out;
+}
+.settings-nav-btn:hover { background: var(--card-bg-hover); color: var(--charcoal); }
+.settings-nav-btn--active,
+.settings-nav-btn--active:hover {
+  background: none;
+  color: #fff;
+  font-weight: 800;
+}
+/* Sliding spring-physics highlight behind the active nav item — see
+   settingsNavHighlight in App.tsx (framer-motion layoutId). */
+.settings-nav-highlight {
+  position: absolute;
+  inset: 0;
+  background: var(--brand-red);
+  border-radius: 8px;
+  z-index: 0;
+}
+.settings-nav-btn-label {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-panel-header {
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+.settings-panel-header p:first-child {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--charcoal);
+  margin: 0 0 3px;
+}
+.settings-panel-header p:last-child {
+  font-size: 12px;
+  color: var(--charcoal-light);
+  margin: 0;
+}
+
 /* -- Live Dispatch: map container -------------------------- */
 .map-shell {
   position: relative;
   height: 480px;
-  background: #FFFFFF;
+  background: var(--card-bg);
   border-radius: 14px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   overflow: hidden;
@@ -871,7 +1163,7 @@ body {
   align-items: center;
   gap: 8px;
   padding: 9px 18px;
-  background: #FFFFFF;
+  background: var(--card-bg);
   border: none;
   border-radius: 999px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
@@ -911,7 +1203,7 @@ body {
 
 /* -- Telemetry feed card ------------------------------------ */
 .telemetry-card {
-  background: #FFFFFF;
+  background: var(--card-bg);
   border-radius: 14px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   overflow: hidden;
@@ -922,7 +1214,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 16px 20px;
-  border-bottom: 1px solid #F1F5F9;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .telemetry-header-icon {
@@ -956,80 +1248,154 @@ body {
   font-size: 10px;
 }
 
-.telemetry-empty-row td {
-  padding: 16px 20px 20px;
-  border-bottom: none;
+/* -- Telemetry: view tabs (Live Feed / All Activity) --------- */
+.telemetry-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  border-bottom: 1px solid #F1F5F9;
 }
 
-.telemetry-empty-box {
-  border: 1px solid #F1F5F9;
-  border-radius: 10px;
-  padding: 16px;
-  text-align: center;
+.telemetry-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 14px 11px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  font-family: inherit;
   font-size: 13px;
+  font-weight: 700;
   color: #94A3B8;
+  cursor: pointer;
+  transition: color 0.14s ease-in-out;
+}
+.telemetry-tab:hover { color: #475569; }
+.telemetry-tab--active {
+  color: #DC2626;
+  border-bottom-color: #DC2626;
 }
 
-/* -- Payroll Calculator: hero header ------------------------ */
-.payroll-hero {
-  position: relative;
-  border-radius: 16px;
-  overflow: hidden;
-  margin-bottom: 20px;
-  min-height: 128px;
-  background-size: cover;
-  background-position: center;
+/* -- Telemetry: filter bar ------------------------------------ */
+.telemetry-filter-bar {
   display: flex;
   align-items: center;
-}
-.payroll-hero-overlay {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, #FFFFFF 0%, #FFFFFF 38%, rgba(153, 27, 27, 0.55) 68%, rgba(127, 29, 29, 0.25) 100%);
-}
-.payroll-hero-content {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  flex-wrap: wrap;
-  padding: 22px 28px;
-}
-.payroll-hero-title {
-  margin: 0;
-  font-size: 21px;
-  font-weight: 800;
-  color: #991B1B;
-  letter-spacing: 0.3px;
-}
-.payroll-hero-title span {
-  color: #475569;
-  font-weight: 600;
-}
-.payroll-hero-tagline {
-  margin: 4px 0 0;
-  font-size: 12px;
-  color: #64748B;
-  max-width: 480px;
-}
-.payroll-hero-actions {
-  display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  padding: 16px 20px;
 }
 
-/* Shared red pill button, used in the hero and the action row below it */
+.telemetry-search-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  align-items: center;
+}
+.telemetry-search-wrap svg { position: absolute; left: 12px; color: #94A3B8; pointer-events: none; }
+.telemetry-search-wrap input {
+  width: 100%;
+  padding: 9px 12px 9px 34px;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: #334155;
+  background: var(--card-bg);
+}
+.telemetry-search-wrap input:focus { outline: none; border-color: #DC2626; }
+
+.telemetry-pill-select-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.telemetry-pill-select-wrap .telemetry-pill-icon {
+  position: absolute;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+.telemetry-pill-select-wrap .telemetry-pill-chevron {
+  position: absolute;
+  right: 10px;
+  color: #94A3B8;
+  pointer-events: none;
+}
+.telemetry-pill-select {
+  appearance: none;
+  padding: 9px 28px 9px 32px;
+  border: 1px solid #E2E8F0;
+  border-radius: 999px;
+  background: var(--card-bg);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.telemetry-pill-select:focus { outline: none; border-color: #DC2626; }
+
+.telemetry-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #DC2626;
+  display: inline-block;
+}
+
+.telemetry-today-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 14px;
+  border: 1px solid #E2E8F0;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.telemetry-filter-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  background: var(--card-bg);
+  color: #64748B;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.telemetry-filter-icon-btn:hover { background: #F8FAFC; }
+
+/* -- Telemetry: sortable column headers ------------------------ */
+.telemetry-sort-th {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.telemetry-sort-th:hover { color: #475569; }
+.telemetry-sort-th svg { opacity: 0.5; }
+.telemetry-sort-th--active svg { opacity: 1; color: #DC2626; }
+
+/* Shared red pill button, used across the Payroll Calculator's header and action row */
 .payroll-pill-btn {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   padding: 9px 16px;
-  background: #B91C1C;
+  background: var(--brand-red);
   color: #FFFFFF;
-  border: 1px solid #B91C1C;
+  border: 1px solid var(--brand-red);
   border-radius: 999px;
   font-family: inherit;
   font-size: 11px;
@@ -1040,24 +1406,24 @@ body {
   white-space: nowrap;
   transition: background-color 0.14s ease-in-out, transform 0.08s;
 }
-.payroll-pill-btn:hover:not(:disabled) { background: #991B1B; }
+.payroll-pill-btn:hover:not(:disabled) { background: #AA0000; }
 .payroll-pill-btn:active:not(:disabled) { transform: translateY(1px); }
 .payroll-pill-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .payroll-pill-btn--outline {
-  background: #FFFFFF;
-  color: #B91C1C;
+  background: var(--card-bg);
+  color: var(--brand-red);
 }
-.payroll-pill-btn--outline:hover:not(:disabled) { background: #FEF2F2; }
+.payroll-pill-btn--outline:hover:not(:disabled) { background: var(--brand-red-light); }
 
 .payroll-pill-btn--active {
-  background: #7F1D1D;
-  border-color: #7F1D1D;
+  background: #8A0000;
+  border-color: #8A0000;
 }
 
 .payroll-pill-badge {
-  background: #FFFFFF;
-  color: #B91C1C;
+  background: var(--card-bg);
+  color: var(--brand-red);
   border-radius: 999px;
   padding: 1px 7px;
   font-size: 10px;
@@ -1071,7 +1437,7 @@ body {
   align-items: flex-end;
   gap: 18px;
   flex-wrap: wrap;
-  background: #FFFFFF;
+  background: var(--card-bg);
   border-radius: 14px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   padding: 18px 20px;
@@ -1092,7 +1458,7 @@ body {
 .payroll-input-icon {
   position: absolute;
   left: 12px;
-  color: #94A3B8;
+  color: var(--charcoal-light);
   pointer-events: none;
   display: flex;
 }
@@ -1104,7 +1470,7 @@ body {
 .payroll-input-chevron {
   position: absolute;
   right: 12px;
-  color: #94A3B8;
+  color: var(--charcoal-light);
   pointer-events: none;
 }
 
@@ -1119,11 +1485,11 @@ body {
   padding: 3px;
   background: none;
   border: 0;
-  color: #94A3B8;
+  color: var(--charcoal-light);
   cursor: pointer;
   border-radius: 50%;
 }
-.payroll-driver-clear:hover { background: #F1F5F9; color: #475569; }
+.payroll-driver-clear:hover { background: var(--card-bg-hover); color: var(--charcoal-mid); }
 
 .payroll-driver-dropdown {
   position: absolute;
@@ -1131,8 +1497,8 @@ body {
   left: 0;
   right: 0;
   z-index: 40;
-  background: #FFFFFF;
-  border: 1px solid #E5E7EB;
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
   border-radius: 10px;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
   max-height: 220px;
@@ -1143,18 +1509,18 @@ body {
   padding: 8px 10px;
   border-radius: 6px;
   font-size: 13px;
-  color: #334155;
+  color: var(--charcoal);
   cursor: pointer;
 }
 .payroll-driver-option:hover,
 .payroll-driver-option--highlighted {
-  background: #FEF2F2;
-  color: #991B1B;
+  background: var(--brand-red-light);
+  color: var(--brand-red);
 }
 .payroll-driver-empty {
   padding: 10px;
   font-size: 12px;
-  color: #94A3B8;
+  color: var(--charcoal-light);
   text-align: center;
 }
 
@@ -1180,39 +1546,84 @@ body {
 }
 
 /* -- Alert banners ---------------------------------------------- */
-.payroll-alert-banner {
-  border-radius: 12px;
-  padding: 16px 20px;
-  margin-bottom: 18px;
+/* Flags & Reviews — was three permanently-visible full-width banners
+   (Critical Anomalies / Night Outs Detected / Week Boundary Splits),
+   then a hover-revealed panel off a text-pill button; now a plain
+   notification-bell icon button with a red count badge, opened on
+   click via Popover (the same Popover primitive already used
+   throughout this file) rather than CSS :hover — click is more
+   reliable than hover on touch devices and doesn't require a
+   focus-within workaround for keyboard users. */
+.flags-bell-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--charcoal);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.flags-bell-btn:hover { background: var(--card-bg-hover); }
+.flags-bell-dot {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--brand-red);
   color: #FFFFFF;
-}
-.payroll-alert-banner--danger {
-  background: linear-gradient(90deg, #991B1B 0%, #7F1D1D 100%);
-}
-.payroll-alert-banner--warning {
-  background: linear-gradient(90deg, #B45309 0%, #92400E 100%);
-}
-.payroll-alert-header {
+  font-size: 9px;
+  font-weight: 800;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  font-size: 13px;
+  justify-content: center;
+  line-height: 1;
+  border: 2px solid var(--card-bg);
+}
+.flags-review-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 8px 4px;
+  font-size: 10px;
   font-weight: 800;
-  letter-spacing: 0.3px;
   text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--charcoal-light);
 }
-.payroll-alert-list {
-  margin: 0;
-  padding-left: 20px;
-  font-size: 13px;
-  line-height: 1.6;
+.flags-review-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 8px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--charcoal);
+  line-height: 1.4;
 }
-.payroll-alert-list li { opacity: 0.95; }
+.flags-review-item:hover { background: var(--card-bg-hover); }
+.flags-review-item strong { color: var(--charcoal); }
+.flags-review-item em { color: var(--charcoal-light); font-style: normal; }
+.flags-review-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--charcoal-light);
+}
 
 /* -- Payroll table ------------------------------------------------ */
 .payroll-table-wrap {
-  background: #FFFFFF;
+  background: var(--card-bg);
   border-radius: 14px 14px 0 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   overflow: auto;
@@ -1223,7 +1634,7 @@ body {
   text-align: left;
 }
 .payroll-table thead th {
-  background: #991B1B;
+  background: var(--brand-red);
   color: #FFFFFF;
   font-size: 10px;
   font-weight: 800;
@@ -1235,21 +1646,21 @@ body {
 .payroll-table tbody td {
   padding: 11px 14px;
   font-size: 13px;
-  color: #334155;
-  border-bottom: 1px solid #F1F5F9;
+  color: var(--charcoal);
+  border-bottom: 1px solid var(--border-color);
   vertical-align: top;
 }
-.payroll-table tbody tr:nth-child(even) td { background: #FAFAFA; }
-.payroll-table tbody tr:hover td { background: #FEF2F2; }
+.payroll-table tbody tr:nth-child(even) td { background: var(--card-bg-hover); }
+.payroll-table tbody tr:hover td { background: var(--brand-red-light); }
 .payroll-table tbody tr:last-child td { border-bottom: none; }
 
 .payroll-agency-badge {
   display: inline-block;
   padding: 2px 10px;
   border-radius: 999px;
-  border: 1px solid #FCA5A5;
-  color: #B91C1C;
-  background: #FEF2F2;
+  border: 1px solid rgba(204, 0, 0, 0.3);
+  color: var(--brand-red);
+  background: var(--brand-red-light);
   font-size: 11px;
   font-weight: 700;
 }
@@ -1260,16 +1671,16 @@ body {
   gap: 4px;
   padding: 4px 9px;
   border-radius: 999px;
-  border: 1px solid #FCA5A5;
-  background: #FFFFFF;
-  color: #B91C1C;
+  border: 1px solid rgba(204, 0, 0, 0.3);
+  background: var(--card-bg);
+  color: var(--brand-red);
   font-family: inherit;
   font-size: 10.5px;
   font-weight: 700;
   cursor: pointer;
   white-space: nowrap;
 }
-.payroll-mini-btn:hover { background: #FEF2F2; }
+.payroll-mini-btn:hover { background: var(--brand-red-light); }
 
 /* -- Totals footer -------------------------------------------------- */
 .payroll-totals-bar {
@@ -1278,8 +1689,8 @@ body {
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  background: #FFFFFF;
-  border-top: 1px solid #F1F5F9;
+  background: var(--card-bg);
+  border-top: 1px solid var(--border-color);
   border-radius: 0 0 14px 14px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   padding: 16px 20px;
@@ -1288,7 +1699,7 @@ body {
 .payroll-totals-label {
   font-size: 12.5px;
   font-weight: 800;
-  color: #1E293B;
+  color: var(--charcoal);
 }
 .payroll-totals-stats {
   display: flex;
@@ -1300,18 +1711,95 @@ body {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.4px;
-  color: #94A3B8;
+  color: var(--charcoal-light);
 }
 .payroll-stat-value {
   font-size: 18px;
   font-weight: 800;
-  color: #1E293B;
+  color: var(--charcoal);
 }
-.payroll-stat-value--money { color: #991B1B; }
+.payroll-stat-value--money { color: var(--brand-red); }
 
-/* Required OpenFreeMap/OpenMapTiles/OSM map credit — kept small and subtle */
+/* Required OpenFreeMap/OpenMapTiles/OSM map credit — kept small and subtle.
+   Confirmed via computed styles: maplibre-gl-leaflet feeds its attribution
+   text into Leaflet's own attribution control rather than creating a
+   separate MapLibre one, so this single rule is the one actually shown. */
 .leaflet-control-attribution {
-  font-size: 9px;
-  padding: 1px 5px;
-  line-height: 1.4;
+  font-size: 8px;
+  padding: 0px 4px;
+  line-height: 1.3;
+  opacity: 0.75;
 }
+
+/* ============================================================
+   DARK MODE
+   ============================================================
+   Toggled by src/components/ui/theme-toggle.tsx, which sets
+   data-theme="dark" / "light" on <html> (or leaves it unset for
+   "System", which falls back to the OS preference below).
+
+   Redefining --charcoal/--charcoal-light/--charcoal-mid here covers the
+   .text-primary/.text-secondary/.text-muted utility classes used for
+   almost all text throughout this app "for free" — those two rulesets
+   are the highest-leverage part of this file. Everything after that is
+   explicit per-component background/border overrides for the surfaces
+   that use hardcoded hex instead of a variable (most of them, since this
+   app's color system predates most of these components) — the major,
+   frequently-seen surfaces are covered (sidebar, cards, tables, modals,
+   inputs, the login screen); a few rarely-touched or already-dark
+   surfaces (e.g. the Analytics goal card, already near-black) are left
+   as-is deliberately, not by oversight.
+   ============================================================ */
+
+/* "System" means no data-theme attribute at all — falls through to
+   whatever the OS prefers, via the media query below. An explicit
+   choice ("dark"/"light") always wins via the attribute selector. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --charcoal: #F4F4F5;
+    --charcoal-mid: #C4C4C8;
+    --charcoal-light: #9A9AA2;
+    --bg: #18181B;
+    --bg-sidebar: #1F1F23;
+    --bg-sidebar-glass: rgba(31, 31, 35, 0.65);
+    --text-primary: #F4F4F5;
+    --text-secondary: #C4C4C8;
+    --text-muted: #9A9AA2;
+    --border-color: #333338;
+    --card-bg: #232326;
+    --card-bg-hover: #2A2A2E;
+    --card-bg-glass: rgba(20, 20, 22, 0.62);
+    --input-bg: #2A2A2E;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --charcoal: #F4F4F5;
+  --charcoal-mid: #C4C4C8;
+  --charcoal-light: #9A9AA2;
+  --bg: #18181B;
+  --bg-sidebar: #1F1F23;
+  --bg-sidebar-glass: rgba(31, 31, 35, 0.65);
+  --text-primary: #F4F4F5;
+  --text-secondary: #C4C4C8;
+  --text-muted: #9A9AA2;
+  --border-color: #333338;
+  --card-bg: #232326;
+  --card-bg-hover: #2A2A2E;
+  --card-bg-glass: rgba(20, 20, 22, 0.62);
+  --input-bg: #2A2A2E;
+  color-scheme: dark;
+}
+
+/* Component surfaces below reference these same variables (instead of
+   the hardcoded hex they were written with) so they follow the switch
+   above automatically — no per-component dark/light duplication needed.
+   Values are unchanged in light mode (the variables still resolve to the
+   original light hex there); see the individual rules further up this
+   file for where each was edited. */
+
+/* The wordmark is now rendered as icon-image + real text (see
+   BrandLogo.tsx) instead of one flat PNG, specifically so the icon can
+   stay brand red in dark mode while only the text goes white — the text
+   span uses var(--charcoal) directly and needs no override here. */

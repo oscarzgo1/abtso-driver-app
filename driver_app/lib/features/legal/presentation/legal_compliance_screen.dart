@@ -73,6 +73,19 @@ Location tracking only happens while you are clocked in on a shift — not befor
   ),
   PolicyPage(
     document: LegalDocument.privacyNotice,
+    title: 'How Your Data Is Protected',
+    body: '''SECURITY
+
+Your PIN is never stored as plain text — it's kept as a salted hash that even Tachyo staff can't reverse. Your employer's own dashboard accounts are separately protected with multi-factor authentication.
+
+Underneath the app, database-level security keeps your data walled off from every other company that uses Tachyo. This is enforced by the database itself, not just by the app — so it can't be bypassed by a bug or mistake in the app you're using.
+
+WHO HOSTS IT
+
+Tachyo runs on Supabase (database, authentication, and hosting, in the EU West / London region) and Vercel (application hosting). Both are contractually restricted to using your data only to provide their service to Tachyo — not for anything else.''',
+  ),
+  PolicyPage(
+    document: LegalDocument.privacyNotice,
     title: 'How Long It\'s Kept',
     body: '''Your location and shift history is kept for 12 months, mainly so that if there's ever a dispute about a shift's pay, or your employer wants to review performance over time, the record is still available. After 12 months it's deleted or anonymised, unless it's still needed for an active dispute.''',
   ),
@@ -121,6 +134,10 @@ See the separate Driver Privacy Notice in this app for how your data is collecte
 LIABILITY
 
 To the extent permitted by law, Tachyo is not liable for losses arising from your use of your own personal device, network connectivity issues outside Tachyo's control, or decisions your employer makes using data from the app. Nothing here limits liability for death or personal injury caused by negligence, fraud, or anything else that can't lawfully be limited.
+
+GOVERNING LAW
+
+These Terms of Use are governed by the law of England and Wales.
 
 CHANGES AND CONTACT
 

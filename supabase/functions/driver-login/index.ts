@@ -1,5 +1,5 @@
 // ============================================================
-// ABTSO Logistics — Edge Function: Driver Login
+// Edge Function: Driver Login
 // ============================================================
 // Authenticates drivers with Driver ID + PIN.
 // Uses a PostgreSQL RPC (verify_driver_pin) backed by pgcrypto

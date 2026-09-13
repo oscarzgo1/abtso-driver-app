@@ -746,12 +746,30 @@ class SettingsTab extends ConsumerStatefulWidget {
 class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingObserver {
   bool _isLocationGranted = false;
   bool _isBackgroundGranted = false;
+  String? _supportPhone1;
+  String? _supportPhone2;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _checkPermissions();
+    _loadSupportContacts();
+  }
+
+  /// Loads this driver's own company's support number(s) — see migration
+  /// 039. Never falls back to a fixed number here: an org with nothing set
+  /// simply shows no Support group, rather than a number that isn't theirs.
+  Future<void> _loadSupportContacts() async {
+    final driver = ref.read(authProvider).driver;
+    final organizationId = driver?['organization_id'] as String?;
+    final contacts = await SupabaseService.fetchOrgSupportContacts(organizationId);
+    if (mounted) {
+      setState(() {
+        _supportPhone1 = contacts['support_phone_1'];
+        _supportPhone2 = contacts['support_phone_2'];
+      });
+    }
   }
 
   @override
@@ -782,7 +800,7 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
     } catch (_) {}
   }
 
-  Future<void> _handleOpenSettings(bool _) async {
+  Future<void> _handleOpenSettings() async {
     await Geolocator.openAppSettings();
   }
 
@@ -964,6 +982,50 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
     );
   }
 
+  /// Same "did you mean that?" gate as the app-bar logout icon on Home —
+  /// this row is styled red/destructive, but previously fired on the very
+  /// first tap with no way back short of re-entering full credentials.
+  void _confirmLogout(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.logout_rounded, color: Color(0xFFFF3B30), size: 26),
+              SizedBox(width: 12),
+              Text('LOG OUT', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5, fontSize: 18)),
+            ],
+          ),
+          content: const Text(
+            'Are you sure you want to log out? You\'ll need your Company Code, Driver ID, and PIN to sign back in.',
+            style: TextStyle(fontSize: 14, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('CANCEL', style: TextStyle(color: Color(0xFF8E8E93), fontWeight: FontWeight.bold)),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                ref.read(authProvider.notifier).logout();
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFF3B30),
+                foregroundColor: Colors.white,
+                minimumSize: const Size(100, 40),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('LOG OUT'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _callPhone(String phoneNumber) async {
     final cleanNumber = phoneNumber.replaceAll(RegExp(r'[^0-9+]'), '');
     final uri = Uri.parse('tel:$cleanNumber');
@@ -1013,22 +1075,28 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
           children: [
             // ── GROUP 1: PERMISSIONS ──
+            // Plain tappable rows, not toggle switches — a switch implies
+            // it directly flips the permission, but Android/iOS don't let
+            // an app grant its own location permission; every tap here can
+            // only ever do one thing (open OS Settings), whichever way it's
+            // "switched". Showing the real status as text avoids that
+            // mismatch between what the control looks like and what it does.
             _buildSectionHeader('PERMISSIONS'),
             _buildSettingsGroup([
               _buildSettingsRow(
                 icon: Icons.location_on_outlined,
                 title: 'Location Access (Always)',
-                isToggle: true,
-                toggleValue: _isLocationGranted,
-                onToggle: _handleOpenSettings,
+                statusLabel: _isLocationGranted ? 'Granted' : 'Not granted',
+                statusGranted: _isLocationGranted,
+                onTap: _handleOpenSettings,
               ),
               _buildDivider(),
               _buildSettingsRow(
                 icon: Icons.sync_outlined,
                 title: 'Background Activity',
-                isToggle: true,
-                toggleValue: _isBackgroundGranted,
-                onToggle: _handleOpenSettings,
+                statusLabel: _isBackgroundGranted ? 'Granted' : 'Not granted',
+                statusGranted: _isBackgroundGranted,
+                onTap: _handleOpenSettings,
               ),
             ]),
             const SizedBox(height: 24),
@@ -1045,21 +1113,28 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
             const SizedBox(height: 24),
 
             // ── GROUP 3: SUPPORT ──
-            _buildSectionHeader('SUPPORT'),
-            _buildSettingsGroup([
-              _buildSettingsRow(
-                icon: Icons.phone_outlined,
-                title: 'Office: +44 7724 320498',
-                onTap: () => _callPhone('+44 7724 320498'),
-              ),
-              _buildDivider(),
-              _buildSettingsRow(
-                icon: Icons.phone_outlined,
-                title: 'Office: +44 7751 735184',
-                onTap: () => _callPhone('+44 7751 735184'),
-              ),
-            ]),
-            const SizedBox(height: 24),
+            // Only ever shows a row for a number this driver's own company
+            // has actually set (migration 039) — never a fixed number that
+            // might belong to a different employer.
+            if (_supportPhone1 != null || _supportPhone2 != null) ...[
+              _buildSectionHeader('SUPPORT'),
+              _buildSettingsGroup([
+                if (_supportPhone1 != null)
+                  _buildSettingsRow(
+                    icon: Icons.phone_outlined,
+                    title: 'Office: $_supportPhone1',
+                    onTap: () => _callPhone(_supportPhone1!),
+                  ),
+                if (_supportPhone1 != null && _supportPhone2 != null) _buildDivider(),
+                if (_supportPhone2 != null)
+                  _buildSettingsRow(
+                    icon: Icons.phone_outlined,
+                    title: 'Office: $_supportPhone2',
+                    onTap: () => _callPhone(_supportPhone2!),
+                  ),
+              ]),
+              const SizedBox(height: 24),
+            ],
 
             // ── GROUP 4: LEGAL & COMPLIANCE ──
             // One button per document — each opens straight to that
@@ -1092,7 +1167,7 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
                 icon: Icons.logout_rounded,
                 title: 'Log out',
                 isDestructive: true,
-                onTap: () => ref.read(authProvider.notifier).logout(),
+                onTap: () => _confirmLogout(context),
               ),
             ]),
             const SizedBox(height: 24),
@@ -1144,16 +1219,19 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
     required IconData icon,
     required String title,
     VoidCallback? onTap,
-    bool isToggle = false,
-    bool toggleValue = false,
-    ValueChanged<bool>? onToggle,
     bool isDestructive = false,
+    // Set for the two permission rows: shows the real OS-reported status as
+    // text (tapping always just opens OS Settings — no in-app control can
+    // grant the permission directly, so there's nothing to actually
+    // "switch"). Leave both null for a plain chevron row.
+    String? statusLabel,
+    bool statusGranted = false,
   }) {
     final Color itemColor = isDestructive ? const Color(0xFFFF3B30) : const Color(0xFF1C1C1E);
     final Color iconColor = isDestructive ? const Color(0xFFFF3B30) : const Color(0xFFCC0000);
 
     return InkWell(
-      onTap: isToggle ? () => onToggle?.call(!toggleValue) : onTap,
+      onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         constraints: const BoxConstraints(minHeight: 48),
@@ -1171,32 +1249,18 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
                 ),
               ),
             ),
-            if (isToggle)
-              // Plain Material Switch, not .adaptive — the adaptive variant
-              // renders the full-size Cupertino control on iOS/web (visibly
-              // larger than everything else on this screen) and hardcodes
-              // iOS system green, bypassing TachyoTheme's brand-red
-              // switchTheme entirely. Scaled down to sit comfortably next
-              // to the 20px row icons instead of dominating the row.
-              Transform.scale(
-                scale: 0.82,
-                child: Switch(
-                  value: toggleValue,
-                  // Fully explicit per-state colors here rather than relying
-                  // on TachyoTheme.switchTheme + convenience props together —
-                  // the two can silently disagree on precedence. White thumb
-                  // throughout; brand red track when on, light grey when off.
-                  thumbColor: const WidgetStatePropertyAll(Colors.white),
-                  trackColor: WidgetStateProperty.resolveWith((states) =>
-                      states.contains(WidgetState.selected)
-                          ? const Color(0xFFCC0000)
-                          : const Color(0xFFE5E5EA)),
-                  trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  onChanged: onToggle,
+            if (statusLabel != null) ...[
+              Text(
+                statusLabel,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: statusGranted ? const Color(0xFF2E7D32) : const Color(0xFF8E8E93),
                 ),
-              )
-            else if (!isDestructive)
+              ),
+              const SizedBox(width: 6),
+            ],
+            if (!isDestructive)
               const Icon(Icons.chevron_right, size: 18, color: Color(0xFFC7C7CC)),
           ],
         ),

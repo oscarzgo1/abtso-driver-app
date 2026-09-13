@@ -9,7 +9,7 @@ async function run() {
   console.log('--- Registering admin in Supabase auth system ---');
 
   const { data, error } = await supabase.auth.signUp({
-    email: 'admin@abtso.co.uk',
+    email: 'admin@example.com',
     password: 'admin123'
   });
 

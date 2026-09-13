@@ -13,6 +13,43 @@ import '../data/depot_model.dart';
 import '../data/shift_model.dart';
 import '../../auth/presentation/auth_provider.dart';
 
+/// A clock-in/clock-out tap made while offline, held locally until it can be
+/// sent to the server. Carries only what was actually captured on-device at
+/// the moment of the tap (real GPS + real timestamp) — never a fabricated
+/// shift id, pay figure, or duration, since those only exist once the server
+/// has accepted the action.
+class PendingShiftAction {
+  final String type; // 'clock_in' or 'clock_out'
+  final String? shiftId; // required for clock_out, absent for clock_in
+  final double latitude;
+  final double longitude;
+  final DateTime timestamp;
+
+  const PendingShiftAction({
+    required this.type,
+    this.shiftId,
+    required this.latitude,
+    required this.longitude,
+    required this.timestamp,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'type': type,
+        'shift_id': shiftId,
+        'latitude': latitude,
+        'longitude': longitude,
+        'timestamp': timestamp.toIso8601String(),
+      };
+
+  factory PendingShiftAction.fromJson(Map<String, dynamic> json) => PendingShiftAction(
+        type: json['type'] as String,
+        shiftId: json['shift_id'] as String?,
+        latitude: (json['latitude'] as num).toDouble(),
+        longitude: (json['longitude'] as num).toDouble(),
+        timestamp: DateTime.parse(json['timestamp'] as String),
+      );
+}
+
 class ShiftState {
   final List<Depot> depots;
   final bool isLoading;
@@ -24,6 +61,7 @@ class ShiftState {
   final DriverShift? lastCompletedShift;
   final String? errorMessage;
   final bool isPlaybackRunning;
+  final PendingShiftAction? pendingAction;
 
   const ShiftState({
     this.depots = const [],
@@ -36,6 +74,7 @@ class ShiftState {
     this.lastCompletedShift,
     this.errorMessage,
     this.isPlaybackRunning = false,
+    this.pendingAction,
   });
 
   ShiftState copyWith({
@@ -52,6 +91,8 @@ class ShiftState {
     String? errorMessage,
     bool clearErrorMessage = false,
     bool? isPlaybackRunning,
+    PendingShiftAction? pendingAction,
+    bool clearPendingAction = false,
   }) {
     return ShiftState(
       depots: depots ?? this.depots,
@@ -64,6 +105,7 @@ class ShiftState {
       lastCompletedShift: clearLastCompletedShift ? null : (lastCompletedShift ?? this.lastCompletedShift),
       errorMessage: clearErrorMessage ? null : (errorMessage ?? this.errorMessage),
       isPlaybackRunning: isPlaybackRunning ?? this.isPlaybackRunning,
+      pendingAction: clearPendingAction ? null : (pendingAction ?? this.pendingAction),
     );
   }
 }
@@ -90,14 +132,15 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
   Future<void> _init() async {
     await _loadOfflineQueue();
+    await _loadPendingAction();
     await fetchDepots();
     await loadActiveShift();
-    
+
     final driverId = SupabaseService.currentDriverId;
     if (driverId != null) {
       startRealtimeShiftListener(driverId);
     }
-    
+
     // Start listening to live location updates
     startRealtimeLocationListener();
   }
@@ -109,6 +152,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   // Filter to reject stale active shift stream updates on successful completion
   String? _lastCompletedShiftId;
   List<Map<String, dynamic>> _offlineQueue = [];
+  Timer? _pendingActionRetryTimer;
+  bool _isFlushingPendingAction = false;
 
   // Simulation Route Playback attributes
   Timer? _playbackTimer;
@@ -132,9 +177,10 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     state = state.copyWith(isLoading: true, clearErrorMessage: true);
     try {
       await _loadOfflineQueue();
+      await _loadPendingAction();
       await fetchDepots();
       await loadActiveShift();
-      
+
       final driverId = SupabaseService.currentDriverId;
       if (driverId != null) {
         startRealtimeShiftListener(driverId);
@@ -391,6 +437,140 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     }
   }
 
+  Future<void> _loadPendingAction() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final dataStr = prefs.getString('pending_shift_action');
+      if (dataStr != null) {
+        final action = PendingShiftAction.fromJson(jsonDecode(dataStr) as Map<String, dynamic>);
+        state = state.copyWith(pendingAction: action);
+        debugPrint('Restored offline ${action.type} awaiting sync (captured ${action.timestamp}).');
+        _startPendingActionRetryTimer();
+      }
+    } catch (e) {
+      debugPrint('Error loading pending shift action: $e');
+    }
+  }
+
+  Future<void> _savePendingAction(PendingShiftAction? action) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (action == null) {
+        await prefs.remove('pending_shift_action');
+      } else {
+        await prefs.setString('pending_shift_action', jsonEncode(action.toJson()));
+      }
+    } catch (e) {
+      debugPrint('Error saving pending shift action: $e');
+    }
+  }
+
+  void _startPendingActionRetryTimer() {
+    _pendingActionRetryTimer?.cancel();
+    _pendingActionRetryTimer = Timer.periodic(const Duration(seconds: 30), (_) => _flushPendingAction());
+  }
+
+  void _stopPendingActionRetryTimer() {
+    _pendingActionRetryTimer?.cancel();
+    _pendingActionRetryTimer = null;
+  }
+
+  /// Queues a clock-in/out tap that couldn't reach the server, so a driver
+  /// out of signal isn't blocked from recording it. Only the GPS/timestamp
+  /// captured at the moment of the tap is kept — no shift id, duration, or
+  /// pay is invented, since those don't exist until the server accepts it.
+  Future<void> _queuePendingAction(PendingShiftAction action) async {
+    state = state.copyWith(pendingAction: action, clearErrorMessage: true);
+    await _savePendingAction(action);
+    _startPendingActionRetryTimer();
+    debugPrint('Queued offline ${action.type} for later sync.');
+  }
+
+  /// Retries a queued clock-in/out against the server. Safe to call
+  /// speculatively (periodic timer, app resume, after a successful GPS
+  /// upload) — it's a no-op if there's nothing pending or another attempt
+  /// is already in flight, and it re-throws nothing: a failed attempt just
+  /// leaves the action queued for the next retry.
+  Future<void> _flushPendingAction() async {
+    final pending = state.pendingAction;
+    if (pending == null || SupabaseService.isMockMode || _isFlushingPendingAction) return;
+    _isFlushingPendingAction = true;
+
+    try {
+      if (pending.type == 'clock_in') {
+        Map<String, dynamic> result;
+        try {
+          final response = await SupabaseService.client.rpc('start_shift', params: {
+            'p_latitude': pending.latitude,
+            'p_longitude': pending.longitude,
+          });
+          result = response as Map<String, dynamic>;
+        } catch (_) {
+          result = {'success': false, 'error': 'RPC error'};
+        }
+
+        if (result['success'] != true) {
+          final driverId = SupabaseService.currentDriverId;
+          if (driverId == null) return; // Not logged in — retry once a session exists again.
+          await SupabaseService.client.from('shifts').insert({
+            'driver_id': driverId,
+            'start_time': pending.timestamp.toUtc().toIso8601String(),
+            'start_lat': pending.latitude,
+            'start_lng': pending.longitude,
+            'status': 'active',
+          });
+        }
+
+        state = state.copyWith(clearPendingAction: true);
+        await _savePendingAction(null);
+        _stopPendingActionRetryTimer();
+        debugPrint('✅ Offline clock-in synced successfully.');
+        await loadActiveShift();
+      } else if (pending.type == 'clock_out') {
+        if (pending.shiftId == null) {
+          // Nothing was ever confirmed server-side to close out — drop it.
+          state = state.copyWith(clearPendingAction: true);
+          await _savePendingAction(null);
+          _stopPendingActionRetryTimer();
+          return;
+        }
+
+        Map<String, dynamic> result;
+        try {
+          final response = await SupabaseService.client.rpc('end_shift', params: {
+            'p_shift_id': pending.shiftId,
+            'p_latitude': pending.latitude,
+            'p_longitude': pending.longitude,
+          });
+          result = response as Map<String, dynamic>;
+        } catch (_) {
+          result = {'success': false, 'error': 'RPC error'};
+        }
+
+        if (result['success'] != true) {
+          await SupabaseService.client.from('shifts').update({
+            'end_time': pending.timestamp.toUtc().toIso8601String(),
+            'end_lat': pending.latitude,
+            'end_lng': pending.longitude,
+            'status': 'completed',
+          }).eq('id', pending.shiftId!);
+        }
+
+        state = state.copyWith(clearPendingAction: true);
+        await _savePendingAction(null);
+        _stopPendingActionRetryTimer();
+        debugPrint('✅ Offline clock-out synced successfully.');
+        await _stopBackgroundTrackingService();
+        _stopGpsPingTimer();
+        await loadActiveShift();
+      }
+    } catch (e) {
+      debugPrint('Pending shift action still cannot reach the server, will retry: $e');
+    } finally {
+      _isFlushingPendingAction = false;
+    }
+  }
+
   /// Handles upload of background coordinates every 2 minutes
   Future<void> _maybeUploadPing(Position position, {bool forceUpload = false}) async {
     try {
@@ -434,6 +614,11 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
           // Attempt to sync offline queue if we have cached pings
           if (_offlineQueue.isNotEmpty) {
             _syncOfflineQueue();
+          }
+          // A successful upload is proof connectivity is back — retry any
+          // queued clock-out immediately rather than waiting on the timer.
+          if (state.pendingAction != null) {
+            _flushPendingAction();
           }
         } catch (e) {
           debugPrint('❌ GPS UPLOAD ERROR: $e');
@@ -605,7 +790,20 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         state = state.copyWith(errorMessage: result['error'] ?? 'Clock in failed');
       }
     } catch (e) {
-      state = state.copyWith(errorMessage: 'Connection error during clock in.');
+      // Couldn't reach the server at all — likely a driver out of signal.
+      // Queue the tap locally (with the real GPS/time already captured
+      // above) instead of just failing; it's retried automatically once
+      // connectivity returns.
+      if (!SupabaseService.isMockMode) {
+        await _queuePendingAction(PendingShiftAction(
+          type: 'clock_in',
+          latitude: pos.latitude,
+          longitude: pos.longitude,
+          timestamp: DateTime.now(),
+        ));
+      } else {
+        state = state.copyWith(errorMessage: 'Connection error during clock in.');
+      }
     } finally {
       state = state.copyWith(isLoading: false);
     }
@@ -691,7 +889,20 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         state = state.copyWith(errorMessage: result['error'] ?? 'Clock out failed');
       }
     } catch (e) {
-      state = state.copyWith(errorMessage: 'Connection error during clock out.');
+      // Same offline handling as clock-in — this time the shift being
+      // ended is already real and confirmed, so the active-shift panel
+      // stays exactly as it is; only the clock-out tap itself is queued.
+      if (!SupabaseService.isMockMode) {
+        await _queuePendingAction(PendingShiftAction(
+          type: 'clock_out',
+          shiftId: activeShift.id,
+          latitude: pos.latitude,
+          longitude: pos.longitude,
+          timestamp: DateTime.now(),
+        ));
+      } else {
+        state = state.copyWith(errorMessage: 'Connection error during clock out.');
+      }
     } finally {
       state = state.copyWith(isLoading: false);
     }
@@ -1001,6 +1212,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     }
     _playbackTimer?.cancel();
     _playbackTimer = null;
+    _pendingActionRetryTimer?.cancel();
+    _pendingActionRetryTimer = null;
     _lastCompletedShiftId = null;
     _lastUploadTime = null;
     state = const ShiftState();
@@ -1013,6 +1226,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription?.cancel();
     _traceletSubscription?.cancel();
     _playbackTimer?.cancel();
+    _pendingActionRetryTimer?.cancel();
     super.dispose();
   }
 }

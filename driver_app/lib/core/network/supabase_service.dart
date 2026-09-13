@@ -118,6 +118,7 @@ class SupabaseService {
             'sun_rate': sunRate,
             'agency_name': profile['agency_name'],
             'rate_profile': profile['rate_profile'] ?? 'LWR',
+            'organization_id': profile['organization_id'],
           },
         };
       }
@@ -411,6 +412,7 @@ class SupabaseService {
             'sun_rate': sunRate,
             'agency_name': response['agency_name'],
             'rate_profile': response['rate_profile'] ?? 'LWR',
+            'organization_id': response['organization_id'],
           },
         };
       }
@@ -430,6 +432,39 @@ class SupabaseService {
         'error': 'Database profile connection failed: $e',
         'errorType': 'network_error',
       };
+    }
+  }
+
+  /// Support phone number(s) for this driver's own company (migration 039).
+  /// Replaces what used to be two numbers hardcoded into the app binary and
+  /// shown to every driver on the platform regardless of employer. Either
+  /// entry can be null — the caller only renders a row for a number that's
+  /// actually set.
+  static Future<Map<String, String?>> fetchOrgSupportContacts(String? organizationId) async {
+    if (isMockMode) {
+      return {
+        'support_phone_1': '+44 7724 320498',
+        'support_phone_2': '+44 7751 735184',
+      };
+    }
+    if (organizationId == null || organizationId.isEmpty) {
+      return {'support_phone_1': null, 'support_phone_2': null};
+    }
+
+    try {
+      final response = await client
+          .from('organizations')
+          .select('support_phone_1, support_phone_2')
+          .eq('id', organizationId)
+          .maybeSingle();
+
+      return {
+        'support_phone_1': response?['support_phone_1'] as String?,
+        'support_phone_2': response?['support_phone_2'] as String?,
+      };
+    } catch (e) {
+      debugPrint('fetchOrgSupportContacts failed (non-fatal): $e');
+      return {'support_phone_1': null, 'support_phone_2': null};
     }
   }
 
