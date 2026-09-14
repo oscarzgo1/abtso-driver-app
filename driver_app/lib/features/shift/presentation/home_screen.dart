@@ -403,6 +403,144 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
+  /// One-tap incident reporting — a category button submits immediately
+  /// with whatever GPS/context is already available; the note field below
+  /// is optional and never blocks submission. Reachable any time (not
+  /// gated on being clocked in) since an incident can happen off-shift too.
+  void _handleReportIncidentAction(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final noteController = TextEditingController();
+    bool isSubmitting = false;
+
+    const categories = [
+      ('Vehicle Damage', 'vehicle_damage', Icons.car_crash_outlined),
+      ('Near Miss', 'near_miss', Icons.warning_amber_rounded),
+      ('Collision', 'collision', Icons.report_gmailerrorred_outlined),
+      ('Mechanical Fault', 'mechanical_fault', Icons.build_outlined),
+      ('Other', 'other', Icons.more_horiz_rounded),
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Future<void> submit(String category) async {
+              final messenger = ScaffoldMessenger.of(context);
+              final driverId = ref.read(authProvider).driver?['id'] as String?;
+              if (driverId == null || isSubmitting) return;
+
+              setSheetState(() => isSubmitting = true);
+              final pos = ref.read(shiftProvider).currentPosition;
+              final success = await SupabaseService.submitIncidentReport(
+                driverId: driverId,
+                category: category,
+                note: noteController.text,
+                latitude: pos?.latitude,
+                longitude: pos?.longitude,
+              );
+              if (sheetContext.mounted) Navigator.pop(sheetContext);
+              messenger.showSnackBar(
+                SnackBar(
+                  content: Text(
+                    success ? 'Incident reported. Thanks.' : 'Could not send the report — try again.',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              );
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20, right: 20, top: 20,
+                bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.report_outlined, color: Color(0xFFCC0000), size: 26),
+                      const SizedBox(width: 12),
+                      Text(
+                        'REPORT AN INCIDENT',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0.5,
+                          fontSize: 16,
+                          color: isDark ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Tap a category to send it now.',
+                    style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+                  ),
+                  const SizedBox(height: 16),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final (label, value, icon) in categories)
+                        OutlinedButton.icon(
+                          onPressed: isSubmitting ? null : () => submit(value),
+                          icon: Icon(icon, size: 18, color: const Color(0xFFCC0000)),
+                          label: Text(
+                            label,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                              color: isDark ? Colors.white : Colors.black87,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: noteController,
+                    maxLines: 2,
+                    enabled: !isSubmitting,
+                    decoration: InputDecoration(
+                      hintText: 'Add a note (optional)',
+                      filled: true,
+                      fillColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                  if (isSubmitting) ...[
+                    const SizedBox(height: 16),
+                    const Center(child: CircularProgressIndicator(strokeWidth: 2.5)),
+                  ],
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _handleSOSAction(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
@@ -556,6 +694,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
           child: Container(height: 1, color: const Color(0xFFE0E0E0)),
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.report_outlined, size: 18, color: Color(0xFF333333)),
+            tooltip: 'Report an incident',
+            onPressed: () => _handleReportIncidentAction(context),
+          ),
           IconButton(
             icon: const Icon(Icons.logout, size: 18, color: Color(0xFF333333)),
             onPressed: () => _handleLogoutAction(context),

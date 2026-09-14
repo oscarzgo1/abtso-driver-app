@@ -72,7 +72,8 @@ import {
   Sparkles,
   CircleCheck,
   CircleX,
-  FlaskConical
+  FlaskConical,
+  ShieldCheck
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -306,13 +307,42 @@ export interface OrgAlertSettings {
   idleAlertMinutes: number;
   nightOutMinGapHours: number;
   nightOutMaxGapHours: number;
+  motAlertLeadDays: number;
 }
 export const DEFAULT_ORG_ALERT_SETTINGS: OrgAlertSettings = {
   longShiftFlagHours: 18,
   idleAlertMinutes: 50,
   nightOutMinGapHours: 8,
   nightOutMaxGapHours: 15,
+  motAlertLeadDays: 30,
 };
+
+// Compliance & Safety (migration 040): trucks/trailers with an MOT expiry
+// date, and driver-submitted incident reports. Insurance and any
+// incident analytics are deliberately out of scope for this pass.
+export interface Vehicle {
+  id: string;
+  organization_id: string;
+  vehicle_number: string;
+  vehicle_type: 'truck' | 'trailer';
+  mot_expiry_date: string | null;
+  notes: string | null;
+  is_active: boolean;
+}
+
+export interface IncidentReport {
+  id: string;
+  organization_id: string;
+  driver_id: string;
+  vehicle_id: string | null;
+  category: 'vehicle_damage' | 'near_miss' | 'collision' | 'mechanical_fault' | 'other';
+  note: string | null;
+  status: 'open' | 'acknowledged' | 'closed';
+  created_at: string;
+  driver_name?: string;
+  driver_code?: string;
+  vehicle_number?: string;
+}
 
 export interface EmployeeRate {
   id?: string;
@@ -526,7 +556,7 @@ export default function App() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [recoveryError, setRecoveryError] = useState('');
-  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'analytics'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'analytics' | 'compliance'>('live');
   // Sidebar expand/collapse — controlled here (not left to the component's
   // own internal state) so the brand header can also switch between the
   // full wordmark and the icon-only mark based on the same flag.
@@ -571,10 +601,30 @@ export default function App() {
     idleAlertMinutes: String(DEFAULT_ORG_ALERT_SETTINGS.idleAlertMinutes),
     nightOutMinGapHours: String(DEFAULT_ORG_ALERT_SETTINGS.nightOutMinGapHours),
     nightOutMaxGapHours: String(DEFAULT_ORG_ALERT_SETTINGS.nightOutMaxGapHours),
+    motAlertLeadDays: String(DEFAULT_ORG_ALERT_SETTINGS.motAlertLeadDays),
   });
   const [isSavingAlertSettings, setIsSavingAlertSettings] = useState(false);
   const [alertSettingsError, setAlertSettingsError] = useState('');
   const [alertSettingsSuccess, setAlertSettingsSuccess] = useState('');
+
+  // Resolved once at session start/login (see resolveUserRole call sites) —
+  // independent of the Settings modal's teamOrgInfo, which only loads when
+  // Settings is opened. Compliance & Safety needs the org id on first visit.
+  const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
+
+  // Compliance & Safety tab: MOT vehicle register + driver-submitted
+  // incident reports (migration 040).
+  const [activeComplianceSection, setActiveComplianceSection] = useState<'vehicles' | 'incidents'>('vehicles');
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [incidentReports, setIncidentReports] = useState<IncidentReport[]>([]);
+  const [isLoadingCompliance, setIsLoadingCompliance] = useState(false);
+  const [complianceError, setComplianceError] = useState('');
+  const [isAddingVehicle, setIsAddingVehicle] = useState(false);
+  const [newVehicleNumber, setNewVehicleNumber] = useState('');
+  const [newVehicleType, setNewVehicleType] = useState<'truck' | 'trailer'>('trailer');
+  const [newVehicleMotExpiry, setNewVehicleMotExpiry] = useState('');
+  const [isSavingVehicle, setIsSavingVehicle] = useState(false);
+  const [vehicleFormError, setVehicleFormError] = useState('');
   // Brief "done" flash on export buttons — these builds are synchronous
   // (generate the file client-side, trigger download), so there's no real
   // loading phase, just a confirmation the click was registered.
@@ -661,7 +711,7 @@ export default function App() {
     try {
       const { data, error } = await supabase
         .from('organizations')
-        .select('long_shift_flag_hours, idle_alert_minutes, night_out_min_gap_hours, night_out_max_gap_hours')
+        .select('long_shift_flag_hours, idle_alert_minutes, night_out_min_gap_hours, night_out_max_gap_hours, mot_alert_lead_days')
         .eq('id', orgId)
         .maybeSingle();
       if (error || !data) return;
@@ -670,11 +720,102 @@ export default function App() {
         idleAlertMinutes: Number(data.idle_alert_minutes) || DEFAULT_ORG_ALERT_SETTINGS.idleAlertMinutes,
         nightOutMinGapHours: data.night_out_min_gap_hours != null ? Number(data.night_out_min_gap_hours) : DEFAULT_ORG_ALERT_SETTINGS.nightOutMinGapHours,
         nightOutMaxGapHours: data.night_out_max_gap_hours != null ? Number(data.night_out_max_gap_hours) : DEFAULT_ORG_ALERT_SETTINGS.nightOutMaxGapHours,
+        motAlertLeadDays: Number(data.mot_alert_lead_days) || DEFAULT_ORG_ALERT_SETTINGS.motAlertLeadDays,
       });
     } catch (_) {
       // Migration 038 likely not applied on this environment yet — keep defaults.
     }
   }, []);
+
+  /// Loads this org's vehicle register + incident reports (migration 040).
+  /// Both roles can read these directly — RLS scopes by organization_id,
+  /// no edge function needed, same as depots.
+  const loadComplianceData = useCallback(async (orgId: string) => {
+    if (isMockMode || !supabase || !orgId) return;
+    setIsLoadingCompliance(true);
+    setComplianceError('');
+    try {
+      const [{ data: vehicleRows, error: vehicleError }, { data: incidentRows, error: incidentError }] = await Promise.all([
+        supabase.from('vehicles').select('*').eq('organization_id', orgId).order('vehicle_number', { ascending: true }),
+        supabase
+          .from('incident_reports')
+          .select('*, drivers(full_name, driver_id), vehicles(vehicle_number)')
+          .eq('organization_id', orgId)
+          .order('created_at', { ascending: false }),
+      ]);
+
+      if (vehicleError || incidentError) {
+        setComplianceError((vehicleError ?? incidentError)?.message ?? 'Could not load compliance data.');
+        return;
+      }
+
+      setVehicles((vehicleRows ?? []) as Vehicle[]);
+      setIncidentReports(
+        (incidentRows ?? []).map((r: any) => ({
+          ...r,
+          driver_name: r.drivers?.full_name,
+          driver_code: r.drivers?.driver_id,
+          vehicle_number: r.vehicles?.vehicle_number,
+        }))
+      );
+    } catch (_) {
+      setComplianceError('Could not load compliance data.');
+    } finally {
+      setIsLoadingCompliance(false);
+    }
+  }, []);
+
+  /// Adds a truck or trailer to this org's vehicle register. Same direct
+  /// client-insert pattern as handleAddDepot — RLS (vehicles_org_admin_write)
+  /// enforces the org scope, no edge function needed.
+  const handleAddVehicle = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isMockMode || !supabase || !currentOrgId) return;
+
+    const vehicleNumber = newVehicleNumber.trim();
+    setVehicleFormError('');
+
+    if (!vehicleNumber) {
+      setVehicleFormError('Enter a registration or fleet number.');
+      return;
+    }
+
+    setIsSavingVehicle(true);
+    try {
+      const { error } = await supabase.from('vehicles').insert({
+        organization_id: currentOrgId,
+        vehicle_number: vehicleNumber,
+        vehicle_type: newVehicleType,
+        mot_expiry_date: newVehicleMotExpiry || null,
+      });
+      if (error) throw error;
+
+      setNewVehicleNumber('');
+      setNewVehicleType('trailer');
+      setNewVehicleMotExpiry('');
+      setIsAddingVehicle(false);
+      showToast('Vehicle added.', 'success');
+      await loadComplianceData(currentOrgId);
+    } catch (err: any) {
+      setVehicleFormError(err?.message ?? 'Could not add vehicle.');
+    } finally {
+      setIsSavingVehicle(false);
+    }
+  };
+
+  /// Moves an incident report through open -> acknowledged -> closed.
+  /// Direct client update — RLS (incident_reports_org_admin_all) enforces
+  /// the org scope, same as the vehicle register.
+  const handleUpdateIncidentStatus = async (id: string, status: IncidentReport['status']) => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    try {
+      const { error } = await supabase.from('incident_reports').update({ status }).eq('id', id);
+      if (error) throw error;
+      setIncidentReports(prev => prev.map(r => (r.id === id ? { ...r, status } : r)));
+    } catch (err: any) {
+      setComplianceError(err?.message ?? 'Could not update the incident report.');
+    }
+  };
 
   // Database States
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -1480,7 +1621,11 @@ export default function App() {
           }
           setUserRole(role);
           localStorage.setItem('admin_role', role);
-          if (organizationId) loadOrgAlertSettings(organizationId);
+          if (organizationId) {
+            setCurrentOrgId(organizationId);
+            loadOrgAlertSettings(organizationId);
+            loadComplianceData(organizationId);
+          }
         });
       } else {
         setIsAuthenticated(false);
@@ -1489,7 +1634,7 @@ export default function App() {
     });
 
     return () => subscription.unsubscribe();
-  }, [resolveUserRole, loadOrgAlertSettings]);
+  }, [resolveUserRole, loadOrgAlertSettings, loadComplianceData]);
 
   // ── WebSockets Realtime Subscriptions ──────────────────────────
   useEffect(() => {
@@ -1840,11 +1985,12 @@ export default function App() {
       idleAlertMinutes: String(orgAlertSettings.idleAlertMinutes),
       nightOutMinGapHours: String(orgAlertSettings.nightOutMinGapHours),
       nightOutMaxGapHours: String(orgAlertSettings.nightOutMaxGapHours),
+      motAlertLeadDays: String(orgAlertSettings.motAlertLeadDays),
     });
   }, [orgAlertSettings]);
 
-  /// Saves the four per-company alert thresholds via admin-users'
-  /// update-alert-settings action (migration 038 + edge function deploy
+  /// Saves the five per-company alert thresholds via admin-users'
+  /// update-alert-settings action (migration 038/040 + edge function deploy
   /// required — on an environment where either is still pending, this
   /// surfaces the real server error rather than pretending to succeed).
   const handleSaveAlertSettings = async () => {
@@ -1853,6 +1999,7 @@ export default function App() {
     const idleAlertMinutes = parseInt(alertSettingsForm.idleAlertMinutes, 10);
     const nightOutMinGapHours = parseFloat(alertSettingsForm.nightOutMinGapHours);
     const nightOutMaxGapHours = parseFloat(alertSettingsForm.nightOutMaxGapHours);
+    const motAlertLeadDays = parseInt(alertSettingsForm.motAlertLeadDays, 10);
 
     setAlertSettingsError('');
     setAlertSettingsSuccess('');
@@ -1873,6 +2020,10 @@ export default function App() {
       setAlertSettingsError('Night-out maximum gap must be greater than the minimum gap.');
       return;
     }
+    if (!Number.isInteger(motAlertLeadDays) || motAlertLeadDays <= 0) {
+      setAlertSettingsError('MOT alert lead time must be a positive whole number of days.');
+      return;
+    }
 
     setIsSavingAlertSettings(true);
     try {
@@ -1883,13 +2034,14 @@ export default function App() {
           idleAlertMinutes,
           nightOutMinGapHours,
           nightOutMaxGapHours,
+          motAlertLeadDays,
         },
       });
       const failure = await readFunctionError(data, error);
       if (failure) {
         setAlertSettingsError(failure);
       } else {
-        setOrgAlertSettings({ longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours });
+        setOrgAlertSettings({ longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, motAlertLeadDays });
         setAlertSettingsSuccess('Saved.');
         setTimeout(() => setAlertSettingsSuccess(''), 1800);
       }
@@ -2273,7 +2425,11 @@ export default function App() {
 
         setUserRole(resolvedRole);
         localStorage.setItem('admin_role', resolvedRole);
-        if (organizationId) loadOrgAlertSettings(organizationId);
+        if (organizationId) {
+          setCurrentOrgId(organizationId);
+          loadOrgAlertSettings(organizationId);
+          loadComplianceData(organizationId);
+        }
         if (resolvedRole === 'logistics') {
           setActiveTab('live');
         }
@@ -4326,6 +4482,16 @@ export default function App() {
   const pendingNightOutsCount = shifts.filter(s => s.night_out_status === 'pending').length;
   const totalWeeklyPayout = kpiTotalWeeklyPayout;
 
+  // Compliance & Safety nav badge: any vehicle whose MOT falls inside
+  // this org's own lead-time window (or is already overdue), plus any
+  // incident report nobody's actioned yet.
+  const vehiclesDueSoonCount = vehicles.filter(v => {
+    if (!v.is_active || !v.mot_expiry_date) return false;
+    const daysLeft = (new Date(v.mot_expiry_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24);
+    return daysLeft <= orgAlertSettings.motAlertLeadDays;
+  }).length;
+  const openIncidentsCount = incidentReports.filter(r => r.status === 'open').length;
+
   // Renders the trend pill + sparkline for a KPI card from its real sample
   // history. Returns null (no fabricated "flat" reading) until there are
   // at least two distinct samples to compare.
@@ -4415,6 +4581,27 @@ export default function App() {
                   icon: <span className="nav-icon"><IdCard size={18} /></span>,
                 }}
                 className={`nav-item ${activeTab === 'drivers' ? 'active' : ''}`}
+                labelClassName="text-inherit dark:text-inherit"
+              />
+
+              {/* Not role-gated — both payroll_admin and logistics manage
+                  MOT dates and react to incident reports day to day. */}
+              <SidebarLink
+                link={{
+                  label: 'Compliance & Safety',
+                  href: '#',
+                  active: activeTab === 'compliance',
+                  onClick: () => setActiveTab('compliance'),
+                  icon: (
+                    <span className="nav-icon">
+                      <ShieldCheck size={18} />
+                      {(vehiclesDueSoonCount > 0 || openIncidentsCount > 0) && (
+                        <span className="nav-dot" aria-label="Vehicles due for MOT or open incident reports" />
+                      )}
+                    </span>
+                  ),
+                }}
+                className={`nav-item ${activeTab === 'compliance' ? 'active' : ''}`}
                 labelClassName="text-inherit dark:text-inherit"
               />
 
@@ -5420,6 +5607,222 @@ export default function App() {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {/* ── TAB: Compliance & Safety — MOT register + driver-submitted
+             incident reports (migration 040). Open to both roles — this is
+             a day-to-day operational tool, not an admin-only setting.
+             Insurance and incident-trend analytics are deliberately out of
+             scope for this pass. ─────────────────────────────────────── */}
+        {activeTab === 'compliance' && (
+          <div className="flex-1">
+            <div className="flex align-center justify-between mb-16">
+              <h2 className="text-xl font-black text-primary m-0">COMPLIANCE &amp; SAFETY</h2>
+              {activeComplianceSection === 'vehicles' && (
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ padding: '10px 16px', fontSize: '13px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
+                  onClick={() => setIsAddingVehicle(!isAddingVehicle)}
+                >
+                  + Add Vehicle
+                </button>
+              )}
+            </div>
+
+            <div className="flex" style={{ gap: '8px', marginBottom: '20px' }}>
+              <button
+                type="button"
+                className={`payroll-pill-btn ${activeComplianceSection === 'vehicles' ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
+                onClick={() => setActiveComplianceSection('vehicles')}
+              >
+                Vehicle Register{vehiclesDueSoonCount > 0 ? ` (${vehiclesDueSoonCount} due)` : ''}
+              </button>
+              <button
+                type="button"
+                className={`payroll-pill-btn ${activeComplianceSection === 'incidents' ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
+                onClick={() => setActiveComplianceSection('incidents')}
+              >
+                Incident Reports{openIncidentsCount > 0 ? ` (${openIncidentsCount} open)` : ''}
+              </button>
+            </div>
+
+            {complianceError && <div className="login-notice login-notice--error mb-16">{complianceError}</div>}
+            {isLoadingCompliance && <p className="text-sm text-muted mb-16">Loading…</p>}
+
+            {activeComplianceSection === 'vehicles' && (
+              <>
+                {isAddingVehicle && (
+                  <div className="glass-panel p-24 mb-24" style={{ borderRadius: '16px' }}>
+                    <h3 className="text-md font-bold text-primary mb-16">Add Vehicle</h3>
+                    {vehicleFormError && <div className="login-notice login-notice--error mb-16">{vehicleFormError}</div>}
+                    <form onSubmit={handleAddVehicle}>
+                      <div className="grid grid-cols-3 gap-16">
+                        <div className="input-group">
+                          <span className="input-label">REGISTRATION / FLEET NUMBER</span>
+                          <div className="login-field">
+                            <span className="login-field-icon"><Truck size={15} /></span>
+                            <input
+                              type="text"
+                              className="login-input"
+                              placeholder="e.g. AB12 CDE"
+                              value={newVehicleNumber}
+                              onChange={(e) => setNewVehicleNumber(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <div className="input-group">
+                          <span className="input-label">TYPE</span>
+                          <select
+                            className="select-field"
+                            value={newVehicleType}
+                            onChange={(e) => setNewVehicleType(e.target.value as 'truck' | 'trailer')}
+                          >
+                            <option value="trailer">Trailer</option>
+                            <option value="truck">Truck</option>
+                          </select>
+                        </div>
+                        <div className="input-group">
+                          <span className="input-label">MOT EXPIRY DATE</span>
+                          <div className="login-field">
+                            <span className="login-field-icon"><Calendar size={15} /></span>
+                            <input
+                              type="date"
+                              className="login-input"
+                              value={newVehicleMotExpiry}
+                              onChange={(e) => setNewVehicleMotExpiry(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                      <button type="submit" className="btn btn-primary mt-16" disabled={isSavingVehicle}>
+                        {isSavingVehicle ? 'Saving…' : 'Save Vehicle'}
+                      </button>
+                    </form>
+                  </div>
+                )}
+
+                {vehicles.length === 0 ? (
+                  <div className="glass-card">
+                    <Empty>
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon">
+                          <Truck />
+                        </EmptyMedia>
+                        <EmptyTitle>No Vehicles Yet</EmptyTitle>
+                        <EmptyDescription>
+                          Add your trucks and trailers to start tracking MOT expiry.
+                        </EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  </div>
+                ) : (
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Registration / Fleet No.</th>
+                          <th>Type</th>
+                          <th>MOT Expiry</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {vehicles.map(v => {
+                          const daysLeft = v.mot_expiry_date
+                            ? Math.floor((new Date(v.mot_expiry_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+                            : null;
+                          const isOverdue = daysLeft !== null && daysLeft < 0;
+                          const isDueSoon = daysLeft !== null && daysLeft >= 0 && daysLeft <= orgAlertSettings.motAlertLeadDays;
+                          const badgeClass = isOverdue ? 'badge-danger' : isDueSoon ? 'badge-warning' : 'badge-success';
+                          const statusLabel = daysLeft === null ? 'Not set' : isOverdue ? 'Overdue' : isDueSoon ? 'Due soon' : 'Valid';
+                          return (
+                            <tr key={v.id}>
+                              <td className="font-mono font-bold text-accent">{v.vehicle_number}</td>
+                              <td className="text-secondary" style={{ textTransform: 'capitalize' }}>{v.vehicle_type}</td>
+                              <td className="text-secondary">
+                                {v.mot_expiry_date ? new Date(v.mot_expiry_date).toLocaleDateString() : '—'}
+                              </td>
+                              <td>
+                                <span className={`badge ${badgeClass}`}>{statusLabel}</span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+
+            {activeComplianceSection === 'incidents' && (
+              <>
+                {incidentReports.length === 0 ? (
+                  <div className="glass-card">
+                    <Empty>
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon">
+                          <ShieldCheck />
+                        </EmptyMedia>
+                        <EmptyTitle>No Incident Reports</EmptyTitle>
+                        <EmptyDescription>
+                          Reports drivers submit from the app will show up here.
+                        </EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  </div>
+                ) : (
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Driver</th>
+                          <th>Category</th>
+                          <th>Vehicle</th>
+                          <th>Note</th>
+                          <th>Status</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {incidentReports.map(r => (
+                          <tr key={r.id}>
+                            <td className="text-secondary">{new Date(r.created_at).toLocaleString()}</td>
+                            <td className="font-bold text-primary">{r.driver_name ?? r.driver_code ?? '—'}</td>
+                            <td className="text-secondary" style={{ textTransform: 'capitalize' }}>{r.category.replace(/_/g, ' ')}</td>
+                            <td className="text-secondary">{r.vehicle_number ?? '—'}</td>
+                            <td className="text-secondary">{r.note ?? '—'}</td>
+                            <td>
+                              <span
+                                className={`badge ${r.status === 'open' ? 'badge-danger' : r.status === 'acknowledged' ? 'badge-warning' : 'badge-success'}`}
+                                style={{ textTransform: 'capitalize' }}
+                              >
+                                {r.status}
+                              </span>
+                            </td>
+                            <td>
+                              {r.status !== 'closed' && (
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  style={{ padding: '6px 12px', fontSize: '12px' }}
+                                  onClick={() => handleUpdateIncidentStatus(r.id, r.status === 'open' ? 'acknowledged' : 'closed')}
+                                >
+                                  {r.status === 'open' ? 'Acknowledge' : 'Close'}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 
@@ -7824,6 +8227,22 @@ export default function App() {
                     <p className="text-xs text-muted mb-16">
                       A gap between two shifts for the same driver within this window gets suggested as a night out.
                     </p>
+
+                    <div className="input-group">
+                      <label className="input-label" htmlFor="mot-alert-lead-days">MOT ALERT LEAD TIME (DAYS)</label>
+                      <input
+                        id="mot-alert-lead-days"
+                        type="number"
+                        min="1"
+                        step="1"
+                        className="input-field"
+                        value={alertSettingsForm.motAlertLeadDays}
+                        onChange={(e) => setAlertSettingsForm(f => ({ ...f, motAlertLeadDays: e.target.value }))}
+                      />
+                      <p className="text-xs text-muted mt-4">
+                        How many days before a vehicle's MOT expires it shows as due-soon in Compliance &amp; Safety.
+                      </p>
+                    </div>
 
                     <button type="button" className="btn btn-primary" disabled={isSavingAlertSettings} onClick={handleSaveAlertSettings}>
                       {(isSavingAlertSettings || alertSettingsSuccess) && <SaveIcon saving={isSavingAlertSettings} success={!!alertSettingsSuccess} />}

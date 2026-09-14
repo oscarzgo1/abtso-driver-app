@@ -324,14 +324,15 @@ serve(async (req: Request) => {
     }
 
     // ── UPDATE ALERT SETTINGS ─────────────────────────────────
-    // Per-organization flag/idle/night-out thresholds (migration 038) —
-    // replaces the values that used to be hardcoded identically for
-    // every company on the platform.
+    // Per-organization flag/idle/night-out/MOT thresholds (migrations
+    // 038, 040) — replaces the values that used to be hardcoded
+    // identically for every company on the platform.
     if (action === "update-alert-settings") {
       const longShiftFlagHours = Number(body.longShiftFlagHours);
       const idleAlertMinutes = Number(body.idleAlertMinutes);
       const nightOutMinGapHours = Number(body.nightOutMinGapHours);
       const nightOutMaxGapHours = Number(body.nightOutMaxGapHours);
+      const motAlertLeadDays = Number(body.motAlertLeadDays);
 
       if (!Number.isFinite(longShiftFlagHours) || longShiftFlagHours <= 0) {
         return json({ error: "Long-shift flag threshold must be a positive number of hours." }, 400);
@@ -345,6 +346,9 @@ serve(async (req: Request) => {
       if (!Number.isFinite(nightOutMaxGapHours) || nightOutMaxGapHours <= nightOutMinGapHours) {
         return json({ error: "Night-out maximum gap must be greater than the minimum gap." }, 400);
       }
+      if (!Number.isInteger(motAlertLeadDays) || motAlertLeadDays <= 0) {
+        return json({ error: "MOT alert lead time must be a positive whole number of days." }, 400);
+      }
 
       const { error: updateError } = await supabaseAdmin
         .from("organizations")
@@ -353,6 +357,7 @@ serve(async (req: Request) => {
           idle_alert_minutes: idleAlertMinutes,
           night_out_min_gap_hours: nightOutMinGapHours,
           night_out_max_gap_hours: nightOutMaxGapHours,
+          mot_alert_lead_days: motAlertLeadDays,
         })
         .eq("id", callerOrgId);
 
@@ -363,7 +368,7 @@ serve(async (req: Request) => {
       console.log(`Alert settings updated for org ${callerOrgId} by ${callerEmail}`);
       return json({
         success: true,
-        settings: { longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours },
+        settings: { longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, motAlertLeadDays },
       });
     }
 

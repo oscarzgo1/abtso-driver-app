@@ -468,6 +468,38 @@ class SupabaseService {
     }
   }
 
+  /// Submits a driver-reported incident (migration 040) — vehicle damage,
+  /// near-miss, collision, mechanical fault, or other. Deliberately
+  /// minimal: a category plus whatever context is actually available
+  /// (GPS, an optional note) — nothing here is fabricated when a value
+  /// isn't known, it's just omitted (e.g. no GPS fix yet).
+  static Future<bool> submitIncidentReport({
+    required String driverId,
+    required String category,
+    String? note,
+    double? latitude,
+    double? longitude,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK incident report: $category ($note) at ($latitude, $longitude)');
+      return true;
+    }
+
+    try {
+      await client.from('incident_reports').insert({
+        'driver_id': driverId,
+        'category': category,
+        if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+        if (latitude != null) 'latitude': latitude,
+        if (longitude != null) 'longitude': longitude,
+      });
+      return true;
+    } catch (e) {
+      debugPrint('submitIncidentReport failed: $e');
+      return false;
+    }
+  }
+
   static Future<List<Map<String, dynamic>>> fetchDriverShifts({
     required String driverId,
     required DateTime startDate,
