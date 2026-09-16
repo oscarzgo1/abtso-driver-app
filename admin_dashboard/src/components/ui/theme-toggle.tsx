@@ -1,4 +1,4 @@
-import { MonitorIcon, MoonIcon, SunIcon } from 'lucide-react';
+import { MonitorIcon, SunIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -35,13 +35,13 @@ interface ThemeToggleProps {
 }
 
 export function ThemeToggle({ onOpenChange }: ThemeToggleProps = {}) {
-  const { theme, setTheme, resolvedTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
 
   return (
     <DropdownMenu onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="icon-sm" aria-label="Toggle theme">
-          {resolvedTheme === 'dark' ? <MoonIcon className="size-4" /> : <SunIcon className="size-4" />}
+          <SunIcon className="size-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">
@@ -49,14 +49,14 @@ export function ThemeToggle({ onOpenChange }: ThemeToggleProps = {}) {
           <DropdownMenuLabel>Theme</DropdownMenuLabel>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
+        {/* Dark mode removed at the user's request — Light and System
+            are the only choices now (System resolves to Light too,
+            kept only so a previously-saved preference still has a
+            valid option selected). */}
         <DropdownMenuRadioGroup value={theme} onValueChange={(value) => setTheme(value as Theme)}>
           <DropdownMenuRadioItem value="light" className="gap-2">
             <SunIcon className="size-4" />
             Light
-          </DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="dark" className="gap-2">
-            <MoonIcon className="size-4" />
-            Dark
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="system" className="gap-2">
             <MonitorIcon className="size-4" />

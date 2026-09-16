@@ -15,6 +15,13 @@ class DriverShift {
   final int? weekYear;
   final String nightOutStatus;
   final double nightOutAmount;
+  /// Coupled tractor unit (vehicles.id) — nullable, a shift can be
+  /// started and run uncoupled ("Assign Later").
+  final String? vehicleId;
+  /// Coupled trailer (vehicles.id) — nullable, independent of vehicleId
+  /// (migration 049). A driver can couple a tractor without a trailer,
+  /// a trailer without a tractor, both, or neither.
+  final String? trailerId;
 
   DriverShift({
     required this.id,
@@ -33,6 +40,8 @@ class DriverShift {
     this.weekYear,
     this.nightOutStatus = 'none',
     this.nightOutAmount = 0.0,
+    this.vehicleId,
+    this.trailerId,
   });
 
   factory DriverShift.fromJson(Map<String, dynamic> json) {
@@ -55,6 +64,42 @@ class DriverShift {
       weekYear: (json['week_year'] as num?)?.toInt(),
       nightOutStatus: (json['night_out_status'] as String?) ?? 'none',
       nightOutAmount: (json['night_out_amount'] as num?)?.toDouble() ?? 0.0,
+      vehicleId: json['vehicle_id'] as String?,
+      trailerId: json['trailer_id'] as String?,
+    );
+  }
+
+  DriverShift copyWith({
+    String? status,
+    DateTime? endTime,
+    double? totalHours,
+    double? totalPay,
+    String? nightOutStatus,
+    double? nightOutAmount,
+    Object? effectiveRate = _unset,
+    Object? overrideRate = _unset,
+    Object? vehicleId = _unset,
+    Object? trailerId = _unset,
+  }) {
+    return DriverShift(
+      id: id,
+      driverId: driverId,
+      depotId: depotId,
+      startTime: startTime,
+      endTime: endTime ?? this.endTime,
+      status: status ?? this.status,
+      dayType: dayType,
+      baseHourlyRate: baseHourlyRate,
+      overrideRate: identical(overrideRate, _unset) ? this.overrideRate : overrideRate as double?,
+      effectiveRate: identical(effectiveRate, _unset) ? this.effectiveRate : effectiveRate as double?,
+      totalHours: totalHours ?? this.totalHours,
+      totalPay: totalPay ?? this.totalPay,
+      weekNumber: weekNumber,
+      weekYear: weekYear,
+      nightOutStatus: nightOutStatus ?? this.nightOutStatus,
+      nightOutAmount: nightOutAmount ?? this.nightOutAmount,
+      vehicleId: identical(vehicleId, _unset) ? this.vehicleId : vehicleId as String?,
+      trailerId: identical(trailerId, _unset) ? this.trailerId : trailerId as String?,
     );
   }
 
@@ -76,6 +121,13 @@ class DriverShift {
       'week_year': weekYear,
       'night_out_status': nightOutStatus,
       'night_out_amount': nightOutAmount,
+      'vehicle_id': vehicleId,
+      'trailer_id': trailerId,
     };
   }
 }
+
+/// Sentinel distinguishing "not passed" from "explicitly passed null" in
+/// copyWith, so vehicleId/trailerId can be deliberately cleared (coupled
+/// -> uncoupled) rather than copyWith's null always meaning "keep as-is".
+const Object _unset = Object();

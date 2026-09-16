@@ -222,6 +222,74 @@ body {
   animation: alertPulse 1.8s infinite ease-in-out;
 }
 
+/* ── Alert Monitors — bordered white cards, left-accent border instead
+   of the old full-width solid-colour fills. ─────────────────────── */
+.alert-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-left: 4px solid transparent;
+  border-radius: 10px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: box-shadow 0.15s ease-out;
+}
+.alert-card--sos { border-left-color: var(--brand-red); }
+.alert-card--idle { border-left-color: #F59E0B; }
+.alert-card--resolved {
+  border-left-color: var(--charcoal-light);
+  background: var(--card-bg-hover);
+  opacity: 0.72;
+}
+
+.alert-badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.alert-badge-pill--sos { background: #FEF2F2; color: var(--brand-red); border: 1px solid #FECACA; }
+.alert-badge-pill--idle { background: #FFFBEB; color: #92400E; border: 1px solid #FDE68A; }
+.alert-badge-pill--resolved { background: var(--card-bg); color: var(--charcoal-light); border: 1px solid var(--border-color); }
+
+/* Prominent dark "Acknowledge" action — deliberately not brand-red like
+   payroll-mini-btn: this button resolves the alert, it isn't itself the
+   urgency signal (the card's left border and badge already carry that). */
+.alert-ack-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: none;
+  background: var(--charcoal);
+  color: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease-out;
+}
+.alert-ack-btn:hover { background: #1a1a1a; }
+
+.alert-dismiss-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border: none;
+  background: none;
+  color: var(--charcoal-light);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s ease-out;
+}
+.alert-dismiss-btn:hover { color: var(--charcoal); }
+
 /* Driver marker pulse — charcoal for moving, brand red for idle */
 @keyframes markerPulse {
   0%   { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(51, 51, 51, 0.5); }
@@ -592,6 +660,68 @@ body {
 }
 .nav-item:hover .nav-dot { box-shadow: 0 0 0 2px #F1F5F9; }
 .nav-item.active .nav-dot { box-shadow: 0 0 0 2px #FEF2F2; }
+
+/* Compliance & Safety accordion sub-items — compact indented rows with a
+   left guide-line, deliberately lighter-weight than the bold top-level
+   .nav-item rows above so the hierarchy (category vs. destination) reads
+   at a glance. */
+.nav-subitem-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 2px 20px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-color);
+}
+.nav-subitem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--charcoal-mid);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.16s ease-out, color 0.16s ease-out;
+}
+.nav-subitem:hover {
+  background: var(--card-bg-hover);
+  color: var(--charcoal);
+}
+.nav-subitem.active {
+  background: var(--brand-red-light);
+  color: var(--brand-red);
+  font-weight: 600;
+}
+
+/* Compliance overview — vertical defect status rows (left card of the
+   Defect Status / Upcoming Inspections split). */
+.defect-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg-hover);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease-out, border-color 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+.defect-status-row:hover {
+  background: var(--border-color);
+}
+.defect-status-row.active {
+  border-color: var(--charcoal);
+  box-shadow: 0 0 0 2px var(--charcoal);
+}
 
 /* ── Tables ──────────────────────────────────────────────── */
 .table-container {
@@ -1033,16 +1163,21 @@ body {
   margin: 0;
 }
 
-/* Profitability Cockpit — one compact, read-only row of five stats (no
-   click/active states; there's a single chart below now, not a
-   metric-switcher choosing what it plots). */
+/* Profitability Cockpit — one compact row of six clickable stats (each
+   picks what the bar chart plots and what the donut breaks down by).
+   Six columns, not five — kpiConfig grew from 5 to 6 (Total Hours was
+   added) without this ever being updated, so the 6th tile wrapped onto
+   its own row at every width. */
 .cockpit-kpi-strip {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 10px;
 }
 @media (min-width: 700px) {
-  .cockpit-kpi-strip { grid-template-columns: repeat(5, 1fr); }
+  .cockpit-kpi-strip { grid-template-columns: repeat(3, 1fr); }
+}
+@media (min-width: 1024px) {
+  .cockpit-kpi-strip { grid-template-columns: repeat(6, 1fr); }
 }
 
 .cockpit-kpi-tile {
@@ -1346,6 +1481,19 @@ body {
   background: #DC2626;
   display: inline-block;
 }
+
+/* Driver Hours cockpit row status dot — reuses the driver-marker pulse
+   technique (scale + fading box-shadow ring) at inline-dot scale, only
+   for the "driving" state per the spec ("green pulsing dot"). */
+@keyframes telemetryDrivingPulse {
+  0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+.telemetry-status-dot--driving { background: #10B981; animation: telemetryDrivingPulse 1.8s infinite; }
+.telemetry-status-dot--stationary { background: #F59E0B; }
+.telemetry-status-dot--idle { background: #94A3B8; }
+.telemetry-status-dot--none { background: #CBD5E1; }
 
 .telemetry-today-chip {
   display: inline-flex;
@@ -1682,6 +1830,27 @@ body {
 }
 .payroll-mini-btn:hover { background: var(--brand-red-light); }
 
+/* Neutral B2B secondary action — Compensation Profiles table's "Edit"
+   button. Deliberately not brand-red like .payroll-mini-btn: this is a
+   routine row action, not something needing the red accent's urgency. */
+.comp-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background: none;
+  color: var(--charcoal-mid);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.15s ease-out;
+}
+.comp-edit-btn:hover { background: var(--card-bg-hover); }
+
 /* -- Totals footer -------------------------------------------------- */
 .payroll-totals-bar {
   display: flex;
@@ -1731,75 +1900,8 @@ body {
   opacity: 0.75;
 }
 
-/* ============================================================
-   DARK MODE
-   ============================================================
-   Toggled by src/components/ui/theme-toggle.tsx, which sets
-   data-theme="dark" / "light" on <html> (or leaves it unset for
-   "System", which falls back to the OS preference below).
-
-   Redefining --charcoal/--charcoal-light/--charcoal-mid here covers the
-   .text-primary/.text-secondary/.text-muted utility classes used for
-   almost all text throughout this app "for free" — those two rulesets
-   are the highest-leverage part of this file. Everything after that is
-   explicit per-component background/border overrides for the surfaces
-   that use hardcoded hex instead of a variable (most of them, since this
-   app's color system predates most of these components) — the major,
-   frequently-seen surfaces are covered (sidebar, cards, tables, modals,
-   inputs, the login screen); a few rarely-touched or already-dark
-   surfaces (e.g. the Analytics goal card, already near-black) are left
-   as-is deliberately, not by oversight.
-   ============================================================ */
-
-/* "System" means no data-theme attribute at all — falls through to
-   whatever the OS prefers, via the media query below. An explicit
-   choice ("dark"/"light") always wins via the attribute selector. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --charcoal: #F4F4F5;
-    --charcoal-mid: #C4C4C8;
-    --charcoal-light: #9A9AA2;
-    --bg: #18181B;
-    --bg-sidebar: #1F1F23;
-    --bg-sidebar-glass: rgba(31, 31, 35, 0.65);
-    --text-primary: #F4F4F5;
-    --text-secondary: #C4C4C8;
-    --text-muted: #9A9AA2;
-    --border-color: #333338;
-    --card-bg: #232326;
-    --card-bg-hover: #2A2A2E;
-    --card-bg-glass: rgba(20, 20, 22, 0.62);
-    --input-bg: #2A2A2E;
-    color-scheme: dark;
-  }
-}
-
-:root[data-theme="dark"] {
-  --charcoal: #F4F4F5;
-  --charcoal-mid: #C4C4C8;
-  --charcoal-light: #9A9AA2;
-  --bg: #18181B;
-  --bg-sidebar: #1F1F23;
-  --bg-sidebar-glass: rgba(31, 31, 35, 0.65);
-  --text-primary: #F4F4F5;
-  --text-secondary: #C4C4C8;
-  --text-muted: #9A9AA2;
-  --border-color: #333338;
-  --card-bg: #232326;
-  --card-bg-hover: #2A2A2E;
-  --card-bg-glass: rgba(20, 20, 22, 0.62);
-  --input-bg: #2A2A2E;
-  color-scheme: dark;
-}
-
-/* Component surfaces below reference these same variables (instead of
-   the hardcoded hex they were written with) so they follow the switch
-   above automatically — no per-component dark/light duplication needed.
-   Values are unchanged in light mode (the variables still resolve to the
-   original light hex there); see the individual rules further up this
-   file for where each was edited. */
-
-/* The wordmark is now rendered as icon-image + real text (see
-   BrandLogo.tsx) instead of one flat PNG, specifically so the icon can
-   stay brand red in dark mode while only the text goes white — the text
-   span uses var(--charcoal) directly and needs no override here. */
+/* Dark mode removed at the user's request — this app is light-only now.
+   The theme toggle (src/components/ui/theme-toggle.tsx) no longer
+   offers a Dark option, and useTheme() always resolves to 'light'
+   regardless of stored preference or OS setting, so no CSS variable
+   override block is needed here any more. */

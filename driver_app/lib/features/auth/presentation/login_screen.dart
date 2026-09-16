@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'auth_provider.dart';
+import '../../legal/presentation/legal_review_screen.dart';
 
 class ShakeCurve extends Curve {
   final double count;
@@ -130,6 +131,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
     );
   }
 
+  /// Opens the consolidated legal document review. Tapping its header
+  /// "Accept & Close" checks this screen's consent box automatically;
+  /// closing via the X or the back gesture leaves it exactly as it was
+  /// (the box can always still be ticked manually without opening this).
+  Future<void> _openLegalReview() async {
+    final accepted = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const LegalReviewScreen()),
+    );
+    if (accepted == true && mounted) {
+      setState(() => _acceptedTerms = true);
+    }
+  }
+
   void _handleLogin() {
     if (!_acceptedTerms) return; // Button is disabled in this state; guarded here too.
     if (_formKey.currentState!.validate()) {
@@ -221,7 +235,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
           SafeArea(
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
             child: AnimatedBuilder(
               animation: _shakeAnimation,
               builder: (context, child) {
@@ -230,11 +244,20 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                   child: child,
                 );
               },
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
+              // Capped, not full-bleed — on a wide (desktop/tablet) viewport
+              // the card used to stretch edge to edge while every font/icon
+              // inside stayed at its small fixed size, which is exactly why
+              // it read as "too small": tiny content in a huge box. A real
+              // max-width keeps the card a sensibly-sized, well-proportioned
+              // block centered on the grey background at any viewport size.
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 460),
+                child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(32, 40, 32, 32),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(24),
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(alpha: 0.06),
@@ -251,46 +274,46 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                   children: [
                     // Brand mark
                     Center(
-                      child: Image.asset('assets/images/tachyo_logo.png', height: 44, fit: BoxFit.contain),
+                      child: Image.asset('assets/images/tachyo_logo.png', height: 58, fit: BoxFit.contain),
                     ),
 
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 12),
 
                     Text(
                       'LOGISTICS & TRANSPORT',
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodyMedium?.copyWith(
-                        fontSize: 10,
+                        fontSize: 12,
                         letterSpacing: 1.5,
                         fontWeight: FontWeight.w800,
                         color: const Color(0xFF555555),
                       ),
                     ),
 
-                    const SizedBox(height: 28),
+                    const SizedBox(height: 32),
 
                     // Company Code Input — namespaces every driver ID by
                     // employer, since driver IDs are only unique within a
                     // single company.
                     TextFormField(
                       controller: _companyCodeController,
-                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 13),
+                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 16),
                       decoration: InputDecoration(
                         hintText: 'COMPANY CODE',
-                        hintStyle: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
+                        hintStyle: GoogleFonts.outfit(fontSize: 14, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
                         counterText: '',
                         isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        prefixIcon: const Icon(Icons.apartment_outlined, color: Color(0xFF888888), size: 18),
-                        prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 18),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        prefixIcon: const Icon(Icons.apartment_outlined, color: Color(0xFF888888), size: 22),
+                        prefixIconConstraints: const BoxConstraints(minWidth: 42, minHeight: 22),
                         filled: true,
                         fillColor: const Color(0xFFF5F5F5),
                         enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(14),
                           borderSide: const BorderSide(color: Color(0xFFBBBBBB), width: 1.5),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(14),
                           borderSide: const BorderSide(color: Color(0xFF333333), width: 2),
                         ),
                       ),
@@ -305,28 +328,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                       },
                     ),
 
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 16),
 
                     // Driver ID / Username Input
                     TextFormField(
                       controller: _driverIdController,
-                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 13),
+                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 16),
                       decoration: InputDecoration(
                         hintText: 'USERNAME OR ID (e.g. john.smith)',
-                        hintStyle: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
+                        hintStyle: GoogleFonts.outfit(fontSize: 14, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
                         counterText: '',
                         isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        prefixIcon: const Icon(Icons.person_outline, color: Color(0xFF888888), size: 18),
-                        prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 18),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        prefixIcon: const Icon(Icons.person_outline, color: Color(0xFF888888), size: 22),
+                        prefixIconConstraints: const BoxConstraints(minWidth: 42, minHeight: 22),
                         filled: true,
                         fillColor: const Color(0xFFF5F5F5),
                         enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(14),
                           borderSide: const BorderSide(color: Color(0xFFBBBBBB), width: 1.5),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(14),
                           borderSide: const BorderSide(color: Color(0xFF333333), width: 2),
                         ),
                       ),
@@ -341,28 +364,28 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                       },
                     ),
 
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 16),
 
                     // PIN Input
                     TextFormField(
                       controller: _pinController,
-                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 13),
+                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 16),
                       decoration: InputDecoration(
                         hintText: 'SECURITY PIN (6 DIGITS)',
-                        hintStyle: GoogleFonts.outfit(fontSize: 12, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
+                        hintStyle: GoogleFonts.outfit(fontSize: 14, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
                         counterText: '',
                         isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                        prefixIcon: const Icon(Icons.lock_outline, color: Color(0xFF888888), size: 18),
-                        prefixIconConstraints: const BoxConstraints(minWidth: 36, minHeight: 18),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+                        prefixIcon: const Icon(Icons.lock_outline, color: Color(0xFF888888), size: 22),
+                        prefixIconConstraints: const BoxConstraints(minWidth: 42, minHeight: 22),
                         filled: true,
                         fillColor: const Color(0xFFF5F5F5),
                         enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(14),
                           borderSide: const BorderSide(color: Color(0xFFBBBBBB), width: 1.5),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(14),
                           borderSide: const BorderSide(color: Color(0xFF333333), width: 2),
                         ),
                       ),
@@ -381,7 +404,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                       },
                     ),
 
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 24),
 
                     // Error Message
                     if (authState.status == AuthStatus.error) ...[
@@ -390,11 +413,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                         style: GoogleFonts.outfit(
                           color: const Color(0xFFCC0000),
                           fontWeight: FontWeight.w700,
-                          fontSize: 12,
+                          fontSize: 13,
                         ),
                         textAlign: TextAlign.center,
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 18),
                     ],
 
                     // Terms & Conditions consent — required before login is
@@ -403,18 +426,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         SizedBox(
-                          width: 22,
-                          height: 22,
+                          width: 26,
+                          height: 26,
                           child: Checkbox(
                             value: _acceptedTerms,
                             onChanged: (value) => setState(() => _acceptedTerms = value ?? false),
                             activeColor: const Color(0xFFCC0000),
                             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             visualDensity: VisualDensity.compact,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
                           ),
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 12),
                         // Deliberately not wrapped in its own tap-to-toggle
                         // GestureDetector: doing so would put a second
                         // TapGestureRecognizer in the same gesture arena as
@@ -428,7 +451,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                             child: RichText(
                               text: TextSpan(
                                 style: GoogleFonts.outfit(
-                                  fontSize: 12,
+                                  fontSize: 13.5,
                                   height: 1.4,
                                   color: const Color(0xFF555555),
                                   fontWeight: FontWeight.w600,
@@ -436,15 +459,29 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                                 children: [
                                   const TextSpan(text: 'I accept the '),
                                   TextSpan(
-                                    text: 'Terms & Conditions and Privacy Policy',
+                                    text: 'Terms & Conditions',
                                     style: GoogleFonts.outfit(
                                       color: const Color(0xFFCC0000),
                                       fontWeight: FontWeight.w800,
                                       decoration: TextDecoration.underline,
                                       decorationColor: const Color(0xFFCC0000),
                                     ),
-                                    recognizer: TapGestureRecognizer()
-                                      ..onTap = () => context.pushNamed('legal'),
+                                    recognizer: TapGestureRecognizer()..onTap = () => _openLegalReview(),
+                                  ),
+                                  const TextSpan(text: ' and '),
+                                  TextSpan(
+                                    text: 'Privacy Policy',
+                                    style: GoogleFonts.outfit(
+                                      color: const Color(0xFFCC0000),
+                                      fontWeight: FontWeight.w800,
+                                      decoration: TextDecoration.underline,
+                                      decorationColor: const Color(0xFFCC0000),
+                                    ),
+                                    // Both discrete links open the same
+                                    // consolidated document feed — there's
+                                    // one real modal covering every policy,
+                                    // not a separate destination per link.
+                                    recognizer: TapGestureRecognizer()..onTap = () => _openLegalReview(),
                                   ),
                                 ],
                               ),
@@ -454,7 +491,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                       ],
                     ),
 
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 24),
 
                     // Login Button (Sleek, brand red primary action)
                     ElevatedButton(
@@ -466,41 +503,41 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                         foregroundColor: Colors.white,
                         disabledBackgroundColor: const Color(0xFFE0A0A0),
                         disabledForegroundColor: Colors.white.withValues(alpha: 0.85),
-                        minimumSize: const Size(double.infinity, 44),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        minimumSize: const Size(double.infinity, 54),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(12),
                         ),
                         elevation: 2,
                         shadowColor: const Color(0xFFCC0000).withValues(alpha: 0.4),
                       ),
                       child: authState.status == AuthStatus.loading
                           ? const SizedBox(
-                              width: 18,
-                              height: 18,
+                              width: 20,
+                              height: 20,
                               child: CircularProgressIndicator(
-                                strokeWidth: 2,
+                                strokeWidth: 2.5,
                                 color: Colors.white,
                               ),
                             )
                           : Text(
                               'Log in',
                               style: GoogleFonts.outfit(
-                                fontSize: 14,
+                                fontSize: 16,
                                 fontWeight: FontWeight.w700,
                                 letterSpacing: 0.3,
                               ),
                             ),
                     ),
 
-                    const SizedBox(height: 28),
+                    const SizedBox(height: 32),
 
                     // Clean typography footer
                     const Text(
                       'PRIVATE SYSTEM ACCESS\nAUTHORISED EMPLOYEES ONLY',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 9,
+                        fontSize: 11,
                         letterSpacing: 0.8,
                         fontWeight: FontWeight.w600,
                         color: Color(0xFF888888),
@@ -509,6 +546,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                   ],
                   ),
                 ),
+              ),
               ),
             ),
           ),

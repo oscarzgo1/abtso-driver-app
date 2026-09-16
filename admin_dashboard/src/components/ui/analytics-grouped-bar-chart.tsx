@@ -1,16 +1,47 @@
 import { useId } from 'react';
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipContentProps } from 'recharts';
+import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipContentProps } from 'recharts';
+
+/** Compact monospace/tabular-nums axis tick — recharts' plain `tick={{...}}`
+ * object only accepts SVG text attributes, not CSS classes, so matching
+ * this app's font-mono tabular-nums convention on the axis labels needs a
+ * real tick renderer. */
+function MonoTick({ x, y, payload, textAnchor, dy }: any) {
+  return (
+    <text
+      x={x}
+      y={y}
+      dy={dy ?? 0}
+      textAnchor={textAnchor ?? 'middle'}
+      fontSize={10}
+      fill="var(--charcoal-light)"
+      style={{ fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontVariantNumeric: 'tabular-nums' }}
+    >
+      {payload.value}
+    </text>
+  );
+}
 
 export interface GroupedBarChartPoint {
   label: string;
   revenue: number;
   cost: number;
+  /** Optional second operating-cost segment (e.g. estimated fuel),
+   * stacked onto `cost` to form one "Operating Cost" bar next to
+   * Revenue rather than three separate bars. */
+  fuel?: number;
+  /** Optional dotted overlay — the £ operating-cost ceiling that day's
+   * revenue would allow while still hitting a target margin. Only
+   * rendered when at least one point provides it. */
+  targetCostLine?: number;
 }
 
 interface AnalyticsGroupedBarChartProps {
   data: GroupedBarChartPoint[];
   revenueColor?: string;
   costColor?: string;
+  fuelColor?: string;
+  targetLineColor?: string;
+  targetLineLabel?: string;
   formatValue?: (value: number) => string;
   height?: number;
 }
@@ -28,12 +59,16 @@ export function AnalyticsGroupedBarChart({
   data,
   revenueColor = '#0F172A',
   costColor = '#CC0000',
+  fuelColor = '#F59E0B',
+  targetLineColor = '#64748B',
+  targetLineLabel = 'Target margin',
   formatValue,
   height = 240,
 }: AnalyticsGroupedBarChartProps) {
-  const gridId = useId();
   const revenueGlowId = useId();
   const costGlowId = useId();
+  const hasFuel = data.some(d => d.fuel !== undefined);
+  const hasTargetLine = data.some(d => d.targetCostLine !== undefined);
   const format = formatValue ?? ((v: number) => `£${v.toLocaleString('en-GB', { maximumFractionDigits: 0 })}`);
 
   if (data.length === 0) {
@@ -48,7 +83,8 @@ export function AnalyticsGroupedBarChart({
     if (!active || !payload?.length) return null;
     const revenue = (payload.find(p => p.dataKey === 'revenue')?.value as number) ?? 0;
     const cost = (payload.find(p => p.dataKey === 'cost')?.value as number) ?? 0;
-    const netProfit = revenue - cost;
+    const fuel = (payload.find(p => p.dataKey === 'fuel')?.value as number) ?? 0;
+    const grossProfit = revenue - cost - fuel;
     return (
       <div
         style={{
@@ -65,25 +101,34 @@ export function AnalyticsGroupedBarChart({
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '3px' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--charcoal-light)' }}>
             <span style={{ width: '6px', height: '6px', borderRadius: '2px', background: revenueColor, display: 'inline-block', flexShrink: 0 }} />
-            Load Revenue
+            Billed Revenue
           </span>
           <span style={{ fontWeight: 700, color: 'var(--charcoal)' }}>{format(revenue)}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '3px' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--charcoal-light)' }}>
             <span style={{ width: '6px', height: '6px', borderRadius: '2px', background: costColor, display: 'inline-block', flexShrink: 0 }} />
-            Driver Cost
+            Driver Wages
           </span>
           <span style={{ fontWeight: 700, color: 'var(--charcoal)' }}>{format(cost)}</span>
         </div>
+        {hasFuel && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', marginBottom: '6px' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '5px', color: 'var(--charcoal-light)' }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '2px', background: fuelColor, display: 'inline-block', flexShrink: 0 }} />
+              Est. Fuel
+            </span>
+            <span style={{ fontWeight: 700, color: 'var(--charcoal)' }}>{format(fuel)}</span>
+          </div>
+        )}
         <div
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
             paddingTop: '5px', borderTop: '1px solid var(--border-color)',
           }}
         >
-          <span style={{ color: 'var(--charcoal-light)' }}>Net Profit</span>
-          <span style={{ fontWeight: 800, color: netProfit >= 0 ? '#10B981' : '#DC2626' }}>{format(netProfit)}</span>
+          <span style={{ color: 'var(--charcoal-light)' }}>Gross Profit</span>
+          <span style={{ fontWeight: 800, color: grossProfit >= 0 ? '#10B981' : '#DC2626' }}>{format(grossProfit)}</span>
         </div>
       </div>
     );
@@ -91,11 +136,8 @@ export function AnalyticsGroupedBarChart({
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={data} margin={{ top: 10, right: 8, left: 0, bottom: 4 }}>
+      <ComposedChart data={data} margin={{ top: 10, right: 8, left: 0, bottom: 4 }}>
         <defs>
-          <pattern id={gridId} x="0" y="0" width="16" height="16" patternUnits="userSpaceOnUse">
-            <circle cx="8" cy="8" r="0.9" fill="var(--border-color)" />
-          </pattern>
           <filter id={revenueGlowId} x="-50%" y="-50%" width="200%" height="200%">
             <feDropShadow dx="0" dy="2" stdDeviation="4" floodColor={revenueColor} floodOpacity="0.3" />
           </filter>
@@ -104,27 +146,53 @@ export function AnalyticsGroupedBarChart({
           </filter>
         </defs>
 
-        <rect x="0" y="0" width="100%" height="100%" fill={`url(#${gridId})`} style={{ pointerEvents: 'none' }} />
+        {/* Subtle dashed horizontal reference lines — no vertical clutter,
+            dense-B2B financial-dashboard convention. */}
+        <CartesianGrid horizontal vertical={false} stroke="#E2E8F0" strokeDasharray="3 3" />
 
         <XAxis
           dataKey="label"
           axisLine={false}
           tickLine={false}
-          tick={{ fontSize: 10, fill: 'var(--charcoal-light)' }}
+          tick={<MonoTick />}
           tickMargin={8}
           interval="preserveStartEnd"
         />
         <YAxis
           axisLine={false}
           tickLine={false}
-          tick={{ fontSize: 10, fill: 'var(--charcoal-light)' }}
+          tick={<MonoTick textAnchor="end" dy={4} />}
           tickFormatter={(v) => format(v as number)}
           width={52}
         />
         <Tooltip content={CustomTooltip} cursor={{ fill: 'var(--card-bg-hover)' }} />
-        <Bar dataKey="revenue" name="Load Revenue" fill={revenueColor} radius={[3, 3, 0, 0]} barSize={18} filter={`url(#${revenueGlowId})`} />
-        <Bar dataKey="cost" name="Driver Cost" fill={costColor} radius={[3, 3, 0, 0]} barSize={18} filter={`url(#${costGlowId})`} />
-      </BarChart>
+        {/* isAnimationActive={false} on every shape below — Recharts
+            3.10.1's default entry animation never resolves in this app's
+            environment (confirmed by direct DOM inspection: the bar/pie
+            <path> elements stay permanently unset while mid-animation,
+            so nothing draws at all). Same fix applied to
+            fleet-status-donut-chart.tsx's <Pie>. */}
+        <Bar dataKey="revenue" name="Billed Revenue" fill={revenueColor} radius={[3, 3, 0, 0]} barSize={18} filter={`url(#${revenueGlowId})`} isAnimationActive={false} />
+        {/* Operating cost is one visual bar, stacked: wages on the bottom,
+            fuel on top — "cost" only gets rounded top corners when there's
+            no fuel segment sitting above it. */}
+        <Bar dataKey="cost" name="Driver Wages" stackId="opex" fill={costColor} radius={hasFuel ? [0, 0, 0, 0] : [3, 3, 0, 0]} barSize={18} filter={`url(#${costGlowId})`} isAnimationActive={false} />
+        {hasFuel && <Bar dataKey="fuel" name="Est. Fuel" stackId="opex" fill={fuelColor} radius={[3, 3, 0, 0]} barSize={18} isAnimationActive={false} />}
+        {hasTargetLine && (
+          <Line
+            type="monotone"
+            dataKey="targetCostLine"
+            name={targetLineLabel}
+            stroke={targetLineColor}
+            strokeWidth={1.5}
+            strokeDasharray="5 4"
+            dot={false}
+            activeDot={false}
+            legendType="none"
+            isAnimationActive={false}
+          />
+        )}
+      </ComposedChart>
     </ResponsiveContainer>
   );
 }

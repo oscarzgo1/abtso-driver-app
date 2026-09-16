@@ -332,7 +332,7 @@ serve(async (req: Request) => {
       const idleAlertMinutes = Number(body.idleAlertMinutes);
       const nightOutMinGapHours = Number(body.nightOutMinGapHours);
       const nightOutMaxGapHours = Number(body.nightOutMaxGapHours);
-      const motAlertLeadDays = Number(body.motAlertLeadDays);
+      const complianceAlertLeadDays = Number(body.complianceAlertLeadDays);
 
       if (!Number.isFinite(longShiftFlagHours) || longShiftFlagHours <= 0) {
         return json({ error: "Long-shift flag threshold must be a positive number of hours." }, 400);
@@ -346,19 +346,28 @@ serve(async (req: Request) => {
       if (!Number.isFinite(nightOutMaxGapHours) || nightOutMaxGapHours <= nightOutMinGapHours) {
         return json({ error: "Night-out maximum gap must be greater than the minimum gap." }, 400);
       }
-      if (!Number.isInteger(motAlertLeadDays) || motAlertLeadDays <= 0) {
+      if (!Number.isInteger(complianceAlertLeadDays) || complianceAlertLeadDays <= 0) {
         return json({ error: "MOT alert lead time must be a positive whole number of days." }, 400);
+      }
+
+      // allow_driver_night_out_requests (migration 050) is optional in
+      // the body — only included in the update when the caller actually
+      // sent it, so a plain "Save Thresholds" submit (which never sends
+      // this key) can't accidentally revert an admin's separate toggle.
+      const updatePayload: Record<string, unknown> = {
+        long_shift_flag_hours: longShiftFlagHours,
+        idle_alert_minutes: idleAlertMinutes,
+        night_out_min_gap_hours: nightOutMinGapHours,
+        night_out_max_gap_hours: nightOutMaxGapHours,
+        compliance_alert_lead_days: complianceAlertLeadDays,
+      };
+      if (typeof body.allowDriverNightOutRequests === "boolean") {
+        updatePayload.allow_driver_night_out_requests = body.allowDriverNightOutRequests;
       }
 
       const { error: updateError } = await supabaseAdmin
         .from("organizations")
-        .update({
-          long_shift_flag_hours: longShiftFlagHours,
-          idle_alert_minutes: idleAlertMinutes,
-          night_out_min_gap_hours: nightOutMinGapHours,
-          night_out_max_gap_hours: nightOutMaxGapHours,
-          mot_alert_lead_days: motAlertLeadDays,
-        })
+        .update(updatePayload)
         .eq("id", callerOrgId);
 
       if (updateError) {
@@ -368,7 +377,7 @@ serve(async (req: Request) => {
       console.log(`Alert settings updated for org ${callerOrgId} by ${callerEmail}`);
       return json({
         success: true,
-        settings: { longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, motAlertLeadDays },
+        settings: { longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays },
       });
     }
 

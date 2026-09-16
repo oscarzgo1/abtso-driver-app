@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { BarChart3, Check, LineChart as LineChartIcon, Search } from 'lucide-react';
+import { BarChart3, Check, LineChart as LineChartIcon, Filter } from 'lucide-react';
 
 /** Replaces the earlier gooey/floating search pill (gooey-search-filter.tsx)
  * — that used a hand-rolled `position: absolute` results list with no
@@ -37,23 +37,12 @@ export function AnalyticsFilterMenu({ options, isSelected, onSelect, activeCount
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center"
-          style={{
-            gap: '6px',
-            height: '32px',
-            padding: '0 14px',
-            borderRadius: '999px',
-            background: 'var(--brand-red)',
-            color: '#FFFFFF',
-            border: 'none',
-            fontSize: '12px',
-            fontWeight: 700,
-            cursor: 'pointer',
-          }}
-        >
-          <Search size={13} />
+        {/* Standardized to the same neutral bordered secondary button used
+            across the rest of the app (.comp-edit-btn) — no longer a solid
+            brand-red pill, which had made this look like a destructive/
+            primary action rather than a routine filter toggle. */}
+        <button type="button" className="comp-edit-btn">
+          <Filter size={13} />
           Filters{activeCount > 0 ? ` (${activeCount})` : ''}
         </button>
       </PopoverTrigger>

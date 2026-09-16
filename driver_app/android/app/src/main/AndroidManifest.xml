@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Defect-report photo evidence (image_picker) -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <application
         android:label="Tachyo Driver"
@@ -57,6 +59,11 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- image_picker: lets the OS resolve the camera/gallery apps on
+             Android 11+, which otherwise hides package visibility by default. -->
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>
     </queries>
 </manifest>

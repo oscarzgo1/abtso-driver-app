@@ -26,6 +26,18 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Tachyo uses your camera to attach a photo when you report a vehicle defect.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Tachyo needs access to your photos so you can attach an existing picture when reporting a vehicle defect.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Tachyo uses your location while you're clocked in to show your position on the dispatch map and log your route for your employer's fleet records.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Tachyo tracks your location in the background only while you're clocked in on an active shift, so your employer's dispatch team can see your position and confirm deliveries without you needing to keep the app open.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

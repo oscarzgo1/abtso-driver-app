@@ -698,7 +698,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   }
 
   /// Start a new shift (clock-in)
-  Future<void> clockIn() async {
+  Future<void> clockIn({String? vehicleId, String? trailerId}) async {
     state = state.copyWith(isLoading: true, clearErrorMessage: true);
 
     final pos = state.currentPosition;
@@ -779,6 +779,24 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
             } catch (gpsErr) {
               debugPrint('⚠️ Clock-in GPS direct insert failed (will retry via ping timer): $gpsErr');
             }
+
+            // Neither start_shift() nor the direct-insert fallback above
+            // accepts a vehicle/trailer, so this is a second, best-effort
+            // update — same reasoning as the GPS ping above: never let it
+            // block a successful clock-in. The Profitability ledger's
+            // "Assigned Unit" reads vehicle_id as its initial value; an
+            // admin can still correct either later (migration 045/049
+            // keep that override).
+            if (vehicleId != null || trailerId != null) {
+              try {
+                await SupabaseService.client.from('shifts').update({
+                  if (vehicleId != null) 'vehicle_id': vehicleId,
+                  if (trailerId != null) 'trailer_id': trailerId,
+                }).eq('id', shiftId);
+              } catch (vehicleErr) {
+                debugPrint('⚠️ Clock-in vehicle/trailer assignment failed: $vehicleErr');
+              }
+            }
           }
 
           await _startBackgroundTrackingService(driverId, shiftId);
@@ -807,6 +825,38 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     } finally {
       state = state.copyWith(isLoading: false);
     }
+  }
+
+  /// Couples/decouples the tractor and/or trailer on the already-active
+  /// shift — called from the header toolbar's Couple/Decouple modal and
+  /// from the dashboard's "No Tractor Assigned" sticky reminder. Updates
+  /// local state immediately on success so the reminder/header reflect
+  /// the change without waiting on the realtime shifts subscription.
+  Future<bool> updateCoupling({
+    String? vehicleId,
+    bool clearVehicle = false,
+    String? trailerId,
+    bool clearTrailer = false,
+  }) async {
+    final activeShift = state.activeShift;
+    if (activeShift == null) return false;
+
+    final success = await SupabaseService.updateShiftCoupling(
+      shiftId: activeShift.id,
+      vehicleId: vehicleId,
+      clearVehicle: clearVehicle,
+      trailerId: trailerId,
+      clearTrailer: clearTrailer,
+    );
+    if (success) {
+      state = state.copyWith(
+        activeShift: activeShift.copyWith(
+          vehicleId: clearVehicle ? null : (vehicleId ?? activeShift.vehicleId),
+          trailerId: clearTrailer ? null : (trailerId ?? activeShift.trailerId),
+        ),
+      );
+    }
+    return success;
   }
 
   /// End current shift (clock-out)
@@ -862,11 +912,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       }
 
       if (result['success'] == true) {
-        final completedShift = DriverShift(
-          id: activeShift.id,
-          driverId: activeShift.driverId,
-          depotId: activeShift.depotId,
-          startTime: activeShift.startTime,
+        final completedShift = activeShift.copyWith(
           endTime: DateTime.now(),
           status: 'completed',
           totalHours: (result['total_hours'] as num?)?.toDouble(),
@@ -919,25 +965,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     state = state.copyWith(isLoading: true, clearErrorMessage: true);
     try {
       if (SupabaseService.isMockMode) {
-        final updatedShift = DriverShift(
-          id: activeShift.id,
-          driverId: activeShift.driverId,
-          depotId: activeShift.depotId,
-          startTime: activeShift.startTime,
-          endTime: activeShift.endTime,
-          status: activeShift.status,
-          dayType: activeShift.dayType,
-          baseHourlyRate: activeShift.baseHourlyRate,
-          overrideRate: activeShift.overrideRate,
-          effectiveRate: activeShift.effectiveRate,
-          totalHours: activeShift.totalHours,
-          totalPay: activeShift.totalPay,
-          weekNumber: activeShift.weekNumber,
-          weekYear: activeShift.weekYear,
-          nightOutStatus: 'pending',
-          nightOutAmount: activeShift.nightOutAmount,
-        );
-        state = state.copyWith(activeShift: updatedShift);
+        state = state.copyWith(activeShift: activeShift.copyWith(nightOutStatus: 'pending'));
         return true;
       }
 
@@ -955,25 +983,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         );
       } catch (_) {}
 
-      final updatedShift = DriverShift(
-        id: activeShift.id,
-        driverId: activeShift.driverId,
-        depotId: activeShift.depotId,
-        startTime: activeShift.startTime,
-        endTime: activeShift.endTime,
-        status: activeShift.status,
-        dayType: activeShift.dayType,
-        baseHourlyRate: activeShift.baseHourlyRate,
-        overrideRate: activeShift.overrideRate,
-        effectiveRate: activeShift.effectiveRate,
-        totalHours: activeShift.totalHours,
-        totalPay: activeShift.totalPay,
-        weekNumber: activeShift.weekNumber,
-        weekYear: activeShift.weekYear,
-        nightOutStatus: 'pending',
-        nightOutAmount: activeShift.nightOutAmount,
-      );
-      state = state.copyWith(activeShift: updatedShift);
+      state = state.copyWith(activeShift: activeShift.copyWith(nightOutStatus: 'pending'));
       return true;
     } catch (e) {
       debugPrint('Error requesting Night Out: $e');

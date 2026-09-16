@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function CookiesPage() {
   return (
-    <LegalPage title="Cookie Policy" updated={<Insert>INSERT DATE ON PUBLICATION</Insert>}>
+    <LegalPage title="Cookie Policy" updated="15 September 2026">
       <LegalSection heading="What we use today">
         <p>
           Tachyo&apos;s website and admin dashboard currently use <strong>no advertising or

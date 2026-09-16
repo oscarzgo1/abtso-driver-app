@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
@@ -22,6 +25,21 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
+/// Desaturated grayscale basemap skin — applied only to the tile/vector
+/// layer, never to the marker/circle layers above it, so the depot
+/// geofences and driver puck stay in full, high-contrast colour against
+/// a muted map. Standard ITU-R BT.709 luma weights with no brightness
+/// offset — the closest Flutter ColorFilter equivalent of the spec's
+/// `grayscale(100%) contrast(100%)` (there's no direct 1:1 CSS-filter-
+/// to-ColorMatrix port; contrast(100%) is CSS's identity value, i.e.
+/// pure grayscale with no softening applied on top of it).
+const List<double> _grayscaleMapMatrix = <double>[
+  0.2126, 0.7152, 0.0722, 0, 0,
+  0.2126, 0.7152, 0.0722, 0, 0,
+  0.2126, 0.7152, 0.0722, 0, 0,
+  0, 0, 0, 1, 0,
+];
+
 class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStateMixin {
   Timer? _shiftDurationTimer;
   Duration _elapsedTime = Duration.zero;
@@ -36,6 +54,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
   RealtimeChannel? _driverProfileChannel;
   RealtimeChannel? _shiftsChannel;
+  RealtimeChannel? _orgSettingsChannel;
+
+  /// Whether the Action Hub shows "Request Night Out" at all (migration
+  /// 050's organizations.allow_driver_night_out_requests). Defaults
+  /// false — hidden — until the org row actually resolves true.
+  bool _allowNightOutRequests = false;
 
   /// Aggressive fresh read of driver profile, active shift, and depots from database
   Future<void> fetchDashboardData() async {
@@ -45,6 +69,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     await ref.read(authProvider.notifier).refreshProfile();
     await ref.read(shiftProvider.notifier).loadActiveShift();
     await ref.read(shiftProvider.notifier).fetchDepots();
+    await _loadOrgSettings();
+  }
+
+  Future<void> _loadOrgSettings() async {
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    if (organizationId == null) return;
+    final allowed = await SupabaseService.fetchAllowNightOutRequests(organizationId);
+    if (mounted && allowed != _allowNightOutRequests) {
+      setState(() => _allowNightOutRequests = allowed);
+    }
   }
 
   void _setupRealtimeListeners(String driverId) {
@@ -53,7 +87,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
     try {
       debugPrint('📡 Setting up Realtime channels for driver: $driverId');
-      
+
       // 1. Driver Profile Realtime (Rates, Agency, Rate Type, etc.)
       _driverProfileChannel = SupabaseService.client
           .channel('driver_profile_updates_$driverId')
@@ -91,6 +125,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
             },
           )
           ..subscribe();
+
+      // 3. Org Settings Realtime — so flipping "Allow Drivers to Request
+      // Night Out" in the admin panel hides/shows the Action Hub option
+      // immediately, without the driver needing to relaunch the app.
+      final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+      if (organizationId != null) {
+        _orgSettingsChannel = SupabaseService.client
+            .channel('org_settings_updates_$organizationId')
+            .onPostgresChanges(
+              event: PostgresChangeEvent.update,
+              schema: 'public',
+              table: 'organizations',
+              filter: PostgresChangeFilter(
+                type: PostgresChangeFilterType.eq,
+                column: 'id',
+                value: organizationId,
+              ),
+              callback: (PostgresChangePayload payload) {
+                final allowed = payload.newRecord['allow_driver_night_out_requests'] == true;
+                if (mounted && allowed != _allowNightOutRequests) {
+                  setState(() => _allowNightOutRequests = allowed);
+                }
+              },
+            )
+            ..subscribe();
+      }
     } catch (e) {
       debugPrint('Realtime channel subscription error: $e');
     }
@@ -104,6 +164,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     if (_shiftsChannel != null) {
       SupabaseService.client.removeChannel(_shiftsChannel!);
       _shiftsChannel = null;
+    }
+    if (_orgSettingsChannel != null) {
+      SupabaseService.client.removeChannel(_orgSettingsChannel!);
+      _orgSettingsChannel = null;
     }
   }
 
@@ -319,6 +383,196 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
+  /// Searchable fleet-asset picker, shared by the fuel log, incident
+  /// report, and couple/decouple sheets. Returns the chosen vehicle map,
+  /// an empty map as the "Decouple / Clear" sentinel (only offered when
+  /// [allowClear] is true), or null if the sheet was dismissed with no
+  /// choice made.
+  Future<Map<String, dynamic>?> _showSearchableAssetPicker(
+    BuildContext context, {
+    required String title,
+    required String subtitle,
+    required List<Map<String, dynamic>> vehicles,
+    String? typeFilter,
+    bool allowClear = false,
+  }) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final source = typeFilter != null
+        ? vehicles.where((v) => v['vehicle_type'] == typeFilter).toList()
+        : vehicles;
+    final searchController = TextEditingController();
+
+    return showModalBottomSheet<Map<String, dynamic>?>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            final query = searchController.text.trim().toLowerCase();
+            final results = query.isEmpty
+                ? source
+                : source.where((v) => (v['vehicle_number'] as String).toLowerCase().contains(query)).toList();
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20, right: 20, top: 20,
+                bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.local_shipping_outlined, color: Color(0xFFCC0000), size: 24),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15, letterSpacing: 0.5, color: isDark ? Colors.white : Colors.black87),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(subtitle, style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54)),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: searchController,
+                    onChanged: (_) => setSheetState(() {}),
+                    style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600),
+                    decoration: InputDecoration(
+                      hintText: 'Search registration…',
+                      hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38, fontWeight: FontWeight.w500),
+                      prefixIcon: const Icon(Icons.search, size: 18),
+                      isDense: true,
+                      filled: true,
+                      fillColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (allowClear)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: OutlinedButton.icon(
+                        onPressed: () => Navigator.pop(sheetContext, <String, dynamic>{}),
+                        icon: const Icon(Icons.link_off, size: 16),
+                        label: const Text('Decouple / Clear Selection', style: TextStyle(fontWeight: FontWeight.w700)),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: isDark ? Colors.white70 : Colors.black54,
+                          side: BorderSide(color: isDark ? Colors.white24 : Colors.black26, width: 1.5),
+                          minimumSize: const Size(double.infinity, 42),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        ),
+                      ),
+                    ),
+                  Flexible(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 360),
+                      child: results.isEmpty
+                          ? Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 24),
+                              child: Text(
+                                source.isEmpty ? 'No vehicles are registered for your company yet.' : 'No matching vehicles.',
+                                style: TextStyle(fontSize: 13, color: isDark ? Colors.white60 : Colors.black54),
+                              ),
+                            )
+                          : ListView.separated(
+                              shrinkWrap: true,
+                              itemCount: results.length,
+                              separatorBuilder: (_, __) => const SizedBox(height: 8),
+                              itemBuilder: (_, i) {
+                                final v = results[i];
+                                final isTruck = v['vehicle_type'] == 'truck';
+                                return Material(
+                                  color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                                  borderRadius: BorderRadius.circular(12),
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () => Navigator.pop(sheetContext, v),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                                      child: Row(
+                                        children: [
+                                          Icon(isTruck ? Icons.local_shipping_outlined : Icons.rv_hookup_outlined, size: 20, color: const Color(0xFFCC0000)),
+                                          const SizedBox(width: 12),
+                                          Text(
+                                            (v['vehicle_number'] as String).toUpperCase(),
+                                            style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w800, fontSize: 14, letterSpacing: 0.5),
+                                          ),
+                                          const Spacer(),
+                                          Icon(Icons.chevron_right, size: 18, color: isDark ? Colors.white38 : Colors.black38),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Compact floating status pill — replaces the old tall, full-width
+  /// banners. Frosted dark pill, optional tap action (the "no tractor"
+  /// pill routes to Couple/Decouple; the GPS-error and offline-sync
+  /// pills are purely informational).
+  Widget _buildStatusPill({
+    required IconData icon,
+    required String label,
+    Color tone = const Color(0xFF0F172A),
+    VoidCallback? onTap,
+  }) {
+    final pill = ClipRRect(
+      borderRadius: BorderRadius.circular(999),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: tone.withValues(alpha: 0.9),
+            borderRadius: BorderRadius.circular(999),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withValues(alpha: 0.15), blurRadius: 6, offset: const Offset(0, 2)),
+            ],
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 13, color: Colors.white),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  label,
+                  style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (onTap != null) ...[
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right, size: 14, color: Colors.white70),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+    if (onTap == null) return pill;
+    return GestureDetector(onTap: onTap, child: pill);
+  }
+
   void _handleRecenter() {
     final pos = ref.read(shiftProvider).currentPosition;
     if (pos != null) {
@@ -403,15 +657,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
-  /// One-tap incident reporting — a category button submits immediately
-  /// with whatever GPS/context is already available; the note field below
-  /// is optional and never blocks submission. Reachable any time (not
+  /// Incident reporting: tap a category, then confirm which vehicle it
+  /// concerns — the admin panel needs the asset, not just the category,
+  /// to know which truck/trailer to act on. Tapping a vehicle fires the
+  /// submission immediately (single direct insert, no queueing), so this
+  /// stays a fast two-tap flow with no added delay before it reaches the
+  /// admin panel. The vehicle list is fetched as soon as the sheet opens
+  /// (in parallel with its slide-up animation and the category step),
+  /// not after the category tap, so it's normally already loaded by the
+  /// time the driver reaches the vehicle step. Reachable any time (not
   /// gated on being clocked in) since an incident can happen off-shift too.
   void _handleReportIncidentAction(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final noteController = TextEditingController();
     bool isSubmitting = false;
+    final selectedPhotos = <XFile>[];
+    // Bytes read once at pick time, parallel to selectedPhotos — the
+    // web build (driver.tachyo.co.uk) can't use dart:io.File to read an
+    // XFile back later, so the bytes are captured up front and reused
+    // for both the thumbnail preview and the upload itself.
+    final selectedPhotoBytes = <Uint8List>[];
+    final picker = ImagePicker();
+    String? selectedCategory;
+    String? selectedCategoryLabel;
+
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    final vehiclesFuture = organizationId != null
+        ? SupabaseService.fetchOrgVehicles(organizationId)
+        : Future.value(<Map<String, dynamic>>[]);
 
     const categories = [
       ('Vehicle Damage', 'vehicle_damage', Icons.car_crash_outlined),
@@ -431,40 +705,88 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
-            Future<void> submit(String category) async {
+            Future<void> pickPhoto(ImageSource source) async {
+              final picked = await picker.pickImage(source: source, imageQuality: 80, maxWidth: 1600);
+              if (picked == null) return;
+              final bytes = await picked.readAsBytes();
+              setSheetState(() {
+                selectedPhotos.add(picked);
+                selectedPhotoBytes.add(bytes);
+              });
+            }
+
+            Future<void> submit(String category, {String? vehicleId, String? trailerId}) async {
               final messenger = ScaffoldMessenger.of(context);
               final driverId = ref.read(authProvider).driver?['id'] as String?;
               if (driverId == null || isSubmitting) return;
 
               setSheetState(() => isSubmitting = true);
-              final pos = ref.read(shiftProvider).currentPosition;
-              final success = await SupabaseService.submitIncidentReport(
-                driverId: driverId,
-                category: category,
-                note: noteController.text,
-                latitude: pos?.latitude,
-                longitude: pos?.longitude,
-              );
-              if (sheetContext.mounted) Navigator.pop(sheetContext);
-              messenger.showSnackBar(
-                SnackBar(
-                  content: Text(
-                    success ? 'Incident reported. Thanks.' : 'Could not send the report — try again.',
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+              // Everything below is wrapped in try/finally — previously,
+              // any unexpected exception here (a bad cast, a dropped
+              // connection mid-upload, anything) left isSubmitting stuck
+              // at true forever with no error shown, silently no-opping
+              // every future tap on this sheet ("nothing happens when I
+              // click"). The finally block guarantees it always resets,
+              // and the catch surfaces the real error instead of hiding it.
+              try {
+                final pos = ref.read(shiftProvider).currentPosition;
+
+                // Upload whatever photos were attached first — a photo
+                // that fails to upload is just dropped, never blocks the
+                // report itself from going through (uploadDefectPhoto
+                // already catches its own errors and returns null).
+                final photoPaths = <String>[];
+                if (organizationId != null) {
+                  for (var i = 0; i < selectedPhotos.length; i++) {
+                    final path = await SupabaseService.uploadDefectPhoto(
+                      organizationId: organizationId,
+                      driverId: driverId,
+                      bytes: selectedPhotoBytes[i],
+                      fileName: selectedPhotos[i].name,
+                    );
+                    if (path != null) photoPaths.add(path);
+                  }
+                }
+
+                final success = await SupabaseService.submitIncidentReport(
+                  driverId: driverId,
+                  category: category,
+                  vehicleId: vehicleId,
+                  trailerId: trailerId,
+                  note: noteController.text,
+                  latitude: pos?.latitude,
+                  longitude: pos?.longitude,
+                  photoPaths: photoPaths,
+                );
+                if (sheetContext.mounted) Navigator.pop(sheetContext);
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success ? 'Incident reported. Thanks.' : 'Could not send the report — try again.',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
-                  backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
-                  behavior: SnackBarBehavior.floating,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-              );
+                );
+              } catch (e) {
+                debugPrint('Incident report submit failed: $e');
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text('Something went wrong sending the report: $e', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    backgroundColor: const Color(0xFFFF3333),
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                );
+              } finally {
+                if (sheetContext.mounted) setSheetState(() => isSubmitting = false);
+              }
             }
 
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 20, right: 20, top: 20,
-                bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
-              ),
-              child: Column(
+            Widget buildCategoryStep() {
+              return Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -485,7 +807,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Tap a category to send it now.',
+                    'Tap a category, then confirm the vehicle.',
                     style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
                   ),
                   const SizedBox(height: 16),
@@ -495,7 +817,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     children: [
                       for (final (label, value, icon) in categories)
                         OutlinedButton.icon(
-                          onPressed: isSubmitting ? null : () => submit(value),
+                          onPressed: () => setSheetState(() {
+                            selectedCategory = value;
+                            selectedCategoryLabel = label;
+                          }),
                           icon: Icon(icon, size: 18, color: const Color(0xFFCC0000)),
                           label: Text(
                             label,
@@ -517,7 +842,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   TextField(
                     controller: noteController,
                     maxLines: 2,
-                    enabled: !isSubmitting,
                     decoration: InputDecoration(
                       hintText: 'Add a note (optional)',
                       filled: true,
@@ -528,12 +852,1136 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      TextButton.icon(
+                        onPressed: () => pickPhoto(ImageSource.camera),
+                        icon: const Icon(Icons.camera_alt_outlined, size: 18),
+                        label: const Text('Take Photo'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => pickPhoto(ImageSource.gallery),
+                        icon: const Icon(Icons.photo_library_outlined, size: 18),
+                        label: const Text('Choose Photo'),
+                      ),
+                    ],
+                  ),
+                  if (selectedPhotos.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    SizedBox(
+                      height: 64,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: selectedPhotos.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemBuilder: (_, i) => Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Image.memory(selectedPhotoBytes[i], width: 64, height: 64, fit: BoxFit.cover),
+                            ),
+                            Positioned(
+                              top: -6,
+                              right: -6,
+                              child: GestureDetector(
+                                onTap: () => setSheetState(() {
+                                  selectedPhotos.removeAt(i);
+                                  selectedPhotoBytes.removeAt(i);
+                                }),
+                                child: Container(
+                                  padding: const EdgeInsets.all(2),
+                                  decoration: const BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                                  child: const Icon(Icons.close, size: 14, color: Colors.white),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              );
+            }
+
+            Widget buildVehicleRow(Map<String, dynamic> vehicle) {
+              final isTruck = vehicle['vehicle_type'] == 'truck';
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Material(
+                  color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                  borderRadius: BorderRadius.circular(12),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: isSubmitting
+                        ? null
+                        : () => submit(selectedCategory!, vehicleId: vehicle['id'] as String),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isTruck ? Icons.local_shipping_outlined : Icons.rv_hookup_outlined,
+                            size: 20,
+                            color: const Color(0xFFCC0000),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            vehicle['vehicle_number'] as String,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 14,
+                              color: isDark ? Colors.white : Colors.black87,
+                            ),
+                          ),
+                          const Spacer(),
+                          Icon(Icons.chevron_right, size: 18, color: isDark ? Colors.white38 : Colors.black38),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            Widget buildVehicleStep() {
+              final activeShift = ref.read(shiftProvider).activeShift;
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      IconButton(
+                        onPressed: isSubmitting ? null : () => setSheetState(() => selectedCategory = null),
+                        icon: Icon(Icons.arrow_back, color: isDark ? Colors.white : Colors.black87),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              selectedCategoryLabel ?? '',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.5,
+                                fontSize: 15,
+                                color: isDark ? Colors.white : Colors.black87,
+                              ),
+                            ),
+                            Text(
+                              'Which vehicle is this about?',
+                              style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  FutureBuilder<List<Map<String, dynamic>>>(
+                    future: vehiclesFuture,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState != ConnectionState.done) {
+                        return const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 24),
+                          child: Center(child: CircularProgressIndicator(strokeWidth: 2.5)),
+                        );
+                      }
+                      final vehicles = snapshot.data ?? const [];
+                      if (vehicles.isEmpty) {
+                        // No fleet registered yet — never let that block a
+                        // safety report from reaching the admin panel.
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'No vehicles are registered for your company yet.',
+                              style: TextStyle(fontSize: 13, color: isDark ? Colors.white60 : Colors.black54),
+                            ),
+                            const SizedBox(height: 12),
+                            OutlinedButton(
+                              onPressed: isSubmitting ? null : () => submit(selectedCategory!),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                              child: const Text(
+                                'Send report anyway',
+                                style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000)),
+                              ),
+                            ),
+                          ],
+                        );
+                      }
+
+                      // Defaults to the currently coupled tractor/trailer —
+                      // surfaced as one-tap quick options — but a search
+                      // across the whole fleet is always available for a
+                      // spare/uncoupled/yard asset.
+                      Map<String, dynamic>? findById(String? id) {
+                        if (id == null) return null;
+                        for (final v in vehicles) {
+                          if (v['id'] == id) return v;
+                        }
+                        return null;
+                      }
+                      final coupledTractor = findById(activeShift?.vehicleId);
+                      final coupledTrailer = findById(activeShift?.trailerId);
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (coupledTractor != null) ...[
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Text('CURRENTLY COUPLED', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: 0.5, color: isDark ? Colors.white38 : Colors.black38)),
+                            ),
+                            buildVehicleRow(coupledTractor),
+                          ],
+                          if (coupledTrailer != null) buildVehicleRow(coupledTrailer),
+                          if (coupledTractor != null || coupledTrailer != null) const SizedBox(height: 4),
+                          OutlinedButton.icon(
+                            onPressed: isSubmitting
+                                ? null
+                                : () async {
+                                    final picked = await _showSearchableAssetPicker(
+                                      context,
+                                      title: 'SEARCH FLEET',
+                                      subtitle: 'Report on any tractor or trailer, including a spare parked in the yard.',
+                                      vehicles: vehicles,
+                                    );
+                                    if (picked == null || picked.isEmpty) return;
+                                    final isTractor = picked['vehicle_type'] == 'truck';
+                                    submit(
+                                      selectedCategory!,
+                                      vehicleId: isTractor ? picked['id'] as String : null,
+                                      trailerId: !isTractor ? picked['id'] as String : null,
+                                    );
+                                  },
+                            icon: const Icon(Icons.search, size: 16, color: Color(0xFFCC0000)),
+                            label: const Text('Search Fleet Asset', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              minimumSize: const Size(double.infinity, 44),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: isSubmitting ? null : () => submit(selectedCategory!),
+                            child: Text('Send report without an asset', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white54 : Colors.black45)),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ],
+              );
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20, right: 20, top: 20,
+                bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  selectedCategory == null ? buildCategoryStep() : buildVehicleStep(),
                   if (isSubmitting) ...[
                     const SizedBox(height: 16),
                     const Center(child: CircularProgressIndicator(strokeWidth: 2.5)),
                   ],
                 ],
               ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Reusable "pick a tractor / pick a trailer" row for both the clock-in
+  /// sheet and the couple/decouple sheet — shows the current selection's
+  /// registration (mono/uppercase/bold, per design guidelines) or an
+  /// empty-state prompt, and opens the searchable picker on tap.
+  Widget _buildCouplingRow({
+    required BuildContext context,
+    required bool isDark,
+    required String label,
+    required IconData icon,
+    required String? selectedVehicleNumber,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: const Color(0xFFCC0000)),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: 0.5, color: isDark ? Colors.white60 : Colors.black54),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      selectedVehicleNumber != null ? selectedVehicleNumber.toUpperCase() : 'Tap to select',
+                      style: TextStyle(
+                        fontFamily: selectedVehicleNumber != null ? 'monospace' : null,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 14,
+                        letterSpacing: selectedVehicleNumber != null ? 0.5 : 0,
+                        color: selectedVehicleNumber != null ? (isDark ? Colors.white : Colors.black87) : (isDark ? Colors.white38 : Colors.black38),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, size: 18, color: isDark ? Colors.white38 : Colors.black38),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Unified Action Hub — one consolidated bottom sheet for all four
+  /// operational actions, opened from the single AppBar "Quick actions"
+  /// icon. Brought back after a brief detour through a permanently
+  /// docked 4-tile bar under the map, which took up too much fixed
+  /// screen space — this sheet keeps the map's full height and only
+  /// appears when actually needed. Rows that don't apply yet (e.g.
+  /// clocked out) render disabled with an explanatory subtitle rather
+  /// than disappearing, so the hub's shape doesn't shift depending on
+  /// state.
+  void _handleActionHub(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final state = ref.read(shiftProvider);
+    final isClockedIn = state.activeShift != null;
+    final activeShift = state.activeShift;
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    final vehiclesFuture = organizationId != null
+        ? SupabaseService.fetchOrgVehicles(organizationId)
+        : Future.value(<Map<String, dynamic>>[]);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) {
+        Widget buildActionRow({
+          required IconData icon,
+          required String title,
+          required String subtitle,
+          required VoidCallback? onSelect,
+        }) {
+          final enabled = onSelect != null;
+          final titleColor = enabled ? (isDark ? Colors.white : Colors.black87) : (isDark ? Colors.white38 : Colors.black38);
+          final iconColor = enabled ? const Color(0xFFCC0000) : (isDark ? Colors.white24 : Colors.black26);
+          return Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: enabled
+                  ? () {
+                      Navigator.pop(sheetContext);
+                      onSelect();
+                    }
+                  : null,
+              borderRadius: BorderRadius.circular(12),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(color: iconColor.withValues(alpha: 0.12), shape: BoxShape.circle),
+                      alignment: Alignment.center,
+                      child: Icon(icon, size: 18, color: iconColor),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(title, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: titleColor)),
+                          const SizedBox(height: 2),
+                          Text(subtitle, style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54)),
+                        ],
+                      ),
+                    ),
+                    if (enabled) Icon(Icons.chevron_right, size: 18, color: isDark ? Colors.white38 : Colors.black38),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+
+        return FutureBuilder<List<Map<String, dynamic>>>(
+          future: vehiclesFuture,
+          builder: (context, snapshot) {
+            final vehicles = snapshot.data ?? const [];
+            Map<String, dynamic>? findById(String? id) {
+              if (id == null) return null;
+              for (final v in vehicles) {
+                if (v['id'] == id) return v;
+              }
+              return null;
+            }
+
+            final tractor = findById(activeShift?.vehicleId);
+            final trailer = findById(activeShift?.trailerId);
+            final unitsSubtitle = !isClockedIn
+                ? 'Clock in to couple a vehicle'
+                : (tractor == null && trailer == null)
+                    ? 'Unassigned (tap to pair)'
+                    : [
+                        if (tractor != null) (tractor['vehicle_number'] as String).toUpperCase(),
+                        if (trailer != null) (trailer['vehicle_number'] as String).toUpperCase(),
+                      ].join(' / ');
+
+            final nightOutStatus = activeShift?.nightOutStatus;
+            final canRequestNightOut = isClockedIn && (nightOutStatus == 'none' || nightOutStatus == null);
+            final nightOutSubtitle = !isClockedIn
+                ? 'Clock in to request'
+                : switch (nightOutStatus) {
+                    'pending' => 'Already requested — awaiting review',
+                    'approved' => 'Approved for this shift',
+                    'rejected' => 'Request was declined',
+                    _ => 'Away from home tonight',
+                  };
+
+            return Padding(
+              padding: EdgeInsets.only(left: 12, right: 12, top: 16, bottom: 16 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      'QUICK ACTIONS',
+                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.6, color: isDark ? Colors.white : Colors.black87),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  buildActionRow(
+                    icon: Icons.local_shipping_outlined,
+                    title: 'Assigned Units',
+                    subtitle: unitsSubtitle,
+                    onSelect: isClockedIn ? () => _handleCoupleDecoupleAction(context) : null,
+                  ),
+                  buildActionRow(
+                    icon: Icons.local_gas_station_outlined,
+                    title: 'Log Fuel & AdBlue',
+                    subtitle: isClockedIn ? 'Diesel or AdBlue, with a receipt photo' : 'Clock in to log fuel',
+                    onSelect: isClockedIn ? () => _handleFuelReceiptAction(context) : null,
+                  ),
+                  buildActionRow(
+                    icon: Icons.warning_amber_rounded,
+                    title: 'Report Defect / Incident',
+                    subtitle: 'Damage, near miss, collision, mechanical fault',
+                    onSelect: () => _handleReportIncidentAction(context),
+                  ),
+                  // Conditional on the org's own Settings -> Alerts toggle
+                  // (migration 050) — completely absent from the hub, not
+                  // just disabled, when the company doesn't run a Night
+                  // Out allowance scheme.
+                  if (_allowNightOutRequests)
+                    buildActionRow(
+                      icon: Icons.bedtime_outlined,
+                      title: 'Request Night Out',
+                      subtitle: nightOutSubtitle,
+                      onSelect: canRequestNightOut
+                          ? () async {
+                              final messenger = ScaffoldMessenger.of(context);
+                              final success = await ref.read(shiftProvider.notifier).requestNightOut();
+                              if (success) {
+                                messenger.showSnackBar(
+                                  const SnackBar(
+                                    content: Text('Night Out request submitted.'),
+                                    backgroundColor: Color(0xFFF59E0B),
+                                  ),
+                                );
+                              }
+                            }
+                          : null,
+                    ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Clock-in coupling selection: Tractor Unit and Trailer are two
+  /// independent fields (spec: "Decoupled Tractor & Trailer Coupling"),
+  /// each feeding shifts.vehicle_id / shifts.trailer_id (migration
+  /// 045/047/049) as a best-effort initial value for the Profitability
+  /// ledger — an admin can still correct either later. Neither is
+  /// required: "CLOCK IN" always works with whatever's selected (including
+  /// nothing), and starting fully uncoupled is the explicit "Assign Later"
+  /// path — the Quick Actions hub's Assigned Units row is how a driver
+  /// closes that out afterwards.
+  void _handleClockInVehicleSelection(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    final vehiclesFuture = organizationId != null
+        ? SupabaseService.fetchOrgVehicles(organizationId)
+        : Future.value(<Map<String, dynamic>>[]);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Map<String, dynamic>? selectedTractor;
+            Map<String, dynamic>? selectedTrailer;
+
+            return FutureBuilder<List<Map<String, dynamic>>>(
+              future: vehiclesFuture,
+              builder: (context, snapshot) {
+                final vehicles = snapshot.data ?? const [];
+                return Padding(
+                  padding: EdgeInsets.only(
+                    left: 20, right: 20, top: 20,
+                    bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.local_shipping_outlined, color: Color(0xFFCC0000), size: 26),
+                          const SizedBox(width: 12),
+                          Text(
+                            'COUPLE YOUR VEHICLE',
+                            style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5, fontSize: 16, color: isDark ? Colors.white : Colors.black87),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        "Select the tractor and/or trailer you're taking out today, or skip and assign later.",
+                        style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+                      ),
+                      const SizedBox(height: 16),
+                      if (snapshot.connectionState != ConnectionState.done)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 24),
+                          child: Center(child: CircularProgressIndicator(strokeWidth: 2.5)),
+                        )
+                      else ...[
+                        _buildCouplingRow(
+                          context: context,
+                          isDark: isDark,
+                          label: 'TRACTOR UNIT',
+                          icon: Icons.local_shipping_outlined,
+                          selectedVehicleNumber: selectedTractor?['vehicle_number'] as String?,
+                          onTap: () async {
+                            final picked = await _showSearchableAssetPicker(
+                              context,
+                              title: 'TRACTOR UNIT',
+                              subtitle: 'Search or select the tractor you\'re taking out.',
+                              vehicles: vehicles,
+                              typeFilter: 'truck',
+                            );
+                            if (picked != null && picked.isNotEmpty) {
+                              setSheetState(() => selectedTractor = picked);
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                        _buildCouplingRow(
+                          context: context,
+                          isDark: isDark,
+                          label: 'TRAILER',
+                          icon: Icons.rv_hookup_outlined,
+                          selectedVehicleNumber: selectedTrailer?['vehicle_number'] as String?,
+                          onTap: () async {
+                            final picked = await _showSearchableAssetPicker(
+                              context,
+                              title: 'TRAILER',
+                              subtitle: 'Search or select the trailer you\'re taking out.',
+                              vehicles: vehicles,
+                              typeFilter: 'trailer',
+                            );
+                            if (picked != null && picked.isNotEmpty) {
+                              setSheetState(() => selectedTrailer = picked);
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 18),
+                        ElevatedButton(
+                          onPressed: () {
+                            Navigator.pop(sheetContext);
+                            ref.read(shiftProvider.notifier).clockIn(
+                                  vehicleId: selectedTractor?['id'] as String?,
+                                  trailerId: selectedTrailer?['id'] as String?,
+                                );
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF2E7D32),
+                            foregroundColor: Colors.white,
+                            minimumSize: const Size(double.infinity, 46),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: const Text('CLOCK IN', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5)),
+                        ),
+                        if (selectedTractor == null && selectedTrailer == null) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'Skip / Assign Vehicle Later — you can couple from the dashboard once clocked in.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: isDark ? Colors.white38 : Colors.black38),
+                          ),
+                        ],
+                      ],
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Header-toolbar / sticky-reminder Couple/Decouple modal — reachable
+  /// any time during an active shift, independent of the clock-in flow.
+  /// Each of Tractor/Trailer can be set, changed, or cleared on its own.
+  void _handleCoupleDecoupleAction(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    final vehiclesFuture = organizationId != null
+        ? SupabaseService.fetchOrgVehicles(organizationId)
+        : Future.value(<Map<String, dynamic>>[]);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            final activeShift = ref.read(shiftProvider).activeShift;
+
+            return FutureBuilder<List<Map<String, dynamic>>>(
+              future: vehiclesFuture,
+              builder: (context, snapshot) {
+                final vehicles = snapshot.data ?? const [];
+                Map<String, dynamic>? findById(String? id) {
+                  if (id == null) return null;
+                  for (final v in vehicles) {
+                    if (v['id'] == id) return v;
+                  }
+                  return null;
+                }
+                final tractor = findById(activeShift?.vehicleId);
+                final trailer = findById(activeShift?.trailerId);
+
+                return Padding(
+                  padding: EdgeInsets.only(
+                    left: 20, right: 20, top: 20,
+                    bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.local_shipping_outlined, color: Color(0xFFCC0000), size: 26),
+                          const SizedBox(width: 12),
+                          Text(
+                            'COUPLE / DECOUPLE',
+                            style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5, fontSize: 16, color: isDark ? Colors.white : Colors.black87),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Update the tractor or trailer coupled to this shift at any time.',
+                        style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+                      ),
+                      const SizedBox(height: 16),
+                      if (snapshot.connectionState != ConnectionState.done)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 24),
+                          child: Center(child: CircularProgressIndicator(strokeWidth: 2.5)),
+                        )
+                      else ...[
+                        _buildCouplingRow(
+                          context: context,
+                          isDark: isDark,
+                          label: 'TRACTOR UNIT',
+                          icon: Icons.local_shipping_outlined,
+                          selectedVehicleNumber: tractor?['vehicle_number'] as String?,
+                          onTap: () async {
+                            final picked = await _showSearchableAssetPicker(
+                              context,
+                              title: 'TRACTOR UNIT',
+                              subtitle: 'Search or select a tractor, or decouple.',
+                              vehicles: vehicles,
+                              typeFilter: 'truck',
+                              allowClear: tractor != null,
+                            );
+                            if (picked == null) return;
+                            final isClear = picked.isEmpty;
+                            final ok = await ref.read(shiftProvider.notifier).updateCoupling(
+                                  vehicleId: isClear ? null : picked['id'] as String,
+                                  clearVehicle: isClear,
+                                );
+                            if (ok) setSheetState(() {});
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                        _buildCouplingRow(
+                          context: context,
+                          isDark: isDark,
+                          label: 'TRAILER',
+                          icon: Icons.rv_hookup_outlined,
+                          selectedVehicleNumber: trailer?['vehicle_number'] as String?,
+                          onTap: () async {
+                            final picked = await _showSearchableAssetPicker(
+                              context,
+                              title: 'TRAILER',
+                              subtitle: 'Search or select a trailer, or decouple.',
+                              vehicles: vehicles,
+                              typeFilter: 'trailer',
+                              allowClear: trailer != null,
+                            );
+                            if (picked == null) return;
+                            final isClear = picked.isEmpty;
+                            final ok = await ref.read(shiftProvider.notifier).updateCoupling(
+                                  trailerId: isClear ? null : picked['id'] as String,
+                                  clearTrailer: isClear,
+                                );
+                            if (ok) setSheetState(() {});
+                          },
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Fuel & AdBlue receipt logging: one photo (required — the
+  /// receipt_photo_path column is NOT NULL, migration 047) and litres
+  /// (required by this form; migration 049 kept the column itself
+  /// nullable at the DB level, but a receipt with no volume logged isn't
+  /// useful for cost tracking) are the only two things that must be
+  /// filled in. Total cost is now genuinely optional (migration 049
+  /// dropped its NOT NULL). Re-openable any number of times per shift —
+  /// nothing here limits it to one log. Tied to the active shift so the
+  /// Profitability ledger can attribute it to a specific row; starts
+  /// 'pending' and only counts toward Actual Fuel Cost once an admin
+  /// approves it (see submitFuelReceipt).
+  void _handleFuelReceiptAction(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final litersController = TextEditingController();
+    final costController = TextEditingController();
+    final vendorController = TextEditingController();
+    final picker = ImagePicker();
+    XFile? selectedPhoto;
+    // Read once at pick time — see uploadFuelReceiptPhoto's doc comment;
+    // the web build can't re-read an XFile via dart:io.File later, so
+    // the bytes captured here are reused for both the instant preview
+    // and the actual upload.
+    Uint8List? selectedPhotoBytes;
+    String fuelType = 'diesel';
+    bool isSubmitting = false;
+    String? formError;
+
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    final activeShift = ref.read(shiftProvider).activeShift;
+    final shiftId = activeShift?.id;
+    // Defaults to the currently coupled tractor unit, per spec — the
+    // driver can still search/select any other asset from the picker.
+    Map<String, dynamic>? selectedAsset;
+    final vehiclesFuture = organizationId != null
+        ? SupabaseService.fetchOrgVehicles(organizationId)
+        : Future.value(<Map<String, dynamic>>[]);
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Future<void> pickPhoto(ImageSource source) async {
+              final picked = await picker.pickImage(source: source, imageQuality: 80, maxWidth: 1600);
+              if (picked == null) return;
+              final bytes = await picked.readAsBytes();
+              setSheetState(() {
+                selectedPhoto = picked;
+                selectedPhotoBytes = bytes;
+              });
+            }
+
+            final liters = double.tryParse(litersController.text.trim());
+            final canSubmit = selectedPhoto != null && liters != null && liters > 0 && !isSubmitting;
+
+            Future<void> submit() async {
+              final messenger = ScaffoldMessenger.of(context);
+              final driverId = ref.read(authProvider).driver?['id'] as String?;
+              if (driverId == null || isSubmitting) return;
+
+              final photo = selectedPhoto;
+              final litersValue = double.tryParse(litersController.text.trim());
+              if (photo == null) {
+                setSheetState(() => formError = 'A photo of the receipt is required.');
+                return;
+              }
+              if (litersValue == null || litersValue <= 0) {
+                setSheetState(() => formError = 'Enter the volume in litres.');
+                return;
+              }
+              final costText = costController.text.trim();
+              final cost = costText.isEmpty ? null : double.tryParse(costText);
+              if (costText.isNotEmpty && (cost == null || cost <= 0)) {
+                setSheetState(() => formError = 'Enter a valid total cost, or leave it blank.');
+                return;
+              }
+
+              setSheetState(() {
+                isSubmitting = true;
+                formError = null;
+              });
+
+              // try/finally — same fix as the incident report's submit():
+              // without it, an exception here left isSubmitting stuck at
+              // true forever, silently blocking every later tap on this
+              // sheet with no visible error.
+              try {
+                String? photoPath;
+                if (organizationId != null && selectedPhotoBytes != null) {
+                  photoPath = await SupabaseService.uploadFuelReceiptPhoto(
+                    organizationId: organizationId,
+                    driverId: driverId,
+                    bytes: selectedPhotoBytes!,
+                    fileName: photo.name,
+                  );
+                }
+                if (photoPath == null) {
+                  setSheetState(() {
+                    formError = 'Could not upload the photo — check your connection and try again.';
+                  });
+                  return;
+                }
+
+                final isTractor = selectedAsset?['vehicle_type'] == 'truck';
+                final success = await SupabaseService.submitFuelReceipt(
+                  driverId: driverId,
+                  receiptPhotoPath: photoPath,
+                  liters: litersValue,
+                  fuelType: fuelType,
+                  totalCost: cost,
+                  shiftId: shiftId,
+                  vehicleId: isTractor ? selectedAsset!['id'] as String : null,
+                  trailerId: !isTractor && selectedAsset != null ? selectedAsset!['id'] as String : null,
+                  vendor: vendorController.text,
+                );
+                if (sheetContext.mounted) Navigator.pop(sheetContext);
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success ? 'Fuel receipt sent for approval.' : 'Could not send the receipt — try again.',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                );
+              } catch (e) {
+                debugPrint('Fuel receipt submit failed: $e');
+                setSheetState(() => formError = 'Something went wrong sending the receipt: $e');
+              } finally {
+                if (sheetContext.mounted) setSheetState(() => isSubmitting = false);
+              }
+            }
+
+            InputDecoration fieldDecoration(String hint) => InputDecoration(
+              hintText: hint,
+              filled: true,
+              fillColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+            );
+
+            Widget buildTypeToggle(String value, String label) {
+              final selected = fuelType == value;
+              return Expanded(
+                child: GestureDetector(
+                  onTap: () => setSheetState(() => fuelType = value),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: selected ? const Color(0xFFCC0000) : (isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9)),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                        color: selected ? Colors.white : (isDark ? Colors.white70 : Colors.black54),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            return FutureBuilder<List<Map<String, dynamic>>>(
+              future: vehiclesFuture,
+              builder: (context, snapshot) {
+                final vehicles = snapshot.data ?? const [];
+                // Default the target to the coupled tractor the first time
+                // the vehicle list resolves, without overwriting a manual
+                // selection the driver has since made.
+                if (selectedAsset == null && activeShift?.vehicleId != null) {
+                  for (final v in vehicles) {
+                    if (v['id'] == activeShift!.vehicleId) {
+                      selectedAsset = v;
+                      break;
+                    }
+                  }
+                }
+
+                return Padding(
+                  padding: EdgeInsets.only(
+                    left: 20, right: 20, top: 20,
+                    bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+                  ),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.local_gas_station_outlined, color: Color(0xFFCC0000), size: 26),
+                            const SizedBox(width: 12),
+                            Text(
+                              'LOG A FUEL RECEIPT',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w900,
+                                letterSpacing: 0.5,
+                                fontSize: 16,
+                                color: isDark ? Colors.white : Colors.black87,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'A manager reviews this before it counts toward fuel cost.',
+                          style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+                        ),
+                        const SizedBox(height: 16),
+
+                        Row(children: [buildTypeToggle('diesel', 'FUEL (DIESEL)'), const SizedBox(width: 8), buildTypeToggle('adblue', 'ADBLUE')]),
+                        const SizedBox(height: 12),
+
+                        _buildCouplingRow(
+                          context: context,
+                          isDark: isDark,
+                          label: 'ASSET',
+                          icon: selectedAsset?['vehicle_type'] == 'trailer' ? Icons.rv_hookup_outlined : Icons.local_shipping_outlined,
+                          selectedVehicleNumber: selectedAsset?['vehicle_number'] as String?,
+                          onTap: () async {
+                            final picked = await _showSearchableAssetPicker(
+                              context,
+                              title: 'WHICH ASSET?',
+                              subtitle: 'Search any tractor or trailer — not just the one coupled.',
+                              vehicles: vehicles,
+                            );
+                            if (picked != null && picked.isNotEmpty) {
+                              setSheetState(() => selectedAsset = picked);
+                            } else if (picked != null && picked.isEmpty) {
+                              setSheetState(() => selectedAsset = null);
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 12),
+
+                        if (selectedPhoto == null)
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () => pickPhoto(ImageSource.camera),
+                                  icon: const Icon(Icons.camera_alt_outlined, size: 18, color: Color(0xFFCC0000)),
+                                  label: const Text('Take Photo', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
+                                  style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(vertical: 14),
+                                    side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () => pickPhoto(ImageSource.gallery),
+                                  icon: Icon(Icons.photo_library_outlined, size: 18, color: isDark ? Colors.white70 : Colors.black54),
+                                  label: Text('Choose Photo', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54)),
+                                  style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(vertical: 14),
+                                    side: BorderSide(color: isDark ? Colors.white24 : Colors.black26, width: 1.5),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        else
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Image.memory(selectedPhotoBytes!, width: double.infinity, height: 160, fit: BoxFit.cover),
+                                  ),
+                                  Positioned(
+                                    top: -8,
+                                    right: -8,
+                                    child: GestureDetector(
+                                      onTap: () => setSheetState(() {
+                                        selectedPhoto = null;
+                                        selectedPhotoBytes = null;
+                                      }),
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: const BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                                        child: const Icon(Icons.close, size: 16, color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  TextButton.icon(
+                                    onPressed: () => pickPhoto(ImageSource.camera),
+                                    icon: const Icon(Icons.replay_outlined, size: 16, color: Color(0xFFCC0000)),
+                                    label: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
+                                  ),
+                                  Text('/', style: TextStyle(color: isDark ? Colors.white30 : Colors.black26)),
+                                  TextButton.icon(
+                                    onPressed: () => setSheetState(() {
+                                      selectedPhoto = null;
+                                      selectedPhotoBytes = null;
+                                    }),
+                                    icon: Icon(Icons.delete_outline, size: 16, color: isDark ? Colors.white54 : Colors.black54),
+                                    label: Text('Remove', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white54 : Colors.black54)),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: litersController,
+                                onChanged: (_) => setSheetState(() {}),
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                decoration: fieldDecoration('Volume in litres (L) *'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: TextField(
+                                controller: costController,
+                                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                decoration: fieldDecoration('Total cost £ (optional)'),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: vendorController,
+                          decoration: fieldDecoration('Station / vendor (optional)'),
+                        ),
+                        if (formError != null) ...[
+                          const SizedBox(height: 10),
+                          Text(formError!, style: const TextStyle(color: Color(0xFFFF3333), fontSize: 12.5, fontWeight: FontWeight.w600)),
+                        ],
+                        const SizedBox(height: 16),
+                        ElevatedButton(
+                          onPressed: canSubmit ? submit : null,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFCC0000),
+                            disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+                            minimumSize: const Size(double.infinity, 48),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: isSubmitting
+                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                              : const Text('Submit Fuel Log', style: TextStyle(fontWeight: FontWeight.w800, color: Colors.white)),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             );
           },
         );
@@ -694,10 +2142,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
           child: Container(height: 1, color: const Color(0xFFE0E0E0)),
         ),
         actions: [
+          // Back to one consolidated trigger for all four operational
+          // actions (Vehicle, Fuel, Incident, Night Out) — the docked
+          // bar tried under the map took up too much permanent space;
+          // this opens the same actions from a single bottom sheet
+          // instead, per explicit feedback to bring the old single-hub
+          // button back.
           IconButton(
-            icon: const Icon(Icons.report_outlined, size: 18, color: Color(0xFF333333)),
-            tooltip: 'Report an incident',
-            onPressed: () => _handleReportIncidentAction(context),
+            icon: const Icon(Icons.tune_rounded, size: 20, color: Color(0xFF333333)),
+            tooltip: 'Quick actions',
+            onPressed: () => _handleActionHub(context),
           ),
           IconButton(
             icon: const Icon(Icons.logout, size: 18, color: Color(0xFF333333)),
@@ -785,34 +2239,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               ),
             ),
 
-            // Offline clock-in/out awaiting sync — shown for either
-            // direction; only the fact that a tap was captured and the time
-            // it happened, never an invented shift id or pay figure.
-            if (state.pendingAction != null)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                color: const Color(0xFFFFF7E6),
-                child: Row(
-                  children: [
-                    const Icon(Icons.cloud_off_rounded, size: 16, color: Color(0xFFB45309)),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        state.pendingAction!.type == 'clock_in'
-                            ? 'Clock-in recorded at ${DateFormat('HH:mm').format(state.pendingAction!.timestamp.toLocal())} — will sync once you\'re back online.'
-                            : 'Clock-out recorded at ${DateFormat('HH:mm').format(state.pendingAction!.timestamp.toLocal())} — will sync once you\'re back online.',
-                        style: GoogleFonts.outfit(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w700,
-                          color: const Color(0xFFB45309),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
             // Live map (High Contrast Grid)
             Expanded(
               child: Stack(
@@ -826,25 +2252,59 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       initialZoom: 14.0,
                     ),
                     children: [
-                      // Bright Google Maps-style tiles (OpenFreeMap Positron, vector)
-                      FutureBuilder<Style>(
-                        future: _mapStyle,
-                        builder: (context, snapshot) {
-                          final style = snapshot.data;
-                          if (style == null) {
-                            // Plain backdrop while the style loads, or if it fails —
-                            // depot circles and markers below stay usable regardless.
-                            return const SizedBox.shrink();
-                          }
-                          return VectorTileLayer(
-                            theme: style.theme,
-                            sprites: style.sprites,
-                            tileProviders: style.providers,
-                          );
-                        },
+                      // Desaturated grayscale basemap — Tachyo brand skin.
+                      // Two different tile implementations by platform, not
+                      // a cosmetic choice: vector_map_tiles (8.0.0) always
+                      // builds a disk-backed tile cache via path_provider's
+                      // getTemporaryDirectory() — which has no web
+                      // implementation and throws MissingPluginException —
+                      // and several of its own cache read/write paths
+                      // aren't wrapped in try/catch, so on web the map
+                      // never rendered a single tile (an uncaught exception
+                      // during Caches setup, confirmed via a debug build's
+                      // console). Native platforms (Android/iOS) have a
+                      // real getTemporaryDirectory, so they keep the nicer
+                      // vector rendering unaffected. ColorFiltered wraps
+                      // only this tile layer, not the CircleLayer/
+                      // MarkerLayer below it, so the depot geofences and
+                      // driver puck stay full-colour and high-contrast
+                      // against the muted map underneath them.
+                      ColorFiltered(
+                        colorFilter: const ColorFilter.matrix(_grayscaleMapMatrix),
+                        child: kIsWeb
+                            ? TileLayer(
+                                // CARTO's basemaps.cartocdn.com XYZ endpoint now
+                                // returns "API key required" placeholder tiles —
+                                // confirmed by actually loading this in a browser,
+                                // not assumed. OSM's own standard tile server is
+                                // genuinely keyless; a small fleet's worth of
+                                // drivers is trivial load for it, and
+                                // userAgentPackageName identifies the app per
+                                // their usage policy.
+                                urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                                subdomains: const ['a', 'b', 'c'],
+                                userAgentPackageName: 'uk.co.tachyo.driver',
+                              )
+                            : FutureBuilder<Style>(
+                                future: _mapStyle,
+                                builder: (context, snapshot) {
+                                  final style = snapshot.data;
+                                  if (style == null) {
+                                    // Plain backdrop while the style loads, or if it fails —
+                                    // depot circles and markers below stay usable regardless.
+                                    return const SizedBox.shrink();
+                                  }
+                                  return VectorTileLayer(
+                                    theme: style.theme,
+                                    sprites: style.sprites,
+                                    tileProviders: style.providers,
+                                  );
+                                },
+                              ),
                       ),
-                      
-                      // Circles Layer for Depots
+
+                      // Circles Layer for Depots — subtle slate outlines,
+                      // full-colour against the grayscale basemap.
                       CircleLayer(
                         circles: state.depots.map((depot) {
                           final isNearest = state.nearestDepot?.id == depot.id;
@@ -854,11 +2314,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                             useRadiusInMeter: true,
                             color: isNearest && state.isNearDepot
                                 ? TachyoTheme.success.withValues(alpha: 0.12)
-                                : (isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03)),
+                                : const Color(0xFF475569).withValues(alpha: 0.06),
                             borderColor: isNearest && state.isNearDepot
                                 ? TachyoTheme.success
-                                : (isDark ? Colors.white54 : Colors.black54),
-                            borderStrokeWidth: 1.5,
+                                : const Color(0xFF475569),
+                            borderStrokeWidth: 2,
                           );
                         }).toList(),
                       ),
@@ -872,40 +2332,67 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               point: latlong.LatLng(depot.latitude, depot.longitude),
                               width: 32,
                               height: 32,
-                              child: Icon(
+                              child: const Icon(
                                 Icons.location_pin,
-                                color: isDark ? Colors.white : Colors.black,
+                                color: Color(0xFF475569),
                                 size: 18,
                               ),
                             );
                           }),
-                          
-                          // Current Driver Blue Dot
+
+                          // Current Driver Puck — classic monochrome
+                          // navigation-cursor arrow (not a coloured circle
+                          // with an icon inside it), dark slate with a
+                          // crisp white outline, rotated to the device's
+                          // GPS heading. The white "outline" is a larger
+                          // white copy of the same glyph directly behind
+                          // the dark-slate one — there's no native
+                          // stroke-outline API for a Material icon glyph,
+                          // and a uniformly-scaled copy behind a convex
+                          // kite/arrow shape like this reads as a clean
+                          // ~1.5px border at this marker size.
                           if (state.currentPosition != null)
                             Marker(
                               point: latlong.LatLng(state.currentPosition!.latitude, state.currentPosition!.longitude),
-                              width: 24,
-                              height: 24,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.blueAccent,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(color: Colors.white, width: 2.5),
-                                ),
+                              width: 30,
+                              height: 30,
+                              child: Builder(
+                                builder: (context) {
+                                  final rawHeading = state.currentPosition!.heading;
+                                  final heading = rawHeading.isFinite && rawHeading >= 0 ? rawHeading : 0.0;
+                                  return Transform.rotate(
+                                    angle: heading * (math.pi / 180),
+                                    child: Stack(
+                                      alignment: Alignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.navigation_rounded,
+                                          size: 30,
+                                          color: Colors.white,
+                                          shadows: [
+                                            Shadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 3, offset: const Offset(0, 1)),
+                                          ],
+                                        ),
+                                        const Icon(Icons.navigation_rounded, size: 23, color: Color(0xFF0F172A)),
+                                      ],
+                                    ),
+                                  );
+                                },
                               ),
                             ),
                         ],
                       ),
 
-                      // Required by OpenFreeMap / OpenMapTiles / OSM terms — kept
-                      // minimal (no flutter_map package branding) and small.
+                      // Required attribution — matches whichever tile
+                      // source is actually rendering above (kept minimal,
+                      // no flutter_map package branding, small).
                       Align(
                         alignment: Alignment.bottomRight,
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                           color: const Color(0x99FFFFFF),
                           child: const Text(
-                            '© OpenFreeMap, OpenMapTiles, OpenStreetMap',
+                            kIsWeb ? '© OpenStreetMap contributors' : '© OpenFreeMap, OpenMapTiles, OpenStreetMap',
                             style: TextStyle(fontSize: 7, color: Color(0xFF888888)),
                           ),
                         ),
@@ -913,29 +2400,41 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     ],
                   ),
 
-                  // Floating accuracy error message card
-                  if (state.errorMessage != null)
-                    Positioned(
-                      top: 16,
-                      left: 16,
-                      right: 16,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        decoration: BoxDecoration(
-                          color: theme.scaffoldBackgroundColor,
-                          border: Border.all(color: theme.colorScheme.error, width: 1.5),
-                        ),
-                        child: Text(
-                          state.errorMessage!.toUpperCase(),
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: theme.colorScheme.error,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 11,
+                  // Floating status pills — replaces what used to be
+                  // tall, full-width banners (GPS error, offline sync)
+                  // that lived in the Column above the map and pushed it
+                  // down. Compact pills floating over the top of the map
+                  // instead, so the map itself always gets its full
+                  // Expanded height. The old "no tractor assigned"
+                  // reminder pill was removed per explicit feedback — the
+                  // Quick Actions hub (Assigned Units row) already covers
+                  // it without a standing notification over the map.
+                  Positioned(
+                    top: 12,
+                    left: 16,
+                    right: 16,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (state.errorMessage != null)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 6),
+                            child: _buildStatusPill(
+                              icon: Icons.gps_off_rounded,
+                              label: state.errorMessage!,
+                              tone: const Color(0xFFCC0000),
+                            ),
                           ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
+                        if (state.pendingAction != null)
+                          _buildStatusPill(
+                            icon: Icons.cloud_off_rounded,
+                            label: state.pendingAction!.type == 'clock_in'
+                                ? 'Clock-in recorded ${DateFormat('HH:mm').format(state.pendingAction!.timestamp.toLocal())} — syncing'
+                                : 'Clock-out recorded ${DateFormat('HH:mm').format(state.pendingAction!.timestamp.toLocal())} — syncing',
+                          ),
+                      ],
                     ),
+                  ),
 
                   // Floating "Center to My Location" Button
                   Positioned(
@@ -1136,40 +2635,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         ),
                       ),
                       const SizedBox(height: 12),
-                    ] else ...[
-                      OutlinedButton.icon(
-                        onPressed: state.isLoading
-                            ? null
-                            : () async {
-                                final messenger = ScaffoldMessenger.of(context);
-                                final success = await ref.read(shiftProvider.notifier).requestNightOut();
-                                if (success) {
-                                  messenger.showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Night Out request submitted successfully!'),
-                                      backgroundColor: Color(0xFFF59E0B),
-                                    ),
-                                  );
-                                }
-                              },
-                        icon: const Icon(Icons.bedtime_outlined, size: 18, color: Color(0xFFF59E0B)),
-                        label: Text(
-                          'REQUEST NIGHT OUT',
-                          style: GoogleFonts.outfit(
-                            fontWeight: FontWeight.w800,
-                            fontSize: 12,
-                            color: isDark ? Colors.white : Colors.black87,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          side: const BorderSide(color: Color(0xFFF59E0B), width: 1.5),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
                     ],
+                    // No status yet ('none') — nothing to show here; the
+                    // request itself is now triggered from the Action Hub
+                    // (Quick Actions -> Request Night Out), not a
+                    // standalone button in this panel.
 
                     // Clock Out Button (Dynamically enabled/disabled based on geofence)
                     ElevatedButton(
@@ -1240,7 +2710,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     ElevatedButton(
                       onPressed: (state.isLoading || !state.isNearDepot || state.pendingAction != null)
                           ? null
-                          : () => ref.read(shiftProvider.notifier).clockIn(),
+                          : () => _handleClockInVehicleSelection(context),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFF2E7D32),
                         disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),

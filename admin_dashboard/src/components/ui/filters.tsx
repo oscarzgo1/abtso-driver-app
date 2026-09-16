@@ -66,6 +66,7 @@ export const FilterType = {
   AGENCY: 'Agency',
   DEPOT: 'Depot',
   PERIOD: 'Period',
+  CARRIER: 'Carrier',
 } as const;
 export type FilterType = (typeof FilterType)[keyof typeof FilterType];
 

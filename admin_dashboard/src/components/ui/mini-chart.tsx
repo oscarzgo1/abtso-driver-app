@@ -22,9 +22,10 @@ interface MiniChartProps {
 
 /** A vertical variant of the 21st.dev "Mini Chart" reference
  * (@jatin-yadav05/mini-chart) — same pulsing-dot header with a
- * hover-revealed value and the same hover-glow container, but the chart
- * itself is a stacked list of horizontal fill-bars (one row per data
- * point) instead of the reference's row of vertical bars, per request.
+ * hover-revealed value, but with the reference's card background/border/
+ * hover-glow chrome stripped out per request (bars only, no shadow/panel),
+ * and the chart itself is a stacked list of horizontal fill-bars (one row
+ * per data point) instead of the reference's row of vertical bars.
  * Each row's value is shown inline rather than behind a hover tooltip —
  * with every row already visible at once in a vertical list, hovering
  * each one individually for its number is more friction than it's worth.
@@ -43,7 +44,7 @@ export function MiniChart({ title, data, unit = '', formatValue, className }: Mi
   return (
     <div
       className={cn(
-        'group relative w-72 p-6 rounded-2xl bg-foreground/[0.02] border border-foreground/[0.06] backdrop-blur-sm transition-all duration-500 hover:bg-foreground/[0.04] hover:border-foreground/[0.1] flex flex-col gap-4',
+        'group relative w-72 flex flex-col gap-4',
         className,
       )}
       onMouseLeave={() => setHoveredIndex(null)}
@@ -109,9 +110,6 @@ export function MiniChart({ title, data, unit = '', formatValue, className }: Mi
           );
         })}
       </div>
-
-      {/* Subtle glow effect on hover */}
-      <div className="absolute inset-0 rounded-2xl bg-gradient-to-b from-foreground/[0.02] to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
     </div>
   );
 }

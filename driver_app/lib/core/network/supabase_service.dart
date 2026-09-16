@@ -468,20 +468,116 @@ class SupabaseService {
     }
   }
 
-  /// Submits a driver-reported incident (migration 040) — vehicle damage,
-  /// near-miss, collision, mechanical fault, or other. Deliberately
-  /// minimal: a category plus whatever context is actually available
-  /// (GPS, an optional note) — nothing here is fabricated when a value
-  /// isn't known, it's just omitted (e.g. no GPS fix yet).
+  /// Uploads one defect-evidence photo to the private "defect-photos"
+  /// bucket (migration 044) and returns the stored object path (NOT a
+  /// public URL — the bucket is private; the admin panel resolves this
+  /// path to a short-lived signed URL when actually displaying it).
+  /// Path shape `<org_id>/<driver_id>/<file>` matches the bucket's RLS,
+  /// which scopes read access to the uploader and their own org's admins.
+  ///
+  /// Takes raw bytes + a file name, not a dart:io File — this app is
+  /// deployed as a Flutter Web build (driver.tachyo.co.uk), and
+  /// dart:io.File throws UnsupportedError on web. uploadBinary() is the
+  /// cross-platform Supabase Storage call that actually works on both
+  /// web and native; the caller gets bytes via XFile.readAsBytes(),
+  /// which is itself already cross-platform.
+  static Future<String?> uploadDefectPhoto({
+    required String organizationId,
+    required String driverId,
+    required Uint8List bytes,
+    required String fileName,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK photo upload: $fileName');
+      return 'mock/$fileName';
+    }
+    try {
+      final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : 'jpg';
+      final path = '$organizationId/$driverId/${DateTime.now().millisecondsSinceEpoch}.$ext';
+      await client.storage.from('defect-photos').uploadBinary(
+            path,
+            bytes,
+            fileOptions: FileOptions(contentType: 'image/$ext'),
+          );
+      return path;
+    } catch (e) {
+      debugPrint('uploadDefectPhoto failed: $e');
+      return null;
+    }
+  }
+
+  /// Fetches this driver's org's feature toggles (migration 050) — right
+  /// now just allow_driver_night_out_requests, which gates whether the
+  /// Action Hub shows "Request Night Out" at all. RLS's
+  /// `organizations_read_own` policy (migration 032) already lets a
+  /// driver read their own org's row via current_org_id(), which
+  /// resolves for a driver session the same way it does for an admin
+  /// one — no new policy needed.
+  static Future<bool> fetchAllowNightOutRequests(String organizationId) async {
+    if (isMockMode) return true;
+    try {
+      final response = await client
+          .from('organizations')
+          .select('allow_driver_night_out_requests')
+          .eq('id', organizationId)
+          .maybeSingle();
+      return response?['allow_driver_night_out_requests'] == true;
+    } catch (e) {
+      debugPrint('fetchAllowNightOutRequests failed: $e');
+      return false;
+    }
+  }
+
+  /// Fetches this driver's org's active vehicles (trucks + trailers) so the
+  /// incident-report flow can ask which asset a report concerns — without
+  /// this, incident_reports.vehicle_id is left null and the admin panel
+  /// has no way to know which truck/trailer needs attention. RLS
+  /// (`vehicles_org_read`, migration 040) already scopes this to the
+  /// caller's own organization via current_org_id().
+  static Future<List<Map<String, dynamic>>> fetchOrgVehicles(String organizationId) async {
+    if (isMockMode) {
+      return [
+        {'id': 'mock-truck-1', 'vehicle_number': 'TRK-101', 'vehicle_type': 'truck'},
+        {'id': 'mock-trailer-1', 'vehicle_number': 'TRL-204', 'vehicle_type': 'trailer'},
+      ];
+    }
+    try {
+      final response = await client
+          .from('vehicles')
+          .select('id, vehicle_number, vehicle_type')
+          .eq('organization_id', organizationId)
+          .eq('is_active', true)
+          .order('vehicle_type')
+          .order('vehicle_number');
+      return List<Map<String, dynamic>>.from(response);
+    } catch (e) {
+      debugPrint('fetchOrgVehicles failed: $e');
+      return [];
+    }
+  }
+
+  /// Submits a driver-reported defect (migration 040/043) — vehicle
+  /// damage, near-miss, collision, mechanical fault, or other, tagged to
+  /// the specific asset involved (vehicleId) wherever one was selected, with
+  /// optional evidence photos (stored object paths from
+  /// uploadDefectPhoto, not URLs). Deliberately minimal otherwise: a
+  /// category plus whatever context is actually available (GPS, an
+  /// optional note) — nothing here is fabricated when a value isn't
+  /// known, it's just omitted (e.g. no GPS fix yet). Fires as a single
+  /// direct insert with no queueing or batching, so it reaches the admin
+  /// panel immediately.
   static Future<bool> submitIncidentReport({
     required String driverId,
     required String category,
+    String? vehicleId,
+    String? trailerId,
     String? note,
     double? latitude,
     double? longitude,
+    List<String> photoPaths = const [],
   }) async {
     if (isMockMode) {
-      debugPrint('MOCK incident report: $category ($note) at ($latitude, $longitude)');
+      debugPrint('MOCK incident report: $category for vehicle $vehicleId / trailer $trailerId ($note) at ($latitude, $longitude) with ${photoPaths.length} photo(s)');
       return true;
     }
 
@@ -489,13 +585,126 @@ class SupabaseService {
       await client.from('incident_reports').insert({
         'driver_id': driverId,
         'category': category,
+        if (vehicleId != null) 'vehicle_id': vehicleId,
+        if (trailerId != null) 'trailer_id': trailerId,
         if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
         if (latitude != null) 'latitude': latitude,
         if (longitude != null) 'longitude': longitude,
+        if (photoPaths.isNotEmpty) 'photo_urls': photoPaths,
       });
       return true;
     } catch (e) {
       debugPrint('submitIncidentReport failed: $e');
+      return false;
+    }
+  }
+
+  /// Uploads one fuel-receipt photo to the private "fuel-receipts"
+  /// bucket (migration 047) — same private-bucket-with-signed-URL shape
+  /// as uploadDefectPhoto above, not a public link.
+  /// Cross-platform bytes + file name — see uploadDefectPhoto's doc
+  /// comment for why this doesn't take a dart:io File.
+  static Future<String?> uploadFuelReceiptPhoto({
+    required String organizationId,
+    required String driverId,
+    required Uint8List bytes,
+    required String fileName,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK fuel receipt photo upload: $fileName');
+      return 'mock/$fileName';
+    }
+    try {
+      final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : 'jpg';
+      final path = '$organizationId/$driverId/${DateTime.now().millisecondsSinceEpoch}.$ext';
+      await client.storage.from('fuel-receipts').uploadBinary(
+            path,
+            bytes,
+            fileOptions: FileOptions(contentType: 'image/$ext'),
+          );
+      return path;
+    } catch (e) {
+      debugPrint('uploadFuelReceiptPhoto failed: $e');
+      return null;
+    }
+  }
+
+  /// Submits one fuel or AdBlue receipt (migration 047, extended by 049
+  /// with fuel_type and an optional total_cost) — starts 'pending' until
+  /// an admin reviews it; only 'approved' receipts count toward the
+  /// Profitability ledger's Actual Fuel Cost, so an unreviewed submission
+  /// here never silently inflates anyone's numbers. liters is required
+  /// by the caller (the mobile form enforces this before calling), cost
+  /// is genuinely optional now that migration 049 dropped its NOT NULL.
+  static Future<bool> submitFuelReceipt({
+    required String driverId,
+    required String receiptPhotoPath,
+    required double liters,
+    String fuelType = 'diesel',
+    double? totalCost,
+    String? shiftId,
+    String? vehicleId,
+    String? trailerId,
+    String? vendor,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK fuel receipt: $fuelType, ${liters}L, ${totalCost != null ? '£$totalCost' : 'no cost entered'} at ${vendor ?? 'unknown vendor'} for shift $shiftId');
+      return true;
+    }
+
+    try {
+      await client.from('fuel_receipts').insert({
+        'driver_id': driverId,
+        'receipt_photo_path': receiptPhotoPath,
+        'liters': liters,
+        'fuel_type': fuelType,
+        if (totalCost != null) 'total_cost': totalCost,
+        if (shiftId != null) 'shift_id': shiftId,
+        if (vehicleId != null) 'vehicle_id': vehicleId,
+        if (trailerId != null) 'trailer_id': trailerId,
+        if (vendor != null && vendor.trim().isNotEmpty) 'vendor': vendor.trim(),
+      });
+      return true;
+    } catch (e) {
+      debugPrint('submitFuelReceipt failed: $e');
+      return false;
+    }
+  }
+
+  /// Couples/decouples the tractor and/or trailer on an in-progress
+  /// shift (migration 049's shifts.trailer_id, alongside the existing
+  /// vehicle_id) — the header toolbar's Couple/Decouple modal and the
+  /// dashboard's "No Tractor Assigned" reminder both call this. Passing
+  /// an explicit `clearVehicle`/`clearTrailer` sets that column back to
+  /// NULL (decouple); omitting a field leaves that column untouched.
+  static Future<bool> updateShiftCoupling({
+    required String shiftId,
+    String? vehicleId,
+    bool clearVehicle = false,
+    String? trailerId,
+    bool clearTrailer = false,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK coupling update for shift $shiftId: vehicle=${clearVehicle ? 'CLEARED' : vehicleId ?? 'unchanged'}, trailer=${clearTrailer ? 'CLEARED' : trailerId ?? 'unchanged'}');
+      return true;
+    }
+    final update = <String, dynamic>{};
+    if (clearVehicle) {
+      update['vehicle_id'] = null;
+    } else if (vehicleId != null) {
+      update['vehicle_id'] = vehicleId;
+    }
+    if (clearTrailer) {
+      update['trailer_id'] = null;
+    } else if (trailerId != null) {
+      update['trailer_id'] = trailerId;
+    }
+    if (update.isEmpty) return true;
+    try {
+      await client.from('shifts').update(update).eq('id', shiftId);
+      return true;
+    } catch (e) {
+      debugPrint('updateShiftCoupling failed: $e');
       return false;
     }
   }
