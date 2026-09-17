@@ -1179,10 +1179,31 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   Future<bool> sendSOSAlert() async {
     final driverId = SupabaseService.currentDriverId;
     final shiftId = state.activeShift?.id;
-    final position = state.currentPosition;
+    var position = state.currentPosition;
 
-    if (driverId == null || shiftId == null || position == null) {
-      debugPrint('SOS failed: Missing driver, active shift, or GPS coordinate');
+    // state.currentPosition is only populated once the background GPS
+    // stream has emitted at least one fix — on a slow/denied-permission
+    // start, or right after a fresh app load, it can still be null even
+    // though the driver has an active shift. Rather than failing an
+    // emergency alert on that timing gap, try one on-demand fix (this
+    // also drives the OS permission prompt if it was never answered).
+    if (position == null) {
+      position = await LocationService.getCurrentPosition();
+      if (position != null) {
+        state = state.copyWith(currentPosition: position);
+      }
+    }
+
+    if (driverId == null || shiftId == null) {
+      debugPrint('SOS failed: Missing driver or active shift');
+      state = state.copyWith(errorMessage: 'You need an active shift to send an SOS alert.');
+      return false;
+    }
+    if (position == null) {
+      debugPrint('SOS failed: No GPS coordinate available');
+      state = state.copyWith(
+        errorMessage: 'Enable location access so dispatch can see where you are, then try again.',
+      );
       return false;
     }
 

@@ -584,7 +584,10 @@ interface FuelReceipt {
   vehicle_id: string | null;
   vehicle_number?: string;
   liters: number | null;
-  total_cost: number;
+  // Nullable since migration 049 dropped the NOT NULL constraint — the
+  // driver app's "Total cost" field is explicitly optional (only litres
+  // is required), so a real row can and does arrive with this null.
+  total_cost: number | null;
   vendor: string | null;
   receipt_photo_path: string;
   status: 'pending' | 'approved' | 'rejected';
@@ -1486,7 +1489,7 @@ export default function App() {
       // otherwise be able to read straight off their own shift row.
       const { data: sfts, error: shiftsError } = await supabase!
         .from('shifts')
-        .select('*, drivers(full_name, driver_id), depots(name), vehicles(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name)')
+        .select('*, drivers(full_name, driver_id), depots(name), vehicles!vehicle_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name)')
         .order('start_time', { ascending: false });
 
       // A Postgrest-level error here (RLS denial, a bad embed, anything)
@@ -1526,7 +1529,7 @@ export default function App() {
       // one), so the card can show a real VRM instead of fabricating one.
       const { data: alrts } = await supabase!
         .from('idle_alerts')
-        .select('*, drivers(full_name, driver_id), shifts(vehicle_id, vehicles(vehicle_number))')
+        .select('*, drivers(full_name, driver_id), shifts(vehicle_id, vehicles!vehicle_id(vehicle_number))')
         .order('started_at', { ascending: false });
 
       const mappedIdle = (alrts || [])
@@ -1543,7 +1546,7 @@ export default function App() {
       // Fetch Active SOS Alerts
       const { data: sosAlrts } = await supabase!
         .from('sos_alerts')
-        .select('*, drivers(full_name, driver_id), shifts(vehicle_id, vehicles(vehicle_number))')
+        .select('*, drivers(full_name, driver_id), shifts(vehicle_id, vehicles!vehicle_id(vehicle_number))')
         .order('created_at', { ascending: false });
 
       const mappedSOS = (sosAlrts || [])
@@ -1899,7 +1902,7 @@ export default function App() {
     if (isMockMode || !supabase || !currentOrgId) return;
     const { data, error } = await supabase
       .from('fuel_receipts')
-      .select('id, driver_id, shift_id, vehicle_id, liters, total_cost, vendor, receipt_photo_path, status, created_at, drivers(full_name), vehicles(vehicle_number)')
+      .select('id, driver_id, shift_id, vehicle_id, liters, total_cost, vendor, receipt_photo_path, status, created_at, drivers(full_name), vehicles!vehicle_id(vehicle_number)')
       .eq('organization_id', currentOrgId)
       .order('created_at', { ascending: false });
     // Was silently dropping a failed fetch (network error, RLS denial,
@@ -1937,6 +1940,16 @@ export default function App() {
     };
   }, [isMockMode, currentOrgId, loadFuelReceipts]);
 
+  // Drives the Analytics sidebar nav badge — fuelReceipts itself is loaded
+  // and kept live (realtime subscription above) regardless of which tab is
+  // active, but the review queue is a modal opened from inside Analytics,
+  // so a receipt arriving while an admin is on Live/Drivers/Compliance had
+  // no visible sign anything showed up until they happened to click in.
+  const pendingFuelReceiptsCount = useMemo(
+    () => fuelReceipts.filter(r => r.status === 'pending').length,
+    [fuelReceipts],
+  );
+
   // Real, per-shift Actual Fuel Cost — sum of that shift's APPROVED
   // receipts only. A shift with no approved receipts is genuinely
   // unknown-cost (0 here), not "no fuel used"; the ledger/KPI strip
@@ -1945,7 +1958,7 @@ export default function App() {
     const map: Record<string, number> = {};
     for (const r of fuelReceipts) {
       if (r.status !== 'approved' || !r.shift_id) continue;
-      map[r.shift_id] = (map[r.shift_id] ?? 0) + r.total_cost;
+      map[r.shift_id] = (map[r.shift_id] ?? 0) + (r.total_cost ?? 0);
     }
     return map;
   }, [fuelReceipts]);
@@ -5154,7 +5167,16 @@ export default function App() {
                     href: '#',
                     active: activeTab === 'analytics',
                     onClick: () => setActiveTab('analytics'),
-                    icon: <span className="nav-icon"><BarChart3 size={18} /></span>,
+                    icon: (
+                      <span className="nav-icon">
+                        <BarChart3 size={18} />
+                        {pendingFuelReceiptsCount > 0 && (
+                          <span className="nav-count-badge" title={`${pendingFuelReceiptsCount} fuel receipt${pendingFuelReceiptsCount === 1 ? '' : 's'} awaiting review`}>
+                            {pendingFuelReceiptsCount > 9 ? '9+' : pendingFuelReceiptsCount}
+                          </span>
+                        )}
+                      </span>
+                    ),
                   }}
                   className={`nav-item ${activeTab === 'analytics' ? 'active' : ''}`}
                   labelClassName="text-inherit dark:text-inherit"
@@ -7073,6 +7095,23 @@ export default function App() {
           // Profitability cockpit only.
           const completedShiftsForAnalytics = shifts.filter(s => s.status === 'completed' && (s.total_hours ?? 0) >= 0.25 && matchesShiftFilters(s));
 
+          // Live wage accrual — deliberately kept OUT of totalDriverCost/
+          // Net Profit/Margin above: those are computed only over
+          // completed + rated shifts specifically so a batch of un-rated
+          // loads can't drag the reported margin toward zero (see the
+          // comment on shiftsWithRevenue below). An active shift has no
+          // revenue yet by definition, so folding its accruing wage into
+          // that same pool would reintroduce exactly the distortion that
+          // invariant exists to prevent. Shown as its own supplementary
+          // figure instead — getShiftFinancials() already computes a live
+          // elapsed-time estimate for any shift with no end_time (see its
+          // "CALCULATE LIVE HOURS FOR ONGOING SHIFTS" branch), and the
+          // existing 15s loadData() polling loop re-renders this
+          // component regularly, so recomputing it on every render is
+          // enough to make it visibly tick up — no separate timer needed.
+          const activeShiftsForAnalytics = shifts.filter(s => s.status === 'active' && matchesShiftFilters(s));
+          const liveActiveWages = activeShiftsForAnalytics.reduce((sum, s) => sum + getShiftFinancials(s).grossPay, 0);
+
           // Profitability Cockpit — one unified view of company revenue vs.
           // operating cost. Every figure here (the KPI strip, the chart,
           // and the ledger's Gross Margin column) is computed only over
@@ -7113,7 +7152,20 @@ export default function App() {
 
           const totalRevenue = shiftsWithRevenue.reduce((sum, s) => sum + (s.revenue_amount || 0), 0);
           const totalDriverCost = shiftsWithRevenue.reduce((sum, s) => sum + (s.total_pay || 0), 0);
-          const totalFuelCost = shiftsWithRevenue.reduce((sum, s) => sum + shiftFuelCost(s), 0);
+          // Deliberately NOT scoped to shiftsWithRevenue like Revenue/Payroll
+          // above — an approved fuel receipt is a real, already-incurred
+          // cost the moment an admin approves it, regardless of whether
+          // that shift's load has been rated for revenue yet (or even
+          // completed: an active shift's driver can refuel mid-shift and
+          // have it approved). Still scoped to shifts matching the current
+          // driver/agency/depot/period filters, just not to "rated" ones,
+          // so approving a receipt shows up here immediately instead of
+          // waiting on an unrelated dispatcher action.
+          const allFilteredShiftIds = new Set(shifts.filter(matchesShiftFilters).map(s => s.id));
+          const totalFuelCost = fuelReceipts.reduce((sum, r) => {
+            if (r.status !== 'approved' || !r.shift_id || !allFilteredShiftIds.has(r.shift_id)) return sum;
+            return sum + (r.total_cost ?? 0);
+          }, 0);
           const grossProfit = totalRevenue - totalDriverCost - totalFuelCost;
           const grossMarginPct = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : null;
           const totalHours = shiftsWithRevenue.reduce((sum, s) => sum + (s.total_hours || 0), 0);
@@ -7124,12 +7176,11 @@ export default function App() {
               : 'Below Target';
 
           // Total litres — approved fuel_receipts rows only, scoped to the
-          // same shiftsWithRevenue set the £ fuel total already uses, so
+          // same allFilteredShiftIds set the £ fuel total above uses, so
           // the P&L strip's "£X · Y litres" pairing is always the same
           // underlying receipts, not two different scopes.
-          const shiftIdsWithRevenue = new Set(shiftsWithRevenue.map(s => s.id));
           const totalFuelLiters = fuelReceipts.reduce((sum, r) => {
-            if (r.status !== 'approved' || !r.shift_id || !shiftIdsWithRevenue.has(r.shift_id)) return sum;
+            if (r.status !== 'approved' || !r.shift_id || !allFilteredShiftIds.has(r.shift_id)) return sum;
             return sum + (r.liters ?? 0);
           }, 0);
 
@@ -7464,6 +7515,24 @@ export default function App() {
                     </span>
                     {kpiDeltas.margin && <div style={{ marginTop: '6px' }}><BadgeDelta label={kpiDeltas.margin.label} direction={kpiDeltas.margin.direction} tone={kpiDeltaTone(kpiDeltas.margin.direction, 'margin')} /></div>}
                   </div>
+
+                  {/* Deliberately separate from the Driver Payroll tile
+                      above, not added into it — see the comment on
+                      activeShiftsForAnalytics/liveActiveWages. Only
+                      rendered while someone is actually on shift, so the
+                      strip doesn't carry a permanent zero-value tile. */}
+                  {activeShiftsForAnalytics.length > 0 && (
+                    <div>
+                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>
+                        <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#10B981', marginRight: '5px' }} />
+                        On Shift Now (Live)
+                      </p>
+                      <p className="font-mono font-bold" style={{ fontSize: '18px', margin: 0, color: 'var(--charcoal)' }}>£{liveActiveWages.toLocaleString('en-GB', { maximumFractionDigits: 2 })}</p>
+                      <p className="text-xs text-muted" style={{ marginTop: '2px' }}>
+                        {activeShiftsForAnalytics.length} driver{activeShiftsForAnalytics.length === 1 ? '' : 's'} accruing — not yet in Net Profit
+                      </p>
+                    </div>
+                  )}
                 </div>
               </RevealOnMount>
             </div>
@@ -7597,7 +7666,7 @@ export default function App() {
                     className="glass-panel"
                     style={{
                       position: 'fixed', top: '5vh', left: '50%', transform: 'translateX(-50%)',
-                      width: 'min(1000px, 94vw)', maxHeight: '90vh', overflowY: 'auto', zIndex: 999,
+                      width: 'min(1320px, 96vw)', maxHeight: '90vh', overflowY: 'auto', zIndex: 999,
                       borderRadius: '14px', padding: '24px', background: 'var(--card-bg)',
                       boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
                     }}
@@ -7676,7 +7745,7 @@ export default function App() {
                       </Empty>
                     ) : (
                       <div className="table-container">
-                        <table className="data-table">
+                        <table className="data-table data-table--nowrap">
                           <thead>
                             <tr>
                               <th>Receipt Photo</th>
@@ -7722,7 +7791,7 @@ export default function App() {
                                     {new Date(r.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
                                   </td>
                                   <td className="font-mono tabular-nums font-semibold text-xs">{r.liters === null ? '—' : r.liters.toFixed(1)}</td>
-                                  <td className="font-mono tabular-nums font-semibold">£{r.total_cost.toFixed(2)}</td>
+                                  <td className="font-mono tabular-nums font-semibold">{r.total_cost === null ? '—' : `£${r.total_cost.toFixed(2)}`}</td>
                                   <td className="text-xs">{r.vendor ?? '—'}</td>
                                   <td>
                                     <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>

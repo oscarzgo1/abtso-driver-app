@@ -83,7 +83,7 @@ export default function ComplianceDefects({ organizationId, onBack }: Compliance
     try {
       const { data, error: fetchError } = await supabase
         .from('incident_reports')
-        .select('id, category, severity, status, created_at, note, vehicle_id, driver_id, photo_urls, vehicles(vehicle_number), drivers(full_name)')
+        .select('id, category, severity, status, created_at, note, vehicle_id, driver_id, photo_urls, vehicles!vehicle_id(vehicle_number), drivers(full_name)')
         .eq('organization_id', organizationId)
         .order('created_at', { ascending: false });
       if (fetchError) throw fetchError;

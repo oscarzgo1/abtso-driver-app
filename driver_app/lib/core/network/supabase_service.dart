@@ -7,6 +7,37 @@ class SupabaseService {
 
   static SupabaseClient get client => Supabase.instance.client;
 
+  // debugPrint never reaches a real device's console in a release build,
+  // so a failed photo upload's actual exception (network drop, rejected
+  // format, size limit — currently indistinguishable from each other)
+  // was invisible everywhere except a generic hardcoded fallback string.
+  // Callers read this right after a null result to show/report the real
+  // reason instead of guessing.
+  static String? lastUploadError;
+
+  // 'image/$ext' broke on the single most common case: a '.jpg' file
+  // produced Content-Type 'image/jpg', which isn't a real MIME type —
+  // the registered one is 'image/jpeg'. Storage's bucket allow-list
+  // (['image/jpeg', 'image/png', 'image/heic', 'image/webp']) checks
+  // this header verbatim, so every '.jpg' upload was rejected with a
+  // 415 (invalid_mime_type), silently in the incident-report flow and
+  // as a misleading "connection error" in the fuel-receipt flow.
+  static String _imageMimeType(String ext) {
+    switch (ext) {
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'heic':
+        return 'image/heic';
+      case 'webp':
+        return 'image/webp';
+      default:
+        return 'image/$ext';
+    }
+  }
+
   // ── Offline Mock Database State ─────────────────────────────
   static bool get isMockMode {
     const url = String.fromEnvironment('SUPABASE_URL',
@@ -497,11 +528,13 @@ class SupabaseService {
       await client.storage.from('defect-photos').uploadBinary(
             path,
             bytes,
-            fileOptions: FileOptions(contentType: 'image/$ext'),
+            fileOptions: FileOptions(contentType: _imageMimeType(ext)),
           );
+      lastUploadError = null;
       return path;
     } catch (e) {
       debugPrint('uploadDefectPhoto failed: $e');
+      lastUploadError = e.toString();
       return null;
     }
   }
@@ -620,11 +653,13 @@ class SupabaseService {
       await client.storage.from('fuel-receipts').uploadBinary(
             path,
             bytes,
-            fileOptions: FileOptions(contentType: 'image/$ext'),
+            fileOptions: FileOptions(contentType: _imageMimeType(ext)),
           );
+      lastUploadError = null;
       return path;
     } catch (e) {
       debugPrint('uploadFuelReceiptPhoto failed: $e');
+      lastUploadError = e.toString();
       return null;
     }
   }

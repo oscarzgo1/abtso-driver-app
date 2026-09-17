@@ -252,7 +252,7 @@ export default function CarrierSettlementImportModal({ organizationId, onClose, 
     since.setDate(since.getDate() - 90);
     const { data } = await supabase
       .from('shifts')
-      .select('id, driver_id, start_time, vehicle_id, drivers(full_name), vehicles(vehicle_number), shift_revenue(revenue_amount)')
+      .select('id, driver_id, start_time, vehicle_id, drivers(full_name), vehicles!vehicle_id(vehicle_number), shift_revenue(revenue_amount)')
       .eq('organization_id', organizationId)
       .eq('status', 'completed')
       .gte('start_time', since.toISOString());

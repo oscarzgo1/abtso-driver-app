@@ -661,6 +661,32 @@ body {
 .nav-item:hover .nav-dot { box-shadow: 0 0 0 2px #F1F5F9; }
 .nav-item.active .nav-dot { box-shadow: 0 0 0 2px #FEF2F2; }
 
+/* Same corner-of-the-icon idea as .nav-dot above, but carrying a count
+   (Analytics/fuel-receipts) instead of just a presence dot — sized for
+   this same 18px .nav-icon, not borrowed from .flags-bell-dot (built for
+   the much bigger 32px standalone bell button elsewhere), which read as
+   cramped and easy to miss at this scale. */
+.nav-count-badge {
+  position: absolute;
+  top: -7px;
+  right: -9px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: #EF4444;
+  color: #FFFFFF;
+  font-size: 9.5px;
+  font-weight: 800;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px #FFFFFF;
+}
+.nav-item:hover .nav-count-badge { box-shadow: 0 0 0 2px #F1F5F9; }
+.nav-item.active .nav-count-badge { box-shadow: 0 0 0 2px #FEF2F2; }
+
 /* Compliance & Safety accordion sub-items — compact indented rows with a
    left guide-line, deliberately lighter-weight than the bold top-level
    .nav-item rows above so the hierarchy (category vs. destination) reads
@@ -773,6 +799,15 @@ body {
 .data-table--lg td {
   font-size: 14.5px;
   padding: 16px 18px;
+}
+
+/* Keeps every cell on one line (driver names, vendor text, timestamps)
+   instead of wrapping into multiple lines the moment a column runs out
+   of room — .table-container's overflow-x:auto already handles the case
+   where the widened modal itself still isn't enough room. */
+.data-table--nowrap th,
+.data-table--nowrap td {
+  white-space: nowrap;
 }
 
 .stats-grid {
@@ -1133,8 +1168,13 @@ body {
    and the content is real fleet/payroll data instead of demo SaaS
    metrics. See analytics-kpi-tile below for why change badges are
    omitted on those four cards. */
+/* Was capped at 1152px, leaving a large permanent blank gutter on any
+   screen wider than that — widened to match the 1600px cap the Shift
+   Revenue section below already uses (see its own comment), so every
+   section in this tab now shares one consistent width instead of the
+   P&L strip/Revenue-vs-Cost grid running narrower than everything else. */
 .analytics-container {
-  max-width: 1152px;
+  max-width: 1600px;
   margin: 0;
   width: 100%;
 }

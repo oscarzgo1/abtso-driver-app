@@ -167,7 +167,7 @@ export default function Compliance({ organizationId, thresholdDays, onViewGround
         supabase.from('vehicles').select('id, vehicle_number, vehicle_type, inspection_type, inspection_due_date, is_vor, notes').eq('organization_id', organizationId).eq('is_active', true),
         supabase
           .from('incident_reports')
-          .select('id, category, severity, status, created_at, note, vehicle_id, driver_id, photo_urls, vehicles(vehicle_number), drivers(full_name)')
+          .select('id, category, severity, status, created_at, note, vehicle_id, driver_id, photo_urls, vehicles!vehicle_id(vehicle_number), drivers(full_name)')
           .eq('organization_id', organizationId)
           .order('created_at', { ascending: false }),
         supabase.from('drivers').select('id, driver_id, full_name').eq('organization_id', organizationId).eq('is_active', true),

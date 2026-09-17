@@ -416,6 +416,69 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 ? source
                 : source.where((v) => (v['vehicle_number'] as String).toLowerCase().contains(query)).toList();
 
+            Widget buildVehicleTile(Map<String, dynamic> v) {
+              final isTruck = v['vehicle_type'] == 'truck';
+              return Material(
+                color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: () => Navigator.pop(sheetContext, v),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+                    child: Row(
+                      children: [
+                        Icon(isTruck ? Icons.local_shipping_outlined : Icons.rv_hookup_outlined, size: 20, color: const Color(0xFFCC0000)),
+                        const SizedBox(width: 12),
+                        Text(
+                          (v['vehicle_number'] as String).toUpperCase(),
+                          style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w800, fontSize: 14, letterSpacing: 0.5),
+                        ),
+                        const Spacer(),
+                        Icon(Icons.chevron_right, size: 18, color: isDark ? Colors.white38 : Colors.black38),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            // With no typeFilter (the general "search fleet asset" picker
+            // used by Incident Report and fuel logging) results mix
+            // tractors and trailers together, which made it hard to scan
+            // for e.g. "is there a spare trailer free" at a glance. Group
+            // into TRACTORS / TRAILERS sections (each only shown if
+            // non-empty) instead of one flat list; a single-type picker
+            // (typeFilter set, used by the dedicated Tractor/Trailer
+            // coupling pickers) is already homogeneous so stays flat.
+            final listItems = <Widget>[];
+            if (typeFilter == null) {
+              final tractors = results.where((v) => v['vehicle_type'] == 'truck').toList();
+              final trailers = results.where((v) => v['vehicle_type'] != 'truck').toList();
+              void addGroup(String label, List<Map<String, dynamic>> group) {
+                if (group.isEmpty) return;
+                if (listItems.isNotEmpty) listItems.add(const SizedBox(height: 14));
+                listItems.add(Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    '$label (${group.length})',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, letterSpacing: 0.6, color: isDark ? Colors.white38 : Colors.black38),
+                  ),
+                ));
+                for (var i = 0; i < group.length; i++) {
+                  if (i > 0) listItems.add(const SizedBox(height: 8));
+                  listItems.add(buildVehicleTile(group[i]));
+                }
+              }
+              addGroup('TRACTORS', tractors);
+              addGroup('TRAILERS', trailers);
+            } else {
+              for (var i = 0; i < results.length; i++) {
+                if (i > 0) listItems.add(const SizedBox(height: 8));
+                listItems.add(buildVehicleTile(results[i]));
+              }
+            }
+
             return Padding(
               padding: EdgeInsets.only(
                 left: 20, right: 20, top: 20,
@@ -482,38 +545,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                                 style: TextStyle(fontSize: 13, color: isDark ? Colors.white60 : Colors.black54),
                               ),
                             )
-                          : ListView.separated(
-                              shrinkWrap: true,
-                              itemCount: results.length,
-                              separatorBuilder: (_, __) => const SizedBox(height: 8),
-                              itemBuilder: (_, i) {
-                                final v = results[i];
-                                final isTruck = v['vehicle_type'] == 'truck';
-                                return Material(
-                                  color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                                  borderRadius: BorderRadius.circular(12),
-                                  child: InkWell(
-                                    borderRadius: BorderRadius.circular(12),
-                                    onTap: () => Navigator.pop(sheetContext, v),
-                                    child: Padding(
-                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                                      child: Row(
-                                        children: [
-                                          Icon(isTruck ? Icons.local_shipping_outlined : Icons.rv_hookup_outlined, size: 20, color: const Color(0xFFCC0000)),
-                                          const SizedBox(width: 12),
-                                          Text(
-                                            (v['vehicle_number'] as String).toUpperCase(),
-                                            style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w800, fontSize: 14, letterSpacing: 0.5),
-                                          ),
-                                          const Spacer(),
-                                          Icon(Icons.chevron_right, size: 18, color: isDark ? Colors.white38 : Colors.black38),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
+                          : ListView(shrinkWrap: true, children: listItems),
                     ),
                   ),
                 ],
@@ -732,10 +764,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 final pos = ref.read(shiftProvider).currentPosition;
 
                 // Upload whatever photos were attached first — a photo
-                // that fails to upload is just dropped, never blocks the
-                // report itself from going through (uploadDefectPhoto
-                // already catches its own errors and returns null).
+                // that fails to upload is dropped rather than blocking the
+                // report itself from going through, but that previously
+                // happened with zero indication to the driver: the report
+                // would submit clean and an admin reviewing it later would
+                // see no evidence photo with no way to tell "driver didn't
+                // attach one" from "attaching it silently failed". Track
+                // the failure count (and the real reason, via
+                // SupabaseService.lastUploadError) so the driver is told.
                 final photoPaths = <String>[];
+                String? lastPhotoError;
                 if (organizationId != null) {
                   for (var i = 0; i < selectedPhotos.length; i++) {
                     final path = await SupabaseService.uploadDefectPhoto(
@@ -744,9 +782,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       bytes: selectedPhotoBytes[i],
                       fileName: selectedPhotos[i].name,
                     );
-                    if (path != null) photoPaths.add(path);
+                    if (path != null) {
+                      photoPaths.add(path);
+                    } else {
+                      lastPhotoError = SupabaseService.lastUploadError;
+                    }
                   }
                 }
+                final failedPhotoCount = selectedPhotos.length - photoPaths.length;
 
                 final success = await SupabaseService.submitIncidentReport(
                   driverId: driverId,
@@ -759,13 +802,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   photoPaths: photoPaths,
                 );
                 if (sheetContext.mounted) Navigator.pop(sheetContext);
+                final message = !success
+                    ? 'Could not send the report — try again.'
+                    : failedPhotoCount > 0
+                        ? 'Incident reported, but $failedPhotoCount photo${failedPhotoCount == 1 ? '' : 's'} failed to upload'
+                            '${lastPhotoError != null ? ' ($lastPhotoError)' : ''}. Try attaching again from the report if needed.'
+                        : 'Incident reported. Thanks.';
                 messenger.showSnackBar(
                   SnackBar(
-                    content: Text(
-                      success ? 'Incident reported. Thanks.' : 'Could not send the report — try again.',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                    content: Text(message, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    backgroundColor: success && failedPhotoCount == 0 ? const Color(0xFF10B981) : const Color(0xFFFF3333),
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
@@ -1182,6 +1228,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     final vehiclesFuture = organizationId != null
         ? SupabaseService.fetchOrgVehicles(organizationId)
         : Future.value(<Map<String, dynamic>>[]);
+    // The row callbacks below must open their own sheet/do async work
+    // against the screen's own long-lived context, not whatever context
+    // FutureBuilder hands its builder — that inner one belongs to this
+    // Action Hub sheet and goes defunct the moment it's popped, which
+    // buildActionRow's onTap does *before* calling onSelect(). A row's
+    // onSelect (e.g. Log Fuel's ScaffoldMessenger.of(context), called
+    // later from that sheet's own Submit button) was crashing with an
+    // uncaught null/defunct-element error — outside any try/catch, so
+    // tapping Submit looked like it silently did nothing.
+    final hubContext = context;
 
     showModalBottomSheet(
       context: context,
@@ -1290,19 +1346,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     icon: Icons.local_shipping_outlined,
                     title: 'Assigned Units',
                     subtitle: unitsSubtitle,
-                    onSelect: isClockedIn ? () => _handleCoupleDecoupleAction(context) : null,
+                    onSelect: isClockedIn ? () => _handleCoupleDecoupleAction(hubContext) : null,
                   ),
                   buildActionRow(
                     icon: Icons.local_gas_station_outlined,
                     title: 'Log Fuel & AdBlue',
                     subtitle: isClockedIn ? 'Diesel or AdBlue, with a receipt photo' : 'Clock in to log fuel',
-                    onSelect: isClockedIn ? () => _handleFuelReceiptAction(context) : null,
+                    onSelect: isClockedIn ? () => _handleFuelReceiptAction(hubContext) : null,
                   ),
                   buildActionRow(
                     icon: Icons.warning_amber_rounded,
                     title: 'Report Defect / Incident',
                     subtitle: 'Damage, near miss, collision, mechanical fault',
-                    onSelect: () => _handleReportIncidentAction(context),
+                    onSelect: () => _handleReportIncidentAction(hubContext),
                   ),
                   // Conditional on the org's own Settings -> Alerts toggle
                   // (migration 050) — completely absent from the hub, not
@@ -1315,7 +1371,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       subtitle: nightOutSubtitle,
                       onSelect: canRequestNightOut
                           ? () async {
-                              final messenger = ScaffoldMessenger.of(context);
+                              final messenger = ScaffoldMessenger.of(hubContext);
                               final success = await ref.read(shiftProvider.notifier).requestNightOut();
                               if (success) {
                                 messenger.showSnackBar(
@@ -1663,8 +1719,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               });
             }
 
-            final liters = double.tryParse(litersController.text.trim());
-            final canSubmit = selectedPhoto != null && liters != null && liters > 0 && !isSubmitting;
+            // Deliberately NOT gated on photo/liters being filled in — submit()
+            // below already validates both and sets a specific formError
+            // ('A photo of the receipt is required.' / 'Enter the volume in
+            // litres.'). Disabling the button on those same conditions made it
+            // silently inert (Flutter fires no feedback for tapping a disabled
+            // button) instead of showing the driver why — indistinguishable
+            // from the button being broken. Only isSubmitting should disable it.
+            final canSubmit = !isSubmitting;
 
             Future<void> submit() async {
               final messenger = ScaffoldMessenger.of(context);
@@ -1708,8 +1770,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   );
                 }
                 if (photoPath == null) {
+                  // SupabaseService.lastUploadError carries the real
+                  // exception (network drop vs. rejected format vs. size
+                  // limit — previously indistinguishable) so the next
+                  // failure is self-diagnosing instead of always reading
+                  // as a generic "connection error" regardless of cause.
+                  final reason = SupabaseService.lastUploadError;
                   setSheetState(() {
-                    formError = 'Could not upload the photo — check your connection and try again.';
+                    formError = reason != null
+                        ? 'Could not upload the photo: $reason'
+                        : 'Could not upload the photo — check your connection and try again.';
                   });
                   return;
                 }
@@ -2032,10 +2102,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 final messenger = ScaffoldMessenger.of(context);
                 Navigator.pop(context);
                 final success = await ref.read(shiftProvider.notifier).sendSOSAlert();
+                // On failure, sendSOSAlert() sets a specific reason (no
+                // active shift vs. no GPS fix) on shiftProvider.errorMessage
+                // instead of just a bare true/false — show that instead of
+                // a generic "failed" message so a driver in an actual
+                // emergency knows what to fix (e.g. enable location) rather
+                // than just retrying a button that will fail the same way.
+                final failureReason = ref.read(shiftProvider).errorMessage;
                 messenger.showSnackBar(
                   SnackBar(
                     content: Text(
-                      success ? 'EMERGENCY SOS BROADCASTED SUCCESSFULLY!' : 'FAILED TO BROADCAST SOS ALERT',
+                      success
+                          ? 'EMERGENCY SOS BROADCASTED SUCCESSFULLY!'
+                          : (failureReason ?? 'FAILED TO BROADCAST SOS ALERT — TRY AGAIN').toUpperCase(),
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
