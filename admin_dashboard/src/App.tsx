@@ -5015,7 +5015,9 @@ export default function App() {
                     <span className="nav-icon">
                       <Bell size={18} />
                       {activeAlertsCount > 0 && (
-                        <span className="nav-dot" aria-label={`${activeAlertsCount} unacknowledged alerts`} />
+                        <span className="nav-count-badge" title={`${activeAlertsCount} unacknowledged alert${activeAlertsCount === 1 ? '' : 's'}`}>
+                          {activeAlertsCount > 9 ? '9+' : activeAlertsCount}
+                        </span>
                       )}
                     </span>
                   ),
@@ -5044,7 +5046,9 @@ export default function App() {
                   <span className="nav-icon">
                     <IdCard size={18} />
                     {pendingNightOutsCount > 0 && (
-                      <span className="nav-dot" aria-label={`${pendingNightOutsCount} night out requests pending`} />
+                      <span className="nav-count-badge" title={`${pendingNightOutsCount} night out request${pendingNightOutsCount === 1 ? '' : 's'} pending`}>
+                        {pendingNightOutsCount > 9 ? '9+' : pendingNightOutsCount}
+                      </span>
                     )}
                   </span>
                   {railExpanded && (
@@ -5110,7 +5114,9 @@ export default function App() {
                   <span className="nav-icon">
                     <ShieldCheck size={18} />
                     {complianceAlertCount > 0 && (
-                      <span className="nav-dot" aria-label={`${complianceAlertCount} compliance items need attention`} />
+                      <span className="nav-count-badge" title={`${complianceAlertCount} compliance item${complianceAlertCount === 1 ? '' : 's'} need attention`}>
+                        {complianceAlertCount > 9 ? '9+' : complianceAlertCount}
+                      </span>
                     )}
                   </span>
                   {railExpanded && (
