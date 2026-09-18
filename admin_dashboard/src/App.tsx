@@ -85,7 +85,8 @@ import {
   UserX,
   Pencil,
   MoreVertical,
-  Receipt
+  Receipt,
+  Package
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -94,7 +95,8 @@ import { useMetricHistory, getMetricTrend } from './hooks/useMetricHistory';
 import { KpiSparkline } from './components/ui/kpi-sparkline';
 import { AnalyticsGroupedBarChart } from './components/ui/analytics-grouped-bar-chart';
 import { BadgeDelta, type BadgeDeltaDirection, type BadgeDeltaTone } from './components/ui/badge-delta';
-import { AnalyticsFilterMenu, type FilterMenuOption } from './components/ui/analytics-filter-menu';
+import TableFilter, { type TableFilterGroup } from './components/ui/table-filter';
+import { MarginTrendChart } from './components/ui/margin-trend-chart';
 import { EarningsDateRangePicker } from './components/ui/earnings-date-range-picker';
 import { NotificationIcon, EyeToggleIcon, VolumeIcon, SaveIcon, DownloadIcon } from './components/ui/animated-state-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -753,7 +755,7 @@ export default function App() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [recoveryError, setRecoveryError] = useState('');
-  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'analytics' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects'>('live');
   // Sidebar expand/collapse — controlled here (not left to the component's
   // own internal state) so the brand header can also switch between the
   // full wordmark and the icon-only mark based on the same flag.
@@ -769,7 +771,7 @@ export default function App() {
   // or team-management tabs — these control money and who can join the
   // company at all. Billing is a modal, not a tab, and gated separately.
   useEffect(() => {
-    if (userRole === 'logistics' && (activeTab === 'rates' || activeTab === 'analytics')) {
+    if (userRole === 'logistics' && (activeTab === 'rates' || activeTab === 'analytics' || activeTab === 'shipments')) {
       setActiveTab('live');
     }
   }, [userRole, activeTab]);
@@ -934,6 +936,7 @@ export default function App() {
   const [reviewingFuelReceiptId, setReviewingFuelReceiptId] = useState<string | null>(null);
   // Fuel Receipts Audit modal — replaces the old full-width bottom
   // section; same data/handlers, just triggered from the toolbar now.
+  const [analyticsTrendTab, setAnalyticsTrendTab] = useState<'margin' | 'revenue'>('margin');
   const [isFuelReceiptsModalOpen, setIsFuelReceiptsModalOpen] = useState(false);
   const [fuelModalDriverSearch, setFuelModalDriverSearch] = useState('');
   const [fuelModalVehicleFilter, setFuelModalVehicleFilter] = useState('');
@@ -949,7 +952,6 @@ export default function App() {
   const [isLocatingDepot, setIsLocatingDepot] = useState(false);
   const [analyticsFilters, setAnalyticsFilters] = useState<AnalyticsFilter[]>([]);
   // Chart view — Bar (default) or Line, switchable from the Filters menu.
-  const [analyticsChartType, setAnalyticsChartType] = useState<'bar' | 'line'>('bar');
   // Ledger sort — 'date' (default, newest first) or 'margin' (lowest
   // margin first, so the worst-performing loads surface immediately).
   const [ledgerSort, setLedgerSort] = useState<'date' | 'margin'>('date');
@@ -1948,6 +1950,17 @@ export default function App() {
   const pendingFuelReceiptsCount = useMemo(
     () => fuelReceipts.filter(r => r.status === 'pending').length,
     [fuelReceipts],
+  );
+
+  // Drives the Shipments sidebar nav badge — a completed shift with no
+  // revenue figure set yet is a load waiting to be rated ("Pending
+  // Remittance" in the ledger itself). Deliberately a simple unfiltered
+  // count (not respecting Analytics'/Shipments' own period/driver
+  // filters) since this is a glance-from-anywhere indicator, not a
+  // report.
+  const pendingLoadsCount = useMemo(
+    () => shifts.filter(s => s.status === 'completed' && (s.revenue_amount === null || s.revenue_amount === undefined)).length,
+    [shifts],
   );
 
   // Real, per-shift Actual Fuel Cost — sum of that shift's APPROVED
@@ -5189,6 +5202,29 @@ export default function App() {
                 />
               )}
 
+              {userRole === 'payroll_admin' && (
+                <SidebarLink
+                  link={{
+                    label: 'Shipments',
+                    href: '#',
+                    active: activeTab === 'shipments',
+                    onClick: () => setActiveTab('shipments'),
+                    icon: (
+                      <span className="nav-icon">
+                        <Package size={18} />
+                        {pendingLoadsCount > 0 && (
+                          <span className="nav-count-badge" title={`${pendingLoadsCount} load${pendingLoadsCount === 1 ? '' : 's'} awaiting a rate`}>
+                            {pendingLoadsCount > 9 ? '9+' : pendingLoadsCount}
+                          </span>
+                        )}
+                      </span>
+                    ),
+                  }}
+                  className={`nav-item ${activeTab === 'shipments' ? 'active' : ''}`}
+                  labelClassName="text-inherit dark:text-inherit"
+                />
+              )}
+
             </nav>
           </div>
 
@@ -6984,7 +7020,7 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'analytics' && userRole === 'payroll_admin' && (() => {
+        {(activeTab === 'analytics' || activeTab === 'shipments') && userRole === 'payroll_admin' && (() => {
           const resolveAgency = (emp: typeof employees[number]) => {
             const currentRate = employeeRates[emp.id] || employeeRates[emp.driver_id];
             return (emp as any).agency_name || (emp as any).agency || currentRate?.agency_name || 'Direct';
@@ -7022,38 +7058,72 @@ export default function App() {
           const carrierOptionNames = Array.from(new Set(shifts.map(s => s.carrier_name).filter((n): n is string => !!n))).sort();
           const carrierFilterOptions: FilterOption[] = carrierOptionNames.map(name => ({ name }));
 
-          // One combined, searchable list across every filterable
-          // dimension — this is what AnalyticsFilterMenu searches, replacing
-          // the old "pick a type, then pick a value" two-step menu.
-          const searchFilterOptions: FilterMenuOption[] = [
-            ...driverFilterOptions.map(o => ({ type: FilterType.DRIVER, name: o.name, icon: <IdCard size={12} /> })),
-            ...agencyFilterOptions.map(o => ({ type: FilterType.AGENCY, name: o.name, icon: <Building2 size={12} /> })),
-            ...depotFilterOptions.map(o => ({ type: FilterType.DEPOT, name: o.name, icon: <Warehouse size={12} /> })),
-            ...periodFilterOptions.map(o => ({ type: FilterType.PERIOD, name: o.name, icon: <Calendar size={12} /> })),
-            ...carrierFilterOptions.map(o => ({ type: FilterType.CARRIER, name: o.name, icon: <Building2 size={12} /> })),
-          ];
-          // Period is single-select (replacing the active window, or
-          // clearing it on a second click of the same one); every other
-          // type toggles a value in/out of its filter's multi-select list.
-          const handleSearchFilterSelect = (type: FilterType, name: string) => {
+          // Standardized to the same TableFilter popover used by Fleet
+          // Roadworthiness and Compliance Defects, replacing the bespoke
+          // AnalyticsFilterMenu — same button, same checklist popover,
+          // everywhere in the app now. Every type but Period is a plain
+          // multi-select passthrough; Period keeps its old single-select
+          // behaviour (a table filter group is normally multi-select, but
+          // "This Week" + "Last 12 weeks" both active has no real meaning
+          // here) by collapsing onChange's array down to whichever single
+          // value was just added.
+          const updateAnalyticsFilter = (type: FilterType, values: string[]) => {
             setAnalyticsFilters(prev => {
               const existing = prev.find(f => f.type === type);
-              if (type === FilterType.PERIOD) {
-                if (existing?.value[0] === name) {
-                  return prev.map(f => (f.id === existing.id ? { ...f, value: [] } : f));
-                }
-                if (existing) return prev.map(f => (f.id === existing.id ? { ...f, value: [name] } : f));
-                return [...prev, { id: crypto.randomUUID(), type, operator: FilterOperator.IS, value: [name] }];
-              }
               if (!existing) {
-                return [...prev, { id: crypto.randomUUID(), type, operator: FilterOperator.IS, value: [name] }];
+                if (values.length === 0) return prev;
+                return [...prev, { id: crypto.randomUUID(), type, operator: FilterOperator.IS, value: values }];
               }
-              const nextValue = existing.value.includes(name)
-                ? existing.value.filter(v => v !== name)
-                : [...existing.value, name];
-              return prev.map(f => (f.id === existing.id ? { ...f, value: nextValue } : f));
+              if (values.length === 0) return prev.map(f => (f.id === existing.id ? { ...f, value: [] } : f));
+              return prev.map(f => (f.id === existing.id ? { ...f, value: values } : f));
             });
           };
+          const updateAnalyticsPeriodFilter = (values: string[]) => {
+            setAnalyticsFilters(prev => {
+              const existing = prev.find(f => f.type === FilterType.PERIOD);
+              if (values.length === 0) {
+                return existing ? prev.map(f => (f.id === existing.id ? { ...f, value: [] } : f)) : prev;
+              }
+              const added = values.find(v => !existing?.value.includes(v));
+              const finalValue = added ?? values[values.length - 1];
+              if (!existing) {
+                return [...prev, { id: crypto.randomUUID(), type: FilterType.PERIOD, operator: FilterOperator.IS, value: [finalValue] }];
+              }
+              return prev.map(f => (f.id === existing.id ? { ...f, value: [finalValue] } : f));
+            });
+          };
+          const analyticsFilterGroups: TableFilterGroup[] = [
+            {
+              key: 'period', label: 'Period',
+              options: periodFilterOptions.map(o => ({ value: o.name, label: o.name })),
+              selected: analyticsFilters.find(f => f.type === FilterType.PERIOD)?.value ?? [],
+              onChange: updateAnalyticsPeriodFilter,
+            },
+            {
+              key: 'driver', label: 'Driver',
+              options: driverFilterOptions.map(o => ({ value: o.name, label: o.name })),
+              selected: analyticsFilters.find(f => f.type === FilterType.DRIVER)?.value ?? [],
+              onChange: (v) => updateAnalyticsFilter(FilterType.DRIVER, v),
+            },
+            {
+              key: 'agency', label: 'Agency',
+              options: agencyFilterOptions.map(o => ({ value: o.name, label: o.name })),
+              selected: analyticsFilters.find(f => f.type === FilterType.AGENCY)?.value ?? [],
+              onChange: (v) => updateAnalyticsFilter(FilterType.AGENCY, v),
+            },
+            {
+              key: 'depot', label: 'Depot',
+              options: depotFilterOptions.map(o => ({ value: o.name, label: o.name })),
+              selected: analyticsFilters.find(f => f.type === FilterType.DEPOT)?.value ?? [],
+              onChange: (v) => updateAnalyticsFilter(FilterType.DEPOT, v),
+            },
+            {
+              key: 'carrier', label: 'Carrier',
+              options: carrierFilterOptions.map(o => ({ value: o.name, label: o.name })),
+              selected: analyticsFilters.find(f => f.type === FilterType.CARRIER)?.value ?? [],
+              onChange: (v) => updateAnalyticsFilter(FilterType.CARRIER, v),
+            },
+          ];
 
           const driverFilter = analyticsFilters.find(f => f.type === FilterType.DRIVER && f.value.length > 0);
           const agencyFilter = analyticsFilters.find(f => f.type === FilterType.AGENCY && f.value.length > 0);
@@ -7210,6 +7280,49 @@ export default function App() {
           const opCostTotal = totalDriverCost + totalFuelCost;
           const wagesSharePct = opCostTotal > 0 ? (totalDriverCost / opCostTotal) * 100 : 0;
           const fuelSharePct = opCostTotal > 0 ? 100 - wagesSharePct : 0;
+          // Miles per litre — approved-fuel-scoped litres against the same
+          // GPS mileage base as £/mile above, so the two per-mile figures
+          // never silently disagree on which shifts they're counting.
+          const milesPerLitre = totalFuelLiters > 0 && validMiles > 0 ? validMiles / totalFuelLiters : null;
+
+          // Driver profitability leaderboard — the "who and what" view
+          // that used to exist (per the comment above about the old
+          // Driver Profitability card) and was removed with nothing put
+          // back in its place. Summed gross margin per driver, over the
+          // same shiftsWithRevenue set everything else in this cockpit
+          // uses, so a driver's leaderboard figure always agrees with
+          // what the ledger below would show for their own rows.
+          const driverMarginMap = new Map<string, { name: string; margin: number; shifts: number }>();
+          shiftsWithRevenue.forEach(s => {
+            const m = shiftGrossMargin(s);
+            if (m === null) return;
+            const name = driverNameById.get(s.driver_id) || 'Unknown driver';
+            const entry = driverMarginMap.get(s.driver_id) ?? { name, margin: 0, shifts: 0 };
+            entry.margin += m;
+            entry.shifts += 1;
+            driverMarginMap.set(s.driver_id, entry);
+          });
+          const driverLeaderboard = Array.from(driverMarginMap.values()).sort((a, b) => b.margin - a.margin);
+          const leaderboardTop = driverLeaderboard.slice(0, 3);
+          const leaderboardBottom = driverLeaderboard.length > 6 ? driverLeaderboard.slice(-3) : [];
+          const leaderboardMaxAbs = Math.max(1, ...driverLeaderboard.map(d => Math.abs(d.margin)));
+
+          // Status strip — the things Compensation Summary's own "Flags &
+          // Reviews" bell already tracks (see its comment elsewhere in
+          // this file), but surfaced here too: this tab is meant to answer
+          // "is the business healthy right now", and today it doesn't
+          // show a single thing that needs a decision unless you already
+          // know to check a different tab. A genuine loss-making shift
+          // (not just "lowest margin of an otherwise fine set") is named
+          // outright rather than left for someone to find in the ledger.
+          const flaggedShiftsCount = completedShiftsForAnalytics.filter(
+            s => (s.total_hours ?? 0) > orgAlertSettings.longShiftFlagHours,
+          ).length;
+          const lossMakingShifts = shiftsWithRevenue
+            .map(s => ({ name: driverNameById.get(s.driver_id) || 'Unknown driver', margin: shiftGrossMargin(s) }))
+            .filter((x): x is { name: string; margin: number } => x.margin !== null && x.margin < 0)
+            .sort((a, b) => a.margin - b.margin);
+          const worstLossShift = lossMakingShifts.length > 0 ? lossMakingShifts[0] : null;
 
           // Period-over-period deltas — only meaningful when a specific
           // "Last N weeks" window is selected (there's no natural "period
@@ -7375,16 +7488,17 @@ export default function App() {
             <>
             <div className="analytics-container">
               <div className="mb-16 flex items-center" style={{ gap: '10px', flexWrap: 'wrap' }}>
+                {/* Standardized to TableFilter — the same filter button
+                    used by Fleet Roadworthiness and Compliance Defects —
+                    instead of the bespoke AnalyticsFilterMenu. FilterBar
+                    below still renders the active selections as removable
+                    chips, which the single-group tables don't need but
+                    this one benefits from given five filterable
+                    dimensions at once. */}
+                <TableFilter groups={analyticsFilterGroups} />
                 <FilterBar
                   filters={analyticsFilters}
                   setFilters={setAnalyticsFilters}
-                  // The "+ Filter" add-trigger is hidden — AnalyticsFilterMenu
-                  // below is the sole way to add any filter now, across all
-                  // four types at once (plus the chart-type toggle).
-                  // filterViewOptions is unused while it's hidden but stays
-                  // typed; filterOptionsByType/typeIcons are still needed so
-                  // an active chip (of any type) still renders and removes
-                  // the normal way.
                   filterViewOptions={[]}
                   showAddFilterButton={false}
                   filterOptionsByType={{
@@ -7402,196 +7516,291 @@ export default function App() {
                     [FilterType.CARRIER]: <Building2 className="size-3.5" />,
                   }}
                 />
-                <AnalyticsFilterMenu
-                  options={searchFilterOptions}
-                  activeCount={analyticsFilters.filter(f => f.value.length > 0).length}
-                  isSelected={(type, name) => analyticsFilters.find(f => f.type === type)?.value.includes(name) ?? false}
-                  onSelect={(type, name) => handleSearchFilterSelect(type as FilterType, name)}
-                  chartType={analyticsChartType}
-                  onChartTypeChange={setAnalyticsChartType}
-                />
-                <button
-                  type="button"
-                  onClick={() => setIsImportModalOpen(true)}
-                  className="flex items-center text-xs font-bold"
-                  style={{ gap: '6px', padding: '8px 14px', borderRadius: '8px', border: 'none', background: 'var(--brand-red)', color: '#fff', cursor: 'pointer' }}
-                >
-                  <UploadCloud size={14} />
-                  Import Carrier Load Files
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsFuelReceiptsModalOpen(true)}
-                  className="flex items-center text-xs font-semibold"
-                  style={{ gap: '8px', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
-                >
-                  <Receipt size={14} />
-                  Fuel Receipts
-                  {fuelReceipts.length > 0 && (
-                    <span
-                      className="font-mono tabular-nums"
-                      style={{
-                        fontSize: '10px', fontWeight: 800, minWidth: '17px', height: '17px', padding: '0 4px',
-                        borderRadius: '999px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                        background: fuelReceipts.some(r => r.status === 'pending') ? '#FEF3C7' : 'var(--card-bg-hover)',
-                        color: fuelReceipts.some(r => r.status === 'pending') ? '#92400E' : 'var(--charcoal-light)',
-                      }}
-                    >
-                      {fuelReceipts.length}
-                    </span>
-                  )}
-                </button>
+                {/* Import Carrier Load Files lives on Shipments now (it's
+                    load data entry, not an Analytics stat); Fuel Receipts
+                    stays on Analytics, where the fuel P&L figure and its
+                    "awaiting review" status pill already live. */}
+                {activeTab === 'shipments' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsImportModalOpen(true)}
+                    className="flex items-center text-xs font-bold"
+                    style={{ gap: '6px', padding: '8px 14px', borderRadius: '8px', border: 'none', background: 'var(--brand-red)', color: '#fff', cursor: 'pointer' }}
+                  >
+                    <UploadCloud size={14} />
+                    Import Carrier Load Files
+                  </button>
+                )}
+                {activeTab === 'analytics' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsFuelReceiptsModalOpen(true)}
+                    className="flex items-center text-xs font-semibold"
+                    style={{ gap: '8px', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
+                  >
+                    <Receipt size={14} />
+                    Fuel Receipts
+                    {fuelReceipts.length > 0 && (
+                      <span
+                        className="font-mono tabular-nums"
+                        style={{
+                          fontSize: '10px', fontWeight: 800, minWidth: '17px', height: '17px', padding: '0 4px',
+                          borderRadius: '999px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                          background: fuelReceipts.some(r => r.status === 'pending') ? '#FEF3C7' : 'var(--card-bg-hover)',
+                          color: fuelReceipts.some(r => r.status === 'pending') ? '#92400E' : 'var(--charcoal-light)',
+                        }}
+                      >
+                        {fuelReceipts.length}
+                      </span>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Executive P&L Strip — one consolidated financial-flow block
-                (Revenue − Payroll − Fuel = Net Profit, then Margin), replacing
-                the old six-tile clickable KPI grid. That grid's per-tile
-                "select to drive the chart" behaviour was already dead —
-                the bar chart below plots revenue/cost/fuel together
-                regardless of selection — so this keeps the real, still-used
-                part (the period-over-period delta badges) and drops the
-                vestigial click-to-select interaction. Uses a real CSS grid
-                (not flex-grow) for the 5 columns, and is no longer wrapped
-                narrower than the 8:4 grid below it — both now share the
-                same analytics-container cap, which is what was leaving a
-                void to the right of this strip while the grid below it
-                ran wider. */}
+            {activeTab === 'analytics' && (
+            <>
+            {/* ============================================================
+                ZONE 1 — STATUS. The 3-second answer: is the business
+                healthy right now, and does anything need a decision
+                today. Net Profit + Margin get real visual weight as the
+                hero instead of reading as one of six equal tiles;
+                Revenue/Payroll/Fuel/Live drop to a smaller supporting
+                row. The "needs attention" line surfaces the same kind of
+                thing Compensation Summary's own Flags & Reviews bell
+                tracks (pending fuel receipts, flagged long shifts, a
+                genuine loss-making shift) so this tab actually answers
+                "is anything wrong" instead of requiring you to already
+                know to check a different tab.
+               ============================================================ */}
             <div className="analytics-container">
+              <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
+                Overview
+              </p>
               <RevealOnMount index={0} className="analytics-chart-card">
                 <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                  <TextRevealHeader text="EXECUTIVE P&L SUMMARY" className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
                   <span className="text-xs font-medium text-muted">Filtered period: {periodFilter ? periodFilter.value[0] : 'All time'}</span>
                 </div>
 
-                {/* auto-fit instead of a breakpoint variant (md:/lg:) —
-                    this dev server's long-running Tailwind HMR session left
-                    the utilities layer in a state where a freshly-added
-                    grid-cols-N variant rule loses the cascade to the
-                    already-emitted unprefixed .grid-cols-2, regardless of
-                    breakpoint, so the 5 columns never actually applied.
-                    auto-fit sidesteps Tailwind's variant cascade entirely —
-                    it's plain CSS grid, inline, always wins — and gives the
-                    same "5 across on desktop, wraps narrower" result
-                    without depending on a specific breakpoint at all. */}
-                <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px', borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+                <div className="flex items-end" style={{ gap: '32px', flexWrap: 'wrap', borderBottom: '1px solid var(--border-color)', paddingBottom: '20px', marginBottom: '16px' }}>
                   <div>
-                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Gross Revenue</p>
-                    <p className="font-mono font-bold" style={{ fontSize: '18px', margin: 0, color: 'var(--charcoal)' }}>£{totalRevenue.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
-                    {/* No schema field distinguishes a CSV-confirmed rate from a
-                        manually-entered spot rate — both write the same
-                        shift_revenue.revenue_amount — so this sub-label is the
-                        honest equivalent: how much of the period's revenue
-                        figure is actually settled vs. still unrated. */}
-                    <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{shiftsWithRevenue.length} of {completedShiftsForAnalytics.length} shifts rated</p>
-                    {kpiDeltas.revenue && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.revenue.label} direction={kpiDeltas.revenue.direction} tone={kpiDeltaTone(kpiDeltas.revenue.direction, 'revenue')} /></div>}
-                  </div>
-
-                  <div>
-                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>(−) Driver Payroll</p>
-                    <p className="font-mono font-bold" style={{ fontSize: '18px', margin: 0, color: '#CC0000' }}>£{totalDriverCost.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
-                    <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{formatHoursMinutes(totalHours)} logged</p>
-                    {kpiDeltas.cost && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.cost.label} direction={kpiDeltas.cost.direction} tone={kpiDeltaTone(kpiDeltas.cost.direction, 'cost')} /></div>}
-                  </div>
-
-                  <div>
-                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>(−) Fuel &amp; AdBlue</p>
-                    <p className="font-mono font-bold" style={{ fontSize: '18px', margin: 0, color: '#B45309' }}>£{totalFuelCost.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
-                    <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{totalFuelLiters.toFixed(0)} litres logged</p>
-                    {kpiDeltas.fuel && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.fuel.label} direction={kpiDeltas.fuel.direction} tone={kpiDeltaTone(kpiDeltas.fuel.direction, 'fuel')} /></div>}
-                  </div>
-
-                  <div>
-                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>(=) Net Fleet Profit</p>
-                    <p className="font-mono font-bold" style={{ fontSize: '20px', margin: 0, color: '#10B981' }}>£{grossProfit.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
-                    {kpiDeltas.profit && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.profit.label} direction={kpiDeltas.profit.direction} tone={kpiDeltaTone(kpiDeltas.profit.direction, 'profit')} /></div>}
-                  </div>
-
-                  <div>
-                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Operating Margin</p>
-                    <span
-                      className="font-mono font-bold"
-                      style={{
-                        fontSize: '13px', display: 'inline-block', padding: '4px 10px', borderRadius: '999px',
-                        background: marginBenchmarkLabel === 'Healthy' ? '#D1FAE5' : marginBenchmarkLabel === 'Caution' ? '#FEF3C7' : marginBenchmarkLabel ? '#FEE2E2' : 'var(--card-bg-hover)',
-                        color: marginBenchmarkLabel === 'Healthy' ? '#065F46' : marginBenchmarkLabel === 'Caution' ? '#92400E' : marginBenchmarkLabel ? '#991B1B' : 'var(--charcoal-light)',
-                      }}
-                    >
-                      {grossMarginPct === null ? '—' : `${grossMarginPct.toFixed(1)}%`} • Target &gt;{TARGET_MARGIN_PCT}%{marginBenchmarkLabel ? ` [${marginBenchmarkLabel}]` : ''}
-                    </span>
-                    {kpiDeltas.margin && <div style={{ marginTop: '6px' }}><BadgeDelta label={kpiDeltas.margin.label} direction={kpiDeltas.margin.direction} tone={kpiDeltaTone(kpiDeltas.margin.direction, 'margin')} /></div>}
-                  </div>
-
-                  {/* Deliberately separate from the Driver Payroll tile
-                      above, not added into it — see the comment on
-                      activeShiftsForAnalytics/liveActiveWages. Only
-                      rendered while someone is actually on shift, so the
-                      strip doesn't carry a permanent zero-value tile. */}
-                  {activeShiftsForAnalytics.length > 0 && (
-                    <div>
-                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>
-                        <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#10B981', marginRight: '5px' }} />
-                        On Shift Now (Live)
-                      </p>
-                      <p className="font-mono font-bold" style={{ fontSize: '18px', margin: 0, color: 'var(--charcoal)' }}>£{liveActiveWages.toLocaleString('en-GB', { maximumFractionDigits: 2 })}</p>
-                      <p className="text-xs text-muted" style={{ marginTop: '2px' }}>
-                        {activeShiftsForAnalytics.length} driver{activeShiftsForAnalytics.length === 1 ? '' : 's'} accruing — not yet in Net Profit
-                      </p>
+                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Net fleet profit</p>
+                    <p className="font-mono font-bold" style={{ fontSize: '38px', margin: 0, lineHeight: 1, color: grossProfit >= 0 ? '#10B981' : '#DC2626' }}>
+                      £{grossProfit.toLocaleString('en-GB', { maximumFractionDigits: 0 })}
+                    </p>
+                    <div className="flex items-center" style={{ gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
+                      <span
+                        className="font-mono font-bold"
+                        style={{
+                          fontSize: '12px', padding: '3px 9px', borderRadius: '999px',
+                          background: marginBenchmarkLabel === 'Healthy' ? '#D1FAE5' : marginBenchmarkLabel === 'Caution' ? '#FEF3C7' : marginBenchmarkLabel ? '#FEE2E2' : 'var(--card-bg-hover)',
+                          color: marginBenchmarkLabel === 'Healthy' ? '#065F46' : marginBenchmarkLabel === 'Caution' ? '#92400E' : marginBenchmarkLabel ? '#991B1B' : 'var(--charcoal-light)',
+                        }}
+                      >
+                        {grossMarginPct === null ? '—' : `${grossMarginPct.toFixed(1)}%`} margin
+                      </span>
+                      {kpiDeltas.profit && <BadgeDelta label={kpiDeltas.profit.label} direction={kpiDeltas.profit.direction} tone={kpiDeltaTone(kpiDeltas.profit.direction, 'profit')} />}
+                      <span className="text-xs text-muted">Target &gt;{TARGET_MARGIN_PCT}%{marginBenchmarkLabel ? ` [${marginBenchmarkLabel}]` : ''}</span>
                     </div>
+                  </div>
+
+                  <div className="flex" style={{ gap: '24px', flexWrap: 'wrap' }}>
+                    <div>
+                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Revenue</p>
+                      <p className="font-mono font-bold" style={{ fontSize: '17px', margin: 0, color: 'var(--charcoal)' }}>£{totalRevenue.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
+                      {/* No schema field distinguishes a CSV-confirmed rate from a
+                          manually-entered spot rate — both write the same
+                          shift_revenue.revenue_amount — so this sub-label is the
+                          honest equivalent: how much of the period's revenue
+                          figure is actually settled vs. still unrated. */}
+                      <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{shiftsWithRevenue.length} of {completedShiftsForAnalytics.length} rated</p>
+                      {kpiDeltas.revenue && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.revenue.label} direction={kpiDeltas.revenue.direction} tone={kpiDeltaTone(kpiDeltas.revenue.direction, 'revenue')} /></div>}
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Payroll</p>
+                      <p className="font-mono font-bold" style={{ fontSize: '17px', margin: 0, color: '#CC0000' }}>£{totalDriverCost.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
+                      <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{formatHoursMinutes(totalHours)} logged</p>
+                      {kpiDeltas.cost && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.cost.label} direction={kpiDeltas.cost.direction} tone={kpiDeltaTone(kpiDeltas.cost.direction, 'cost')} /></div>}
+                    </div>
+                    <div>
+                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Fuel &amp; AdBlue</p>
+                      <p className="font-mono font-bold" style={{ fontSize: '17px', margin: 0, color: '#B45309' }}>£{totalFuelCost.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
+                      <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{totalFuelLiters.toFixed(0)} litres</p>
+                      {kpiDeltas.fuel && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.fuel.label} direction={kpiDeltas.fuel.direction} tone={kpiDeltaTone(kpiDeltas.fuel.direction, 'fuel')} /></div>}
+                    </div>
+                    {activeShiftsForAnalytics.length > 0 && (
+                      <div>
+                        <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>
+                          <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#10B981', marginRight: '5px' }} />
+                          On shift now
+                        </p>
+                        <p className="font-mono font-bold" style={{ fontSize: '17px', margin: 0, color: 'var(--charcoal)' }}>£{liveActiveWages.toLocaleString('en-GB', { maximumFractionDigits: 2 })}</p>
+                        <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{activeShiftsForAnalytics.length} live — not yet in profit</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                  {pendingFuelReceiptsCount === 0 && flaggedShiftsCount === 0 && !worstLossShift ? (
+                    <span className="flex items-center text-xs font-semibold" style={{ gap: '6px', color: '#065F46' }}>
+                      <CheckCircle2 size={14} />
+                      Nothing needs attention for this period.
+                    </span>
+                  ) : (
+                    <>
+                      {pendingFuelReceiptsCount > 0 && (
+                        <button type="button" onClick={() => setIsFuelReceiptsModalOpen(true)} className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', border: 'none', cursor: 'pointer', background: '#FEF3C7', color: '#92400E' }}>
+                          {pendingFuelReceiptsCount} fuel receipt{pendingFuelReceiptsCount === 1 ? '' : 's'} awaiting review
+                        </button>
+                      )}
+                      {flaggedShiftsCount > 0 && (
+                        <span className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', background: '#FEE2E2', color: '#991B1B' }}>
+                          {flaggedShiftsCount} shift{flaggedShiftsCount === 1 ? '' : 's'} over {orgAlertSettings.longShiftFlagHours}h
+                        </span>
+                      )}
+                      {worstLossShift && (
+                        <span className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', background: '#FEE2E2', color: '#991B1B' }}>
+                          Loss-making shift — {toTitleCase(worstLossShift.name)} (£{worstLossShift.margin.toFixed(0)})
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
               </RevealOnMount>
             </div>
 
-            {/* Balanced 8:4 grid — Revenue vs Cost chart on the left,
-                Fleet Unit Economics (£/mile yield) on the right. Unit
-                Economics replaces the old Driver Profitability / Depot
-                Comparison / weekly margin-trend cards that used to live in
-                a separate "Performance Benchmarks" section further down
-                the page — true HGV per-mile economics answer the same
-                "how are we actually doing" question more directly than a
-                driver leaderboard did. Wrapped in the same analytics-container
-                cap as the P&L strip above it (rather than running the full,
-                uncapped content width) so the two sections line up exactly
-                instead of the grid being wider than the strip above it. */}
+            {/* ============================================================
+                ZONE 2 — TREND. One chart at a time: Margin (is it going
+                up or down) is the default view; Revenue & Cost is a
+                second tab for the breakdown — instead of forcing
+                revenue, wages, fuel, and a target line into a single
+                chart every time.
+               ============================================================ */}
             <div className="analytics-container">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-16" style={{ alignItems: 'stretch' }}>
-              <div className="lg:col-span-8" style={{ height: '100%' }}>
-                <RevealOnMount index={1} className="analytics-chart-card" style={{ height: '100%', minHeight: '340px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                  <div className="flex items-center mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                    <TextRevealHeader text="REVENUE VS COST OVERVIEW" className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
+              <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
+                Trend
+              </p>
+              <RevealOnMount index={1} className="analytics-chart-card">
+                <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                  <TextRevealHeader text={analyticsTrendTab === 'margin' ? 'MARGIN TREND' : 'REVENUE VS COST'} className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
+                  <div className="flex" style={{ gap: '4px', background: 'var(--card-bg-hover)', borderRadius: '8px', padding: '3px' }}>
+                    {(['margin', 'revenue'] as const).map(tab => (
+                      <button
+                        key={tab}
+                        type="button"
+                        onClick={() => setAnalyticsTrendTab(tab)}
+                        className="text-xs font-bold"
+                        style={{
+                          padding: '5px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer',
+                          background: analyticsTrendTab === tab ? 'var(--card-bg)' : 'transparent',
+                          color: analyticsTrendTab === tab ? 'var(--charcoal)' : 'var(--charcoal-light)',
+                          boxShadow: analyticsTrendTab === tab ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+                        }}
+                      >
+                        {tab === 'margin' ? 'Margin' : 'Revenue & cost'}
+                      </button>
+                    ))}
                   </div>
+                </div>
 
-                  <div className="flex items-center" style={{ gap: '18px', marginBottom: '14px', flexWrap: 'wrap' }}>
-                    <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
-                      <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#0F172A', display: 'inline-block' }} />
-                      Billed Revenue
-                    </span>
-                    <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
-                      <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#CC0000', display: 'inline-block' }} />
-                      Driver Wages
-                    </span>
-                    <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
-                      <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#F59E0B', display: 'inline-block' }} />
-                      Actual Fuel
-                    </span>
-                    <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
-                      <span style={{ width: '12px', height: '0', borderTop: '1.5px dashed #64748B', display: 'inline-block' }} />
-                      {TARGET_MARGIN_PCT}% Target Margin
-                    </span>
-                  </div>
-                  <AnalyticsGroupedBarChart
-                    data={dailySeries.map(d => ({ label: d.label, revenue: d.revenue, cost: d.cost, fuel: d.fuel, targetCostLine: d.targetCostLine }))}
-                    revenueColor="#0F172A"
-                    costColor="#CC0000"
-                    fuelColor="#F59E0B"
-                    targetLineLabel={`${TARGET_MARGIN_PCT}% Target Margin`}
-                  />
+                {analyticsTrendTab === 'margin' ? (
+                  <MarginTrendChart data={dailySeries.map(d => ({ label: d.label, margin: d.margin }))} targetPct={TARGET_MARGIN_PCT} lineColor="#0F172A" />
+                ) : (
+                  <>
+                    <div className="flex items-center" style={{ gap: '18px', marginBottom: '14px', flexWrap: 'wrap' }}>
+                      <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
+                        <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#0F172A', display: 'inline-block' }} />
+                        Billed Revenue
+                      </span>
+                      <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
+                        <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#CC0000', display: 'inline-block' }} />
+                        Driver Wages
+                      </span>
+                      <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
+                        <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#F59E0B', display: 'inline-block' }} />
+                        Actual Fuel
+                      </span>
+                      <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
+                        <span style={{ width: '12px', height: '0', borderTop: '1.5px dashed #64748B', display: 'inline-block' }} />
+                        {TARGET_MARGIN_PCT}% Target Margin
+                      </span>
+                    </div>
+                    <AnalyticsGroupedBarChart
+                      data={dailySeries.map(d => ({ label: d.label, revenue: d.revenue, cost: d.cost, fuel: d.fuel, targetCostLine: d.targetCostLine }))}
+                      revenueColor="#0F172A"
+                      costColor="#CC0000"
+                      fuelColor="#F59E0B"
+                      targetLineLabel={`${TARGET_MARGIN_PCT}% Target Margin`}
+                    />
+                  </>
+                )}
+              </RevealOnMount>
+            </div>
+
+            {/* ============================================================
+                ZONE 3 — PERFORMANCE BREAKDOWN. Who and what: driver
+                profitability (removed in an earlier pass, with nothing
+                put back in its place — see the old comment this
+                replaced), £/mile unit economics (unchanged), and fuel
+                efficiency. The comparison zone — where a reader actually
+                reasons about cause and effect instead of reading a
+                total.
+               ============================================================ */}
+            <div className="analytics-container">
+              <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
+                Performance breakdown
+              </p>
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-16" style={{ alignItems: 'stretch' }}>
+              <div className="lg:col-span-5" style={{ height: '100%' }}>
+                <RevealOnMount index={2} className="analytics-chart-card" style={{ height: '100%', minHeight: '340px' }}>
+                  <span className="flex items-center" style={{ gap: '8px', marginBottom: '4px' }}>
+                    <Users size={14} color="var(--charcoal-light)" />
+                    <TextRevealHeader text="DRIVER PROFITABILITY" className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
+                  </span>
+                  <p className="text-xs font-medium text-muted mb-16">Gross margin contributed, rated shifts this period.</p>
+
+                  {driverLeaderboard.length === 0 ? (
+                    <p className="text-xs text-muted" style={{ padding: '8px 0' }}>No rated shifts yet for this period.</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      {leaderboardTop.map(d => (
+                        <div key={d.name} className="flex items-center" style={{ gap: '10px', padding: '7px 0', borderBottom: '1px solid var(--border-color)' }}>
+                          <span className="text-xs font-semibold" style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(d.name)}</span>
+                          <span className="font-mono font-bold text-xs" style={{ color: d.margin >= 0 ? '#065F46' : '#991B1B', flexShrink: 0 }}>
+                            {d.margin >= 0 ? '+' : ''}£{d.margin.toFixed(0)}
+                          </span>
+                          <div style={{ width: '60px', height: '6px', borderRadius: '3px', background: d.margin >= 0 ? '#D1FAE5' : '#FEE2E2', flexShrink: 0 }}>
+                            <div style={{ width: `${Math.min(100, (Math.abs(d.margin) / leaderboardMaxAbs) * 100)}%`, height: '100%', borderRadius: '3px', background: d.margin >= 0 ? '#10B981' : '#DC2626' }} />
+                          </div>
+                        </div>
+                      ))}
+                      {leaderboardBottom.length > 0 && (
+                        <>
+                          <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.06em', margin: '10px 0 2px' }}>Needs a look</p>
+                          {leaderboardBottom.map(d => (
+                            <div key={d.name} className="flex items-center" style={{ gap: '10px', padding: '7px 0', borderBottom: '1px solid var(--border-color)' }}>
+                              <span className="text-xs font-semibold" style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(d.name)}</span>
+                              <span className="font-mono font-bold text-xs" style={{ color: d.margin >= 0 ? '#065F46' : '#991B1B', flexShrink: 0 }}>
+                                {d.margin >= 0 ? '+' : ''}£{d.margin.toFixed(0)}
+                              </span>
+                              <div style={{ width: '60px', height: '6px', borderRadius: '3px', background: d.margin >= 0 ? '#D1FAE5' : '#FEE2E2', flexShrink: 0 }}>
+                                <div style={{ width: `${Math.min(100, (Math.abs(d.margin) / leaderboardMaxAbs) * 100)}%`, height: '100%', borderRadius: '3px', background: d.margin >= 0 ? '#10B981' : '#DC2626' }} />
+                              </div>
+                            </div>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </RevealOnMount>
               </div>
 
               <div className="lg:col-span-4" style={{ height: '100%' }}>
-                <RevealOnMount index={2} className="analytics-chart-card" style={{ height: '100%', minHeight: '340px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <RevealOnMount index={3} className="analytics-chart-card" style={{ height: '100%', minHeight: '340px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
                   <div>
                     <span className="flex items-center" style={{ gap: '8px', marginBottom: '4px' }}>
                       <Gauge size={14} color="var(--charcoal-light)" />
@@ -7623,6 +7832,28 @@ export default function App() {
                       <p className="text-xs text-muted" style={{ padding: '8px 0' }}>Pending GPS sync — no mileage logged for this period yet.</p>
                     )}
                   </div>
+                </RevealOnMount>
+              </div>
+
+              <div className="lg:col-span-3" style={{ height: '100%' }}>
+                <RevealOnMount index={4} className="analytics-chart-card" style={{ height: '100%', minHeight: '340px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                  <div>
+                    <span className="flex items-center" style={{ gap: '8px', marginBottom: '4px' }}>
+                      <Fuel size={14} color="var(--charcoal-light)" />
+                      <TextRevealHeader text="FUEL EFFICIENCY" className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
+                    </span>
+                    <p className="text-xs font-medium text-muted mb-16">Approved litres against logged GPS miles.</p>
+                    {milesPerLitre !== null ? (
+                      <>
+                        <p className="font-mono font-bold" style={{ fontSize: '26px', margin: 0, color: 'var(--charcoal)' }}>
+                          {milesPerLitre.toFixed(2)}<span className="text-sm text-muted" style={{ fontWeight: 600 }}> mi/L</span>
+                        </p>
+                        <p className="text-xs text-muted" style={{ marginTop: '4px' }}>{totalFuelLiters.toFixed(0)}L over {validMiles.toFixed(0)} mi</p>
+                      </>
+                    ) : (
+                      <p className="text-xs text-muted" style={{ padding: '8px 0' }}>Pending fuel or GPS data for this period.</p>
+                    )}
+                  </div>
 
                   <div style={{ marginTop: '20px' }}>
                     <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.06em', marginBottom: '8px' }}>Operating Cost Split</p>
@@ -7633,7 +7864,7 @@ export default function App() {
                           <div style={{ width: `${fuelSharePct}%`, background: '#F59E0B' }} />
                         </div>
                         <div className="flex items-center justify-between" style={{ marginTop: '6px' }}>
-                          <span className="text-xs font-medium text-muted">Driver Wages ({wagesSharePct.toFixed(0)}%)</span>
+                          <span className="text-xs font-medium text-muted">Wages ({wagesSharePct.toFixed(0)}%)</span>
                           <span className="text-xs font-medium text-muted">Fuel ({fuelSharePct.toFixed(0)}%)</span>
                         </div>
                       </>
@@ -7645,6 +7876,8 @@ export default function App() {
               </div>
             </div>
             </div>
+            </>
+            )}
 
             {/* Fuel Receipts Audit — moved off the main canvas entirely
                 into a modal triggered from the toolbar button. Same data/
@@ -7842,12 +8075,16 @@ export default function App() {
 
             <ImageLightbox url={fuelReceiptLightboxUrl} onClose={() => setFuelReceiptLightboxUrl(null)} alt="Fuel receipt, full size" />
 
-            {/* Shift Revenue deliberately breaks out of .analytics-container's
-                1152px cap — it's the one card that benefits from the full
-                width the main content pane actually has available, so it
-                gets its own wider wrapper instead of widening the shared
-                container (which would also stretch Load Revenue Breakdown
-                and Deeper Analytics). */}
+            {activeTab === 'shipments' && (
+            <>
+            {/* Shipments — load import, revenue rating, and the itemized
+                shift ledger. Moved out of Analytics entirely (was "Zone 4"
+                there) so Analytics stays pure stats/trends and this stays
+                the operational load-tracking workspace — sharing the same
+                closure (and so the same shiftGrossMargin/mileageByShift/
+                CSV-export helpers, revenue-edit state, etc.) as Analytics
+                since both read the same underlying shift data, just
+                presenting different slices of it. */}
             <div className="mt-16" style={{ maxWidth: '1600px', width: '100%' }}>
               <RevealOnMount index={1} className="analytics-chart-card">
                 <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
@@ -8067,6 +8304,8 @@ export default function App() {
                 )}
               </RevealOnMount>
             </div>
+            </>
+            )}
 
             </>
           );
