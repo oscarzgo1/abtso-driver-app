@@ -34,6 +34,8 @@
 	<string>Tachyo uses your location while you're clocked in to show your position on the dispatch map and log your route for your employer's fleet records.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Tachyo tracks your location in the background only while you're clocked in on an active shift, so your employer's dispatch team can see your position and confirm deliveries without you needing to keep the app open.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Tachyo uses Face ID to unlock the app quickly instead of typing your PIN every time, if you turn this on.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>

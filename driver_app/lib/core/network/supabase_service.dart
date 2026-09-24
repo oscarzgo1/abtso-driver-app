@@ -577,7 +577,7 @@ class SupabaseService {
     try {
       final response = await client
           .from('vehicles')
-          .select('id, vehicle_number, vehicle_type')
+          .select('id, vehicle_number, vehicle_type, fuel_tank_capacity_litres')
           .eq('organization_id', organizationId)
           .eq('is_active', true)
           .order('vehicle_type')
@@ -632,6 +632,102 @@ class SupabaseService {
     }
   }
 
+  /// Submits a walk-around check (migration 052) — either a completed
+  /// one (completedAt + overallResult set) or a "Save as Draft" partial
+  /// save (both left null, matching the nullable columns the migration
+  /// already declares). A draft never counts as satisfying the
+  /// before-shift/before-clock-out gate — only a completed submission
+  /// does. shiftId is null for a start-of-shift check — the shift
+  /// doesn't exist yet when that check runs; see
+  /// linkWalkaroundCheckToShift, called right after clock-in creates
+  /// the real shift row.
+  static Future<String?> submitWalkaroundCheck({
+    required String driverId,
+    required String vehicleId,
+    String? trailerId,
+    String? shiftId,
+    required String checkType, // 'start_of_shift' | 'end_of_shift'
+    required DateTime startedAt,
+    DateTime? completedAt,
+    required List<Map<String, dynamic>> items,
+    String? overallResult, // 'pass' | 'defects_found'
+    String? defectNote,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK walkaround check: $checkType for vehicle $vehicleId / trailer $trailerId — ${overallResult ?? 'draft'}');
+      return 'mock-walkaround-id';
+    }
+    try {
+      final response = await client
+          .from('walkaround_checks')
+          .insert({
+            'driver_id': driverId,
+            'vehicle_id': vehicleId,
+            if (trailerId != null) 'trailer_id': trailerId,
+            if (shiftId != null) 'shift_id': shiftId,
+            'check_type': checkType,
+            'started_at': startedAt.toUtc().toIso8601String(),
+            if (completedAt != null) 'completed_at': completedAt.toUtc().toIso8601String(),
+            if (completedAt != null) 'duration_seconds': completedAt.difference(startedAt).inSeconds,
+            'items': items,
+            if (overallResult != null) 'overall_result': overallResult,
+            if (defectNote != null && defectNote.trim().isNotEmpty) 'defect_note': defectNote.trim(),
+          })
+          .select('id')
+          .single();
+      return response['id'] as String?;
+    } catch (e) {
+      debugPrint('submitWalkaroundCheck failed: $e');
+      return null;
+    }
+  }
+
+  /// Uploads one walk-around check photo to the private
+  /// "walkaround-photos" bucket (migration 053) — same
+  /// private-bucket-with-signed-URL shape as uploadDefectPhoto.
+  static Future<String?> uploadWalkaroundPhoto({
+    required String organizationId,
+    required String driverId,
+    required Uint8List bytes,
+    required String fileName,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK walkaround photo upload: $fileName');
+      return 'mock/$fileName';
+    }
+    try {
+      final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : 'jpg';
+      final path = '$organizationId/$driverId/${DateTime.now().millisecondsSinceEpoch}.$ext';
+      await client.storage.from('walkaround-photos').uploadBinary(
+            path,
+            bytes,
+            fileOptions: FileOptions(contentType: _imageMimeType(ext)),
+          );
+      lastUploadError = null;
+      return path;
+    } catch (e) {
+      debugPrint('uploadWalkaroundPhoto failed: $e');
+      lastUploadError = e.toString();
+      return null;
+    }
+  }
+
+  /// Backfills shift_id on a start-of-shift check once clock-in has
+  /// created the real shift row — the check is always completed before
+  /// the shift exists, so this is a required second step, not optional
+  /// cleanup.
+  static Future<void> linkWalkaroundCheckToShift({
+    required String checkId,
+    required String shiftId,
+  }) async {
+    if (isMockMode) return;
+    try {
+      await client.from('walkaround_checks').update({'shift_id': shiftId}).eq('id', checkId);
+    } catch (e) {
+      debugPrint('linkWalkaroundCheckToShift failed: $e');
+    }
+  }
+
   /// Uploads one fuel-receipt photo to the private "fuel-receipts"
   /// bucket (migration 047) — same private-bucket-with-signed-URL shape
   /// as uploadDefectPhoto above, not a public link.
@@ -681,9 +777,13 @@ class SupabaseService {
     String? vehicleId,
     String? trailerId,
     String? vendor,
+    int? odometerMiles,
+    String? dashboardPhotoPath,
+    double? gpsLat,
+    double? gpsLng,
   }) async {
     if (isMockMode) {
-      debugPrint('MOCK fuel receipt: $fuelType, ${liters}L, ${totalCost != null ? '£$totalCost' : 'no cost entered'} at ${vendor ?? 'unknown vendor'} for shift $shiftId');
+      debugPrint('MOCK fuel receipt: $fuelType, ${liters}L, ${totalCost != null ? '£$totalCost' : 'no cost entered'} at ${vendor ?? 'unknown vendor'} for shift $shiftId, odometer $odometerMiles mi, GPS ($gpsLat, $gpsLng)');
       return true;
     }
 
@@ -698,11 +798,119 @@ class SupabaseService {
         if (vehicleId != null) 'vehicle_id': vehicleId,
         if (trailerId != null) 'trailer_id': trailerId,
         if (vendor != null && vendor.trim().isNotEmpty) 'vendor': vendor.trim(),
+        if (odometerMiles != null) 'odometer_miles': odometerMiles,
+        if (dashboardPhotoPath != null) 'dashboard_photo_path': dashboardPhotoPath,
+        if (gpsLat != null) 'gps_lat': gpsLat,
+        if (gpsLng != null) 'gps_lng': gpsLng,
       });
       return true;
     } catch (e) {
       debugPrint('submitFuelReceipt failed: $e');
       return false;
+    }
+  }
+
+  /// Uploads one overnight parking receipt photo to the private
+  /// "parking-receipts" bucket (migration 054) — same
+  /// private-bucket-with-signed-URL shape as uploadFuelReceiptPhoto.
+  static Future<String?> uploadParkingReceiptPhoto({
+    required String organizationId,
+    required String driverId,
+    required Uint8List bytes,
+    required String fileName,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK parking receipt photo upload: $fileName');
+      return 'mock/$fileName';
+    }
+    try {
+      final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : 'jpg';
+      final path = '$organizationId/$driverId/${DateTime.now().millisecondsSinceEpoch}.$ext';
+      await client.storage.from('parking-receipts').uploadBinary(
+            path,
+            bytes,
+            fileOptions: FileOptions(contentType: _imageMimeType(ext)),
+          );
+      lastUploadError = null;
+      return path;
+    } catch (e) {
+      debugPrint('uploadParkingReceiptPhoto failed: $e');
+      lastUploadError = e.toString();
+      return null;
+    }
+  }
+
+  /// Submits an overnight parking expense claim (migration 054) — paid
+  /// by the driver, reimbursed via payroll once an admin approves it
+  /// (approval adds the amount onto the linked shift's extras_amount;
+  /// see the admin panel's handleReviewParkingExpense). Starts
+  /// 'pending', same review gate as fuel receipts.
+  static Future<bool> submitParkingExpense({
+    required String driverId,
+    required String receiptPhotoPath,
+    required double amount,
+    String? shiftId,
+    String? location,
+    String? note,
+    DateTime? parkingDate,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK parking expense: £$amount at ${location ?? 'unknown location'} for shift $shiftId');
+      return true;
+    }
+
+    try {
+      await client.from('parking_expenses').insert({
+        'driver_id': driverId,
+        'receipt_photo_path': receiptPhotoPath,
+        'amount': amount,
+        if (shiftId != null) 'shift_id': shiftId,
+        if (location != null && location.trim().isNotEmpty) 'location': location.trim(),
+        if (note != null && note.trim().isNotEmpty) 'note': note.trim(),
+        'parking_date': (parkingDate ?? DateTime.now()).toIso8601String().substring(0, 10),
+      });
+      return true;
+    } catch (e) {
+      debugPrint('submitParkingExpense failed: $e');
+      return false;
+    }
+  }
+
+  /// Lets a driver tag their own active shift with a load reference /
+  /// customer name, via the attach-load Edge Function — never a direct
+  /// write to shift_revenue, which has no driver-facing RLS policy at
+  /// all on purpose (migration 035: revenue_amount, the company's
+  /// billed rate, must never reach a driver's device). The function
+  /// only ever touches load_reference/carrier_name; an admin still
+  /// rates the £ value afterward from the Shipments ledger.
+  static Future<Map<String, dynamic>> attachLoadReference({
+    required String shiftId,
+    required String loadReference,
+    String? carrierName,
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK load attached: $loadReference (${carrierName ?? 'no carrier'}) to shift $shiftId');
+      return {'success': true};
+    }
+    try {
+      final response = await client.functions.invoke('attach-load', body: {
+        'shift_id': shiftId,
+        'load_reference': loadReference,
+        if (carrierName != null && carrierName.trim().isNotEmpty) 'carrier_name': carrierName.trim(),
+      });
+      final data = response.data;
+      if (data is Map && data['error'] != null) {
+        return {'success': false, 'error': data['error'].toString()};
+      }
+      return {'success': true};
+    } on FunctionException catch (e) {
+      final details = e.details;
+      final message = (details is Map && details['error'] != null) ? details['error'].toString() : e.reasonPhrase ?? 'Could not attach the load.';
+      debugPrint('attachLoadReference failed: $message');
+      return {'success': false, 'error': message};
+    } catch (e) {
+      debugPrint('attachLoadReference failed: $e');
+      return {'success': false, 'error': 'Could not attach the load — check your connection and try again.'};
     }
   }
 

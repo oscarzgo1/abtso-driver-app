@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'auth_provider.dart';
 import '../../legal/presentation/legal_review_screen.dart';
+import '../../../core/services/biometric_service.dart';
 
 class ShakeCurve extends Curve {
   final double count;
@@ -31,6 +32,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
   final _pinController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
   bool _acceptedTerms = false;
+
+  // Biometric unlock gate — only ever engaged for a session restored on
+  // launch (see initState below), never for a fresh interactive login,
+  // which already requires the real PIN. _biometricFailed shows a retry
+  // affordance instead of silently looping the OS prompt.
+  bool _showBiometricLock = false;
+  bool _biometricBusy = false;
+  bool _biometricFailed = false;
 
   late AnimationController _shakeController;
   late Animation<double> _shakeAnimation;
@@ -72,12 +81,86 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
     // The user stays logged in until they explicitly sign out — see
     // AuthNotifier.checkSession, which restores this session indefinitely
     // and never bounces the driver back here over a transient network issue.
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // If this device has Face ID/fingerprint unlock turned on, a restored
+    // session is gated behind that instead of going straight to /home —
+    // see _showBiometricLock.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       final auth = ref.read(authProvider);
-      if (mounted && auth.status == AuthStatus.authenticated) {
+      if (!mounted || auth.status != AuthStatus.authenticated) return;
+      final biometricEnabled = await BiometricService.isEnabled();
+      if (!mounted) return;
+      if (!biometricEnabled) {
         context.goNamed('home');
+        return;
       }
+      setState(() => _showBiometricLock = true);
+      _attemptBiometricUnlock();
     });
+  }
+
+  Future<void> _attemptBiometricUnlock() async {
+    if (!mounted) return;
+    setState(() {
+      _biometricBusy = true;
+      _biometricFailed = false;
+    });
+    final unlocked = await BiometricService.authenticate(reason: 'Unlock Tachyo to continue');
+    if (!mounted) return;
+    if (unlocked) {
+      context.goNamed('home');
+    } else {
+      setState(() {
+        _biometricBusy = false;
+        _biometricFailed = true;
+      });
+    }
+  }
+
+  /// One-time prompt right after a fresh, real (PIN-verified) login —
+  /// never on a restored session. hasBeenAsked() means this only ever
+  /// interrupts the flow once per device, regardless of the answer.
+  Future<void> _maybeOfferBiometricEnrollment() async {
+    if (!mounted) return;
+    final alreadyAsked = await BiometricService.hasBeenAsked();
+    if (alreadyAsked || !mounted) return;
+    final supported = await BiometricService.isDeviceSupported();
+    if (!supported || !mounted) return;
+
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final wantsIt = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Enable Face ID Unlock?', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3, fontSize: 17)),
+        content: const Text(
+          'Use Face ID or fingerprint to unlock Tachyo instantly next time, instead of typing your PIN.',
+          style: TextStyle(fontSize: 13.5, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text('Not Now', style: TextStyle(color: isDark ? Colors.white60 : Colors.black54, fontWeight: FontWeight.bold)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFCC0000),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Enable'),
+          ),
+        ],
+      ),
+    );
+    await BiometricService.markAsked();
+    if (wantsIt == true) {
+      final confirmed = await BiometricService.authenticate(reason: 'Confirm to enable Face ID unlock');
+      if (confirmed) await BiometricService.setEnabled(true);
+    }
   }
 
   @override
@@ -162,7 +245,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
     final theme = Theme.of(context);
 
     // Listen for authentication success or failure
-    ref.listen<AuthState>(authProvider, (prev, next) {
+    ref.listen<AuthState>(authProvider, (prev, next) async {
       if (next.status == AuthStatus.authenticated && prev?.status != AuthStatus.authenticated) {
         // Terms were accepted via the checkbox on this screen, which is the
         // only way to reach a successful login — record it against the
@@ -170,11 +253,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
         // gated on this write succeeding: a slow/offline acceptance sync
         // should never block a driver from starting a shift.
         ref.read(authProvider.notifier).acceptTerms();
-        context.goNamed('greeting');
+        // A fresh, PIN-verified login — the one moment it's safe to offer
+        // Face ID as a shortcut for next time (never offered on a session
+        // restored from disk, only right after typing the real PIN).
+        await _maybeOfferBiometricEnrollment();
+        // mounted is genuinely checked immediately before this use; the
+        // lint doesn't trace State.mounted through a ref.listen closure
+        // reliably, hence the explicit ignore below.
+        if (mounted) context.goNamed('greeting'); // ignore: use_build_context_synchronously
       } else if (next.status == AuthStatus.error) {
         _shakeController.forward();
       }
     });
+
+    if (_showBiometricLock) {
+      return _buildBiometricLockScreen(theme);
+    }
 
     if (authState.status == AuthStatus.loading) {
       return Scaffold(
@@ -553,6 +647,70 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
         ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildBiometricLockScreen(ThemeData theme) {
+    final isDark = theme.brightness == Brightness.dark;
+    return Scaffold(
+      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFFAFAFA),
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Image.asset('assets/images/tachyo_logo.png', height: 48, fit: BoxFit.contain),
+                const SizedBox(height: 40),
+                Container(
+                  width: 84,
+                  height: 84,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFCC0000).withValues(alpha: 0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  alignment: Alignment.center,
+                  child: const Icon(Icons.face_retouching_natural, size: 40, color: Color(0xFFCC0000)),
+                ),
+                const SizedBox(height: 24),
+                Text(
+                  'Welcome back',
+                  style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.w800, color: isDark ? Colors.white : const Color(0xFF333333)),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _biometricFailed ? "Couldn't verify — try again" : 'Unlock with Face ID or fingerprint to continue',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.outfit(fontSize: 13.5, color: _biometricFailed ? const Color(0xFFCC0000) : (isDark ? Colors.white60 : const Color(0xFF888888))),
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton.icon(
+                  onPressed: _biometricBusy ? null : _attemptBiometricUnlock,
+                  icon: _biometricBusy
+                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                      : const Icon(Icons.fingerprint, size: 20),
+                  label: Text(_biometricBusy ? 'Verifying…' : 'Unlock'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFCC0000),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(220, 52),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                TextButton(
+                  onPressed: () => setState(() => _showBiometricLock = false),
+                  child: Text(
+                    'Use PIN instead',
+                    style: GoogleFonts.outfit(fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : const Color(0xFF555555)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

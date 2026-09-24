@@ -62,6 +62,11 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
   const [assetTypeLabel, setAssetTypeLabel] = useState('');
   const [inspectionTypeLabel, setInspectionTypeLabel] = useState('');
   const [dueDate, setDueDate] = useState<Date | null>(null);
+  // Fuel theft/anomaly detection (migration 055) needs a real per-vehicle
+  // capacity to catch an over-capacity fuel log — optional here since an
+  // admin may not know it yet; left null (not a guessed default like 450
+  // or 700) skips that specific check until it's actually set.
+  const [fuelTankCapacity, setFuelTankCapacity] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
@@ -90,6 +95,7 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
         vehicle_type: resolveComboValue(assetTypeLabel, ASSET_TYPE_OPTIONS),
         inspection_type: resolveComboValue(inspectionTypeLabel, INSPECTION_TYPE_OPTIONS),
         inspection_due_date: dueDate ? dueDate.toISOString().slice(0, 10) : null,
+        fuel_tank_capacity_litres: fuelTankCapacity.trim() ? parseInt(fuelTankCapacity, 10) : null,
       });
       if (insertError) throw insertError;
       onSaved();
@@ -179,6 +185,16 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
                 <div className="input-group">
                   <span className="input-label">DUE DATE</span>
                   <CalendarPicker value={dueDate} onChange={setDueDate} placeholder="Select due date" />
+                </div>
+                <div className="input-group">
+                  <span className="input-label">FUEL TANK CAPACITY (L) — OPTIONAL</span>
+                  <input
+                    type="number"
+                    className="input-field"
+                    placeholder="e.g. 450"
+                    value={fuelTankCapacity}
+                    onChange={(e) => setFuelTankCapacity(e.target.value)}
+                  />
                 </div>
               </div>
               <button type="submit" className="btn btn-primary" disabled={isSaving}>

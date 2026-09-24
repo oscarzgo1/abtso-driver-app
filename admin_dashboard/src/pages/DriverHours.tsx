@@ -12,13 +12,7 @@ import { SegmentedClockBar, clockTier } from '../components/ui/segmented-clock-b
 //
 // Every figure here traces to real data. Things the source spec asked
 // for that are still deliberately NOT shown, because this schema/
-// telemetry stack has no honest way to produce them (unchanged from
-// the previous cut of this page — re-verified against all 47
-// migrations before this rebuild):
-//   - No vehicle registration per row: `shifts` has no `vehicle_id`
-//     anywhere in this schema, so there's no real driver->vehicle link
-//     to display. The driver's own employee code is shown instead of a
-//     fabricated registration.
+// telemetry stack has no honest way to produce them:
 //   - No road/junction location names — see the Live Cockpit's
 //     telemetry-status cell, unchanged from before.
 //   - No standalone "ON BREAK" state: there's still no break/rest
@@ -117,6 +111,10 @@ interface WeekShiftRow {
   end_time: string | null;
   status: 'active' | 'completed' | 'cancelled';
   total_hours: number | null;
+  vehicle_id: string | null;
+  trailer_id: string | null;
+  vehicle_number?: string | null;
+  trailer_number?: string | null;
 }
 
 interface GpsPing {
@@ -373,6 +371,8 @@ interface DayCell {
   pings: GpsPing[];
   shiftStart: string | null;
   shiftEnd: string | null;
+  vehicleNumber: string | null;
+  trailerNumber: string | null;
 }
 
 interface DriverWeekRow {
@@ -427,6 +427,20 @@ function DayDetailDrawer({ driverName, cell, onClose }: DayDetailDrawerProps) {
           </div>
         ) : (
           <div className="p-16">
+            {(cell.vehicleNumber || cell.trailerNumber) && (
+              <div className="flex align-center mb-16" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                {cell.vehicleNumber && (
+                  <span className="flex align-center font-mono font-bold" style={{ gap: '5px', fontSize: '11px', textTransform: 'uppercase', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '4px 10px', borderRadius: '6px' }}>
+                    <Truck size={12} /> {cell.vehicleNumber}
+                  </span>
+                )}
+                {cell.trailerNumber && (
+                  <span className="font-mono font-bold" style={{ fontSize: '11px', textTransform: 'uppercase', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '4px 10px', borderRadius: '6px' }}>
+                    {cell.trailerNumber}
+                  </span>
+                )}
+              </div>
+            )}
             {cell.stale && (
               <div className="mb-16" style={{ padding: '10px', borderRadius: '8px', background: 'rgba(204,0,0,0.07)', border: '1px solid rgba(204,0,0,0.2)' }}>
                 <StaleBadge />
@@ -589,7 +603,7 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
         supabase.from('drivers').select('id, driver_id, full_name, phone').eq('organization_id', organizationId).eq('is_active', true).order('full_name', { ascending: true }),
         supabase
           .from('shifts')
-          .select('id, driver_id, start_time, end_time, status, total_hours')
+          .select('id, driver_id, start_time, end_time, status, total_hours, vehicle_id, trailer_id, vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number)')
           .eq('organization_id', organizationId)
           .gte('start_time', lookbackStart.toISOString())
           .lt('start_time', weekEndExclusive.toISOString())
@@ -597,7 +611,14 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
       ]);
       if (drErr || shErr) throw drErr ?? shErr;
       setWeekDrivers((driverRows ?? []) as DriverLite[]);
-      const shifts = (shiftRows ?? []) as WeekShiftRow[];
+      // Which tractor/trailer the driver was actually in that day — see
+      // the module header note; shifts.vehicle_id/trailer_id (migrations
+      // 045/049) have been real for a while, just never surfaced here.
+      const shifts = ((shiftRows ?? []) as any[]).map(r => ({
+        ...r,
+        vehicle_number: r.vehicle?.vehicle_number ?? null,
+        trailer_number: r.trailer?.vehicle_number ?? null,
+      })) as WeekShiftRow[];
       setWeekShifts(shifts);
 
       const shiftIds = shifts.map(s => s.id);
@@ -660,6 +681,7 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
             drivingMinutes: 0, dutyMinutes: 0, isToday: isSameDay(date, new Date()),
             isOpen: false, stale: false, extension: false, breach: false,
             restMinutesBefore: null, shiftIds: [], pings: [], shiftStart: null, shiftEnd: null,
+            vehicleNumber: null, trailerNumber: null,
           };
         }
 
@@ -689,12 +711,16 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
         const idxInAll = driverShifts.indexOf(firstShift);
         const prevShift = idxInAll > 0 ? driverShifts[idxInAll - 1] : null;
         const restMinutesBefore = prevShift?.end_time ? minutesBetween(prevShift.end_time, firstShift.start_time) : null;
+        // The most recent shift of the day is the unit the driver actually
+        // ended up in — relevant if they swapped tractors mid-day.
+        const lastShift = dayShifts[dayShifts.length - 1];
 
         return {
           dateKey: dKey, dateLabel: formatDayHeader(date), date, hasShift: true,
           drivingMinutes, dutyMinutes, isToday: isSameDay(date, new Date()),
           isOpen, stale, extension: dutyMinutes > SPAN_AMBER, breach: dutyMinutes > SPAN_MAX,
           restMinutesBefore, shiftIds, pings, shiftStart: earliestStart, shiftEnd: latestEnd,
+          vehicleNumber: lastShift.vehicle_number ?? null, trailerNumber: lastShift.trailer_number ?? null,
         };
       });
 
@@ -1186,6 +1212,11 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
                               <p className="font-mono tabular-nums m-0" style={{ fontSize: '10.5px', color: cell.breach ? '#CC0000' : cell.extension ? '#F59E0B' : 'var(--charcoal-mid)' }}>
                                 {formatHM(cell.dutyMinutes)} <span style={{ fontWeight: 700 }}>[{cell.breach ? '15h BREACH' : cell.extension ? '15h EXT' : '13h OK'}]</span>
                               </p>
+                              {(cell.vehicleNumber || cell.trailerNumber) && (
+                                <p className="font-mono m-0" style={{ fontSize: '9.5px', color: 'var(--charcoal-light)', textTransform: 'uppercase' }}>
+                                  {[cell.vehicleNumber, cell.trailerNumber].filter(Boolean).join(' / ')}
+                                </p>
+                              )}
                               {cell.stale && <p className="m-0" style={{ fontSize: '9.5px', color: '#CC0000', fontWeight: 700 }}>STALE</p>}
                               {cell.restMinutesBefore != null && (
                                 <p className="flex align-center m-0" style={{ fontSize: '10px', gap: '3px', color: cell.restMinutesBefore >= DAILY_REST_MIN ? 'var(--charcoal-light)' : cell.restMinutesBefore >= REDUCED_REST_MIN ? '#F59E0B' : '#CC0000' }}>

@@ -333,6 +333,14 @@ serve(async (req: Request) => {
       const nightOutMinGapHours = Number(body.nightOutMinGapHours);
       const nightOutMaxGapHours = Number(body.nightOutMaxGapHours);
       const complianceAlertLeadDays = Number(body.complianceAlertLeadDays);
+      // Alert Monitors consolidation (migration 056) — walk-around check
+      // duration target already existed (052) but had no save path
+      // anywhere; fuel anomaly thresholds were hardcoded in the admin
+      // dashboard with no admin control at all. Both now live in the
+      // same per-org settings row/form as everything else above.
+      const walkaroundCheckTargetMinutes = Number(body.walkaroundCheckTargetMinutes);
+      const fuelAnomalyMinMpg = Number(body.fuelAnomalyMinMpg);
+      const fuelAnomalyRollingDropPercent = Number(body.fuelAnomalyRollingDropPercent);
 
       if (!Number.isFinite(longShiftFlagHours) || longShiftFlagHours <= 0) {
         return json({ error: "Long-shift flag threshold must be a positive number of hours." }, 400);
@@ -349,6 +357,15 @@ serve(async (req: Request) => {
       if (!Number.isInteger(complianceAlertLeadDays) || complianceAlertLeadDays <= 0) {
         return json({ error: "MOT alert lead time must be a positive whole number of days." }, 400);
       }
+      if (!Number.isInteger(walkaroundCheckTargetMinutes) || walkaroundCheckTargetMinutes <= 0) {
+        return json({ error: "Walk-around check target must be a positive whole number of minutes." }, 400);
+      }
+      if (!Number.isFinite(fuelAnomalyMinMpg) || fuelAnomalyMinMpg <= 0) {
+        return json({ error: "Fuel anomaly MPG floor must be a positive number." }, 400);
+      }
+      if (!Number.isInteger(fuelAnomalyRollingDropPercent) || fuelAnomalyRollingDropPercent <= 0 || fuelAnomalyRollingDropPercent >= 100) {
+        return json({ error: "Fuel anomaly rolling-average drop must be a whole percentage between 1 and 99." }, 400);
+      }
 
       // allow_driver_night_out_requests (migration 050) is optional in
       // the body — only included in the update when the caller actually
@@ -360,6 +377,9 @@ serve(async (req: Request) => {
         night_out_min_gap_hours: nightOutMinGapHours,
         night_out_max_gap_hours: nightOutMaxGapHours,
         compliance_alert_lead_days: complianceAlertLeadDays,
+        walkaround_check_target_minutes: walkaroundCheckTargetMinutes,
+        fuel_anomaly_min_mpg: fuelAnomalyMinMpg,
+        fuel_anomaly_rolling_drop_percent: fuelAnomalyRollingDropPercent,
       };
       if (typeof body.allowDriverNightOutRequests === "boolean") {
         updatePayload.allow_driver_night_out_requests = body.allowDriverNightOutRequests;
@@ -377,7 +397,10 @@ serve(async (req: Request) => {
       console.log(`Alert settings updated for org ${callerOrgId} by ${callerEmail}`);
       return json({
         success: true,
-        settings: { longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays },
+        settings: {
+          longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays,
+          walkaroundCheckTargetMinutes, fuelAnomalyMinMpg, fuelAnomalyRollingDropPercent,
+        },
       });
     }
 

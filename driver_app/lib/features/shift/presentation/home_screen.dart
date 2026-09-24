@@ -15,7 +15,9 @@ import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import '../../../config/theme.dart';
 import '../../auth/presentation/auth_provider.dart';
 import 'shift_provider.dart';
+import 'walkaround_check_screen.dart';
 import '../../../core/network/supabase_service.dart';
+import '../../../core/services/biometric_service.dart';
 
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -689,6 +691,74 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
+  /// Lets a driver turn Face ID/fingerprint unlock on or off on this
+  /// device at any time — the opt-in prompt on login_screen.dart only
+  /// ever asks once, so this is the only way back in after declining,
+  /// or to switch it off again later.
+  Future<void> _handleBiometricSettingsAction(BuildContext context) async {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final messenger = ScaffoldMessenger.of(context);
+    final currentlyEnabled = await BiometricService.isEnabled();
+    if (!context.mounted) return;
+
+    if (currentlyEnabled) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0), width: 1.5),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.fingerprint, color: Color(0xFF333333), size: 26),
+              SizedBox(width: 12),
+              Text('TURN OFF FACE ID?', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5, fontSize: 16)),
+            ],
+          ),
+          content: const Text(
+            "You'll need your Company Code, Driver ID, and PIN to unlock the app next time.",
+            style: TextStyle(fontSize: 14, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: Text('CANCEL', style: TextStyle(color: isDark ? Colors.white60 : Colors.black54, fontWeight: FontWeight.bold)),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFCC0000),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              child: const Text('TURN OFF'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed == true) {
+        await BiometricService.setEnabled(false);
+        if (context.mounted) messenger.showSnackBar(const SnackBar(content: Text('Face ID unlock turned off.')));
+      }
+      return;
+    }
+
+    final supported = await BiometricService.isDeviceSupported();
+    if (!context.mounted) return;
+    if (!supported) {
+      messenger.showSnackBar(const SnackBar(content: Text("This device doesn't support Face ID or fingerprint unlock.")));
+      return;
+    }
+    final confirmedEnable = await BiometricService.authenticate(reason: 'Confirm to enable Face ID unlock');
+    if (!context.mounted) return;
+    if (confirmedEnable) {
+      await BiometricService.setEnabled(true);
+      messenger.showSnackBar(const SnackBar(content: Text('Face ID unlock enabled.'), backgroundColor: Color(0xFF10B981)));
+    }
+  }
+
   /// Incident reporting: tap a category, then confirm which vehicle it
   /// concerns — the admin panel needs the asset, not just the category,
   /// to know which truck/trailer to act on. Tapping a vehicle fires the
@@ -1355,10 +1425,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     onSelect: isClockedIn ? () => _handleFuelReceiptAction(hubContext) : null,
                   ),
                   buildActionRow(
+                    icon: Icons.local_shipping_outlined,
+                    title: 'Attach Load',
+                    subtitle: isClockedIn ? "Tag what you're carrying on this shift" : 'Clock in to attach a load',
+                    onSelect: isClockedIn ? () => _handleAttachLoadAction(hubContext) : null,
+                  ),
+                  buildActionRow(
                     icon: Icons.warning_amber_rounded,
                     title: 'Report Defect / Incident',
                     subtitle: 'Damage, near miss, collision, mechanical fault',
                     onSelect: () => _handleReportIncidentAction(hubContext),
+                  ),
+                  buildActionRow(
+                    icon: Icons.local_parking_outlined,
+                    title: 'Overnight Parking',
+                    subtitle: 'Claim back a paid parking receipt',
+                    onSelect: () => _handleParkingExpenseAction(hubContext),
                   ),
                   // Conditional on the org's own Settings -> Alerts toggle
                   // (migration 050) — completely absent from the hub, not
@@ -1499,25 +1581,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         ),
                         const SizedBox(height: 18),
                         ElevatedButton(
-                          onPressed: () {
-                            Navigator.pop(sheetContext);
-                            ref.read(shiftProvider.notifier).clockIn(
-                                  vehicleId: selectedTractor?['id'] as String?,
-                                  trailerId: selectedTrailer?['id'] as String?,
-                                );
-                          },
+                          // A tractor must be picked before the walk-around
+                          // check can run — you can't walk around a vehicle
+                          // nobody selected. Trailer stays optional; the
+                          // walk-around screen itself is what states
+                          // plainly whether one's coupled.
+                          onPressed: selectedTractor == null
+                              ? null
+                              : () {
+                                  Navigator.pop(sheetContext);
+                                  _startWalkAroundThenClockIn(
+                                    context,
+                                    tractor: selectedTractor!,
+                                    trailer: selectedTrailer,
+                                  );
+                                },
                           style: ElevatedButton.styleFrom(
                             backgroundColor: const Color(0xFF2E7D32),
+                            disabledBackgroundColor: isDark ? Colors.white12 : Colors.black12,
                             foregroundColor: Colors.white,
                             minimumSize: const Size(double.infinity, 46),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
-                          child: const Text('CLOCK IN', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5)),
+                          child: const Text('CONTINUE TO WALK-AROUND CHECK', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3, fontSize: 12.5)),
                         ),
-                        if (selectedTractor == null && selectedTrailer == null) ...[
+                        if (selectedTractor == null) ...[
                           const SizedBox(height: 8),
                           Text(
-                            'Skip / Assign Vehicle Later — you can couple from the dashboard once clocked in.',
+                            'Select a tractor to continue — a walk-around check runs before every shift.',
                             textAlign: TextAlign.center,
                             style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: isDark ? Colors.white38 : Colors.black38),
                           ),
@@ -1532,6 +1623,99 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         );
       },
     );
+  }
+
+  /// Pushes the start-of-shift Walk-Around Check screen, then clocks in
+  /// only once it's submitted — the check has to happen before the
+  /// shift starts, not after. Once clock-in creates the real shift row,
+  /// the just-submitted check (which had no shift_id yet) is linked to
+  /// it, so the admin panel's history can join the two.
+  void _startWalkAroundThenClockIn(
+    BuildContext context, {
+    required Map<String, dynamic> tractor,
+    Map<String, dynamic>? trailer,
+  }) {
+    final driverId = SupabaseService.currentDriverId;
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    if (driverId == null || organizationId == null) return;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => WalkAroundCheckScreen(
+        driverId: driverId,
+        organizationId: organizationId,
+        checkType: 'start_of_shift',
+        vehicleId: tractor['id'] as String,
+        vehicleNumber: tractor['vehicle_number'] as String,
+        trailerId: trailer?['id'] as String?,
+        trailerNumber: trailer?['vehicle_number'] as String?,
+        onComplete: (checkId) async {
+          await ref.read(shiftProvider.notifier).clockIn(
+                vehicleId: tractor['id'] as String,
+                trailerId: trailer?['id'] as String?,
+              );
+          final shiftId = ref.read(shiftProvider).activeShift?.id;
+          if (checkId != null && shiftId != null) {
+            await SupabaseService.linkWalkaroundCheckToShift(checkId: checkId, shiftId: shiftId);
+          }
+        },
+      ),
+    ));
+  }
+
+  /// Pushes the end-of-shift Walk-Around Check screen, then clocks out
+  /// only once it's submitted. Falls back to asking for a tractor first
+  /// if the active shift somehow has none recorded (the walk-around
+  /// requires a real vehicle) — rare, since clock-in now requires one,
+  /// but the best-effort vehicle_id write at clock-in can still fail
+  /// silently, and this is the safety net for that case.
+  Future<void> _startWalkAroundThenClockOut(BuildContext context) async {
+    final driverId = SupabaseService.currentDriverId;
+    final activeShift = ref.read(shiftProvider).activeShift;
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    if (driverId == null || activeShift == null || organizationId == null) return;
+
+    final vehicles = await SupabaseService.fetchOrgVehicles(organizationId);
+    Map<String, dynamic>? findById(String? id) {
+      if (id == null) return null;
+      for (final v in vehicles) {
+        if (v['id'] == id) return v;
+      }
+      return null;
+    }
+
+    var tractor = findById(activeShift.vehicleId);
+    final trailer = findById(activeShift.trailerId);
+
+    if (!context.mounted) return;
+
+    if (tractor == null) {
+      final picked = await _showSearchableAssetPicker(
+        context,
+        title: 'TRACTOR UNIT',
+        subtitle: 'No tractor is recorded for this shift — select the one you drove.',
+        vehicles: vehicles,
+        typeFilter: 'truck',
+      );
+      if (picked == null || picked.isEmpty) return;
+      tractor = picked;
+    }
+
+    if (!context.mounted) return;
+    final resolvedTractor = tractor;
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => WalkAroundCheckScreen(
+        driverId: driverId,
+        organizationId: organizationId,
+        checkType: 'end_of_shift',
+        vehicleId: resolvedTractor['id'] as String,
+        vehicleNumber: resolvedTractor['vehicle_number'] as String,
+        trailerId: trailer?['id'] as String?,
+        trailerNumber: trailer?['vehicle_number'] as String?,
+        shiftId: activeShift.id,
+        onComplete: (checkId) async {
+          await ref.read(shiftProvider.notifier).clockOut();
+        },
+      ),
+    ));
   }
 
   /// Header-toolbar / sticky-reminder Couple/Decouple modal — reachable
@@ -1661,30 +1845,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
-  /// Fuel & AdBlue receipt logging: one photo (required — the
-  /// receipt_photo_path column is NOT NULL, migration 047) and litres
-  /// (required by this form; migration 049 kept the column itself
-  /// nullable at the DB level, but a receipt with no volume logged isn't
-  /// useful for cost tracking) are the only two things that must be
-  /// filled in. Total cost is now genuinely optional (migration 049
-  /// dropped its NOT NULL). Re-openable any number of times per shift —
-  /// nothing here limits it to one log. Tied to the active shift so the
-  /// Profitability ledger can attribute it to a specific row; starts
-  /// 'pending' and only counts toward Actual Fuel Cost once an admin
-  /// approves it (see submitFuelReceipt).
+  /// Fuel & AdBlue receipt logging. Anti-theft pass (migration 055):
+  /// litres alone let a driver buy 400L on a valid receipt, put a
+  /// fraction of it in the tank, and divert the rest — so a second,
+  /// independently-checkable data point is now required alongside the
+  /// receipt: the odometer reading (cross-checked against distance
+  /// travelled since the last fill-up — see the admin panel's MPG
+  /// anomaly logic) and a dashboard photo showing that same odometer
+  /// reading, so the typed number can't just be made up. GPS is
+  /// captured silently from whatever fix shiftProvider already has
+  /// (the same one driving the live map) — never requested specially
+  /// and never blocks submission if there isn't one yet.
+  ///
+  /// Required now: receipt photo, dashboard photo, litres, odometer.
+  /// Total cost stays optional (migration 049). Re-openable any number
+  /// of times per shift. Tied to the active shift; starts 'pending'
+  /// and only counts toward Actual Fuel Cost once an admin approves it.
   void _handleFuelReceiptAction(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final litersController = TextEditingController();
     final costController = TextEditingController();
     final vendorController = TextEditingController();
+    final odometerController = TextEditingController();
     final picker = ImagePicker();
     XFile? selectedPhoto;
-    // Read once at pick time — see uploadFuelReceiptPhoto's doc comment;
-    // the web build can't re-read an XFile via dart:io.File later, so
-    // the bytes captured here are reused for both the instant preview
-    // and the actual upload.
     Uint8List? selectedPhotoBytes;
+    XFile? selectedDashboardPhoto;
+    Uint8List? selectedDashboardPhotoBytes;
     String fuelType = 'diesel';
     bool isSubmitting = false;
     String? formError;
@@ -1709,23 +1897,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
-            Future<void> pickPhoto(ImageSource source) async {
+            Future<void> pickPhoto(ImageSource source, {required bool dashboard}) async {
               final picked = await picker.pickImage(source: source, imageQuality: 80, maxWidth: 1600);
               if (picked == null) return;
               final bytes = await picked.readAsBytes();
               setSheetState(() {
-                selectedPhoto = picked;
-                selectedPhotoBytes = bytes;
+                if (dashboard) {
+                  selectedDashboardPhoto = picked;
+                  selectedDashboardPhotoBytes = bytes;
+                } else {
+                  selectedPhoto = picked;
+                  selectedPhotoBytes = bytes;
+                }
               });
             }
 
-            // Deliberately NOT gated on photo/liters being filled in — submit()
-            // below already validates both and sets a specific formError
-            // ('A photo of the receipt is required.' / 'Enter the volume in
-            // litres.'). Disabling the button on those same conditions made it
-            // silently inert (Flutter fires no feedback for tapping a disabled
-            // button) instead of showing the driver why — indistinguishable
-            // from the button being broken. Only isSubmitting should disable it.
+            // Deliberately NOT gated on every field being filled in — submit()
+            // below already validates each one and sets a specific formError.
+            // Disabling the button on those same conditions made it silently
+            // inert (Flutter fires no feedback for tapping a disabled button)
+            // instead of showing the driver why — indistinguishable from the
+            // button being broken. Only isSubmitting should disable it.
             final canSubmit = !isSubmitting;
 
             Future<void> submit() async {
@@ -1734,13 +1926,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               if (driverId == null || isSubmitting) return;
 
               final photo = selectedPhoto;
+              final dashboardPhoto = selectedDashboardPhoto;
               final litersValue = double.tryParse(litersController.text.trim());
+              final odometerValue = int.tryParse(odometerController.text.trim());
               if (photo == null) {
-                setSheetState(() => formError = 'A photo of the receipt is required.');
+                setSheetState(() => formError = 'A photo of the pump/receipt is required.');
+                return;
+              }
+              if (dashboardPhoto == null) {
+                setSheetState(() => formError = 'A dashboard photo showing the odometer and fuel gauge is required.');
                 return;
               }
               if (litersValue == null || litersValue <= 0) {
                 setSheetState(() => formError = 'Enter the volume in litres.');
+                return;
+              }
+              if (odometerValue == null || odometerValue < 0) {
+                setSheetState(() => formError = 'Enter the current odometer reading in miles.');
+                return;
+              }
+              final capacity = (selectedAsset?['fuel_tank_capacity_litres'] as num?)?.toInt();
+              if (capacity != null && litersValue > capacity) {
+                setSheetState(() => formError = 'Logged litres ($litersValue L) exceed this vehicle\'s physical tank capacity ($capacity L).');
                 return;
               }
               final costText = costController.text.trim();
@@ -1761,15 +1968,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               // sheet with no visible error.
               try {
                 String? photoPath;
-                if (organizationId != null && selectedPhotoBytes != null) {
-                  photoPath = await SupabaseService.uploadFuelReceiptPhoto(
-                    organizationId: organizationId,
-                    driverId: driverId,
-                    bytes: selectedPhotoBytes!,
-                    fileName: photo.name,
-                  );
+                String? dashboardPhotoPath;
+                if (organizationId != null) {
+                  if (selectedPhotoBytes != null) {
+                    photoPath = await SupabaseService.uploadFuelReceiptPhoto(
+                      organizationId: organizationId,
+                      driverId: driverId,
+                      bytes: selectedPhotoBytes!,
+                      fileName: photo.name,
+                    );
+                  }
+                  if (photoPath != null && selectedDashboardPhotoBytes != null) {
+                    dashboardPhotoPath = await SupabaseService.uploadFuelReceiptPhoto(
+                      organizationId: organizationId,
+                      driverId: driverId,
+                      bytes: selectedDashboardPhotoBytes!,
+                      fileName: dashboardPhoto.name,
+                    );
+                  }
                 }
-                if (photoPath == null) {
+                if (photoPath == null || dashboardPhotoPath == null) {
                   // SupabaseService.lastUploadError carries the real
                   // exception (network drop vs. rejected format vs. size
                   // limit — previously indistinguishable) so the next
@@ -1778,11 +1996,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   final reason = SupabaseService.lastUploadError;
                   setSheetState(() {
                     formError = reason != null
-                        ? 'Could not upload the photo: $reason'
-                        : 'Could not upload the photo — check your connection and try again.';
+                        ? 'Could not upload a photo: $reason'
+                        : 'Could not upload a photo — check your connection and try again.';
                   });
                   return;
                 }
+
+                // Silent — whatever GPS fix shiftProvider already has (or
+                // none yet); never a separate permission prompt here, and
+                // never blocks the submit if there isn't one.
+                final pos = ref.read(shiftProvider).currentPosition;
 
                 final isTractor = selectedAsset?['vehicle_type'] == 'truck';
                 final success = await SupabaseService.submitFuelReceipt(
@@ -1795,6 +2018,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   vehicleId: isTractor ? selectedAsset!['id'] as String : null,
                   trailerId: !isTractor && selectedAsset != null ? selectedAsset!['id'] as String : null,
                   vendor: vendorController.text,
+                  odometerMiles: odometerValue,
+                  dashboardPhotoPath: dashboardPhotoPath,
+                  gpsLat: pos?.latitude,
+                  gpsLng: pos?.longitude,
                 );
                 if (sheetContext.mounted) Navigator.pop(sheetContext);
                 messenger.showSnackBar(
@@ -1848,6 +2075,104 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     ),
                   ),
                 ),
+              );
+            }
+
+            Widget buildPhotoPicker({
+              required String label,
+              required XFile? photo,
+              required Uint8List? bytes,
+              required bool dashboard,
+            }) {
+              if (photo == null) {
+                return Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => pickPhoto(ImageSource.camera, dashboard: dashboard),
+                        icon: const Icon(Icons.camera_alt_outlined, size: 18, color: Color(0xFFCC0000)),
+                        label: Text(label, style: const TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => pickPhoto(ImageSource.gallery, dashboard: dashboard),
+                        icon: Icon(Icons.photo_library_outlined, size: 18, color: isDark ? Colors.white70 : Colors.black54),
+                        label: Text('Choose Photo', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54)),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          side: BorderSide(color: isDark ? Colors.white24 : Colors.black26, width: 1.5),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(12),
+                        child: Image.memory(bytes!, width: double.infinity, height: 160, fit: BoxFit.cover),
+                      ),
+                      Positioned(
+                        top: -8,
+                        right: -8,
+                        child: GestureDetector(
+                          onTap: () => setSheetState(() {
+                            if (dashboard) {
+                              selectedDashboardPhoto = null;
+                              selectedDashboardPhotoBytes = null;
+                            } else {
+                              selectedPhoto = null;
+                              selectedPhotoBytes = null;
+                            }
+                          }),
+                          child: Container(
+                            padding: const EdgeInsets.all(4),
+                            decoration: const BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                            child: const Icon(Icons.close, size: 16, color: Colors.white),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      TextButton.icon(
+                        onPressed: () => pickPhoto(ImageSource.camera, dashboard: dashboard),
+                        icon: const Icon(Icons.replay_outlined, size: 16, color: Color(0xFFCC0000)),
+                        label: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
+                      ),
+                      Text('/', style: TextStyle(color: isDark ? Colors.white30 : Colors.black26)),
+                      TextButton.icon(
+                        onPressed: () => setSheetState(() {
+                          if (dashboard) {
+                            selectedDashboardPhoto = null;
+                            selectedDashboardPhotoBytes = null;
+                          } else {
+                            selectedPhoto = null;
+                            selectedPhotoBytes = null;
+                          }
+                        }),
+                        icon: Icon(Icons.delete_outline, size: 16, color: isDark ? Colors.white54 : Colors.black54),
+                        label: Text('Remove', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white54 : Colors.black54)),
+                      ),
+                    ],
+                  ),
+                ],
               );
             }
 
@@ -1924,87 +2249,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         ),
                         const SizedBox(height: 12),
 
-                        if (selectedPhoto == null)
-                          Row(
-                            children: [
-                              Expanded(
-                                child: OutlinedButton.icon(
-                                  onPressed: () => pickPhoto(ImageSource.camera),
-                                  icon: const Icon(Icons.camera_alt_outlined, size: 18, color: Color(0xFFCC0000)),
-                                  label: const Text('Take Photo', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
-                                  style: OutlinedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(vertical: 14),
-                                    side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: OutlinedButton.icon(
-                                  onPressed: () => pickPhoto(ImageSource.gallery),
-                                  icon: Icon(Icons.photo_library_outlined, size: 18, color: isDark ? Colors.white70 : Colors.black54),
-                                  label: Text('Choose Photo', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54)),
-                                  style: OutlinedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(vertical: 14),
-                                    side: BorderSide(color: isDark ? Colors.white24 : Colors.black26, width: 1.5),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                  ),
-                                ),
-                              ),
-                            ],
-                          )
-                        else
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(12),
-                                    child: Image.memory(selectedPhotoBytes!, width: double.infinity, height: 160, fit: BoxFit.cover),
-                                  ),
-                                  Positioned(
-                                    top: -8,
-                                    right: -8,
-                                    child: GestureDetector(
-                                      onTap: () => setSheetState(() {
-                                        selectedPhoto = null;
-                                        selectedPhotoBytes = null;
-                                      }),
-                                      child: Container(
-                                        padding: const EdgeInsets.all(4),
-                                        decoration: const BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
-                                        child: const Icon(Icons.close, size: 16, color: Colors.white),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  TextButton.icon(
-                                    onPressed: () => pickPhoto(ImageSource.camera),
-                                    icon: const Icon(Icons.replay_outlined, size: 16, color: Color(0xFFCC0000)),
-                                    label: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
-                                  ),
-                                  Text('/', style: TextStyle(color: isDark ? Colors.white30 : Colors.black26)),
-                                  TextButton.icon(
-                                    onPressed: () => setSheetState(() {
-                                      selectedPhoto = null;
-                                      selectedPhotoBytes = null;
-                                    }),
-                                    icon: Icon(Icons.delete_outline, size: 16, color: isDark ? Colors.white54 : Colors.black54),
-                                    label: Text('Remove', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white54 : Colors.black54)),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
+                        Text('PUMP / RECEIPT PHOTO *', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, letterSpacing: 0.4, color: isDark ? Colors.white54 : Colors.black45)),
                         const SizedBox(height: 6),
+                        buildPhotoPicker(label: 'Take Photo', photo: selectedPhoto, bytes: selectedPhotoBytes, dashboard: false),
+
+                        const SizedBox(height: 14),
+                        Text('DASHBOARD PHOTO — ODOMETER + FUEL GAUGE *', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, letterSpacing: 0.4, color: isDark ? Colors.white54 : Colors.black45)),
+                        const SizedBox(height: 6),
+                        buildPhotoPicker(label: 'Take Photo', photo: selectedDashboardPhoto, bytes: selectedDashboardPhotoBytes, dashboard: true),
+
+                        const SizedBox(height: 12),
                         Row(
                           children: [
                             Expanded(
@@ -2024,6 +2278,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               ),
                             ),
                           ],
+                        ),
+                        if (selectedAsset?['fuel_tank_capacity_litres'] != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            'Tank capacity: ${selectedAsset!['fuel_tank_capacity_litres']} L',
+                            style: TextStyle(fontSize: 11, color: isDark ? Colors.white38 : Colors.black38),
+                          ),
+                        ],
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: odometerController,
+                          keyboardType: TextInputType.number,
+                          decoration: fieldDecoration('Current odometer (miles) *'),
                         ),
                         const SizedBox(height: 10),
                         TextField(
@@ -2052,6 +2319,391 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   ),
                 );
               },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Overnight parking claim — paid by the driver out of pocket,
+  /// reimbursed via payroll once an admin approves it (migration 054).
+  /// Tied to the active shift by default so the admin panel knows
+  /// which shift's payroll to add the amount to; nothing here limits
+  /// it to one claim. Same photo-capture / submit-with-try-finally
+  /// shape as _handleFuelReceiptAction above.
+  void _handleParkingExpenseAction(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final amountController = TextEditingController();
+    final locationController = TextEditingController();
+    final noteController = TextEditingController();
+    final picker = ImagePicker();
+    XFile? selectedPhoto;
+    Uint8List? selectedPhotoBytes;
+    bool isSubmitting = false;
+    String? formError;
+
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    final activeShift = ref.read(shiftProvider).activeShift;
+    final shiftId = activeShift?.id;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Future<void> pickPhoto(ImageSource source) async {
+              final picked = await picker.pickImage(source: source, imageQuality: 80, maxWidth: 1600);
+              if (picked == null) return;
+              final bytes = await picked.readAsBytes();
+              setSheetState(() {
+                selectedPhoto = picked;
+                selectedPhotoBytes = bytes;
+              });
+            }
+
+            final canSubmit = !isSubmitting;
+
+            Future<void> submit() async {
+              final messenger = ScaffoldMessenger.of(context);
+              final driverId = ref.read(authProvider).driver?['id'] as String?;
+              if (driverId == null || isSubmitting) return;
+
+              final photo = selectedPhoto;
+              final amountValue = double.tryParse(amountController.text.trim());
+              if (photo == null) {
+                setSheetState(() => formError = 'A photo of the receipt is required.');
+                return;
+              }
+              if (amountValue == null || amountValue <= 0) {
+                setSheetState(() => formError = 'Enter how much you paid.');
+                return;
+              }
+
+              setSheetState(() {
+                isSubmitting = true;
+                formError = null;
+              });
+
+              try {
+                String? photoPath;
+                if (organizationId != null && selectedPhotoBytes != null) {
+                  photoPath = await SupabaseService.uploadParkingReceiptPhoto(
+                    organizationId: organizationId,
+                    driverId: driverId,
+                    bytes: selectedPhotoBytes!,
+                    fileName: photo.name,
+                  );
+                }
+                if (photoPath == null) {
+                  final reason = SupabaseService.lastUploadError;
+                  setSheetState(() {
+                    formError = reason != null
+                        ? 'Could not upload the photo: $reason'
+                        : 'Could not upload the photo — check your connection and try again.';
+                  });
+                  return;
+                }
+
+                final success = await SupabaseService.submitParkingExpense(
+                  driverId: driverId,
+                  receiptPhotoPath: photoPath,
+                  amount: amountValue,
+                  shiftId: shiftId,
+                  location: locationController.text,
+                  note: noteController.text,
+                );
+                if (sheetContext.mounted) Navigator.pop(sheetContext);
+                messenger.showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success ? 'Parking claim sent for approval.' : 'Could not send the claim — try again.',
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                );
+              } catch (e) {
+                debugPrint('Parking expense submit failed: $e');
+                setSheetState(() => formError = 'Something went wrong sending the claim: $e');
+              } finally {
+                if (sheetContext.mounted) setSheetState(() => isSubmitting = false);
+              }
+            }
+
+            InputDecoration fieldDecoration(String hint) => InputDecoration(
+              hintText: hint,
+              filled: true,
+              fillColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+            );
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 20, right: 20, top: 20,
+                bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.local_parking_outlined, color: Color(0xFFCC0000), size: 26),
+                        const SizedBox(width: 12),
+                        Text(
+                          'OVERNIGHT PARKING',
+                          style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5, fontSize: 16, color: isDark ? Colors.white : Colors.black87),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      "You'll be repaid through payroll once a manager approves this.",
+                      style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+                    ),
+                    const SizedBox(height: 16),
+
+                    if (selectedPhoto == null)
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () => pickPhoto(ImageSource.camera),
+                              icon: const Icon(Icons.camera_alt_outlined, size: 18, color: Color(0xFFCC0000)),
+                              label: const Text('Take Photo', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              onPressed: () => pickPhoto(ImageSource.gallery),
+                              icon: Icon(Icons.photo_library_outlined, size: 18, color: isDark ? Colors.white70 : Colors.black54),
+                              label: Text('Choose Photo', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54)),
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                side: BorderSide(color: isDark ? Colors.white24 : Colors.black26, width: 1.5),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
+                          ),
+                        ],
+                      )
+                    else
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Image.memory(selectedPhotoBytes!, width: double.infinity, height: 160, fit: BoxFit.cover),
+                              ),
+                              Positioned(
+                                top: -8,
+                                right: -8,
+                                child: GestureDetector(
+                                  onTap: () => setSheetState(() {
+                                    selectedPhoto = null;
+                                    selectedPhotoBytes = null;
+                                  }),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: const BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                                    child: const Icon(Icons.close, size: 16, color: Colors.white),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              TextButton.icon(
+                                onPressed: () => pickPhoto(ImageSource.camera),
+                                icon: const Icon(Icons.replay_outlined, size: 16, color: Color(0xFFCC0000)),
+                                label: const Text('Retake', style: TextStyle(fontWeight: FontWeight.w700, color: Color(0xFFCC0000))),
+                              ),
+                              Text('/', style: TextStyle(color: isDark ? Colors.white30 : Colors.black26)),
+                              TextButton.icon(
+                                onPressed: () => setSheetState(() {
+                                  selectedPhoto = null;
+                                  selectedPhotoBytes = null;
+                                }),
+                                icon: Icon(Icons.delete_outline, size: 16, color: isDark ? Colors.white54 : Colors.black54),
+                                label: Text('Remove', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white54 : Colors.black54)),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: amountController,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: fieldDecoration('Amount paid £ *'),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: locationController,
+                      decoration: fieldDecoration('Where did you park? (optional)'),
+                    ),
+                    const SizedBox(height: 10),
+                    TextField(
+                      controller: noteController,
+                      decoration: fieldDecoration('Note (optional)'),
+                    ),
+                    if (formError != null) ...[
+                      const SizedBox(height: 10),
+                      Text(formError!, style: const TextStyle(color: Color(0xFFFF3333), fontSize: 12.5, fontWeight: FontWeight.w600)),
+                    ],
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: canSubmit ? submit : null,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFCC0000),
+                        disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+                        minimumSize: const Size(double.infinity, 48),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: isSubmitting
+                          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                          : const Text('Submit Parking Claim', style: TextStyle(fontWeight: FontWeight.w800, color: Colors.white)),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Lets a driver tag their own active shift with which load they're
+  /// running, from the cab, rather than dispatch entering it after the
+  /// fact. Only the load reference / customer name — never a revenue
+  /// figure, which a driver was never shown and never will be (see
+  /// SupabaseService.attachLoadReference's doc comment). An admin
+  /// still rates the £ value afterward from the Shipments ledger.
+  void _handleAttachLoadAction(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final loadRefController = TextEditingController();
+    final carrierController = TextEditingController();
+    final activeShift = ref.read(shiftProvider).activeShift;
+    if (activeShift == null) return;
+
+    bool isSubmitting = false;
+    String? formError;
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Future<void> submit() async {
+              final messenger = ScaffoldMessenger.of(context);
+              final loadRef = loadRefController.text.trim();
+              if (loadRef.isEmpty) {
+                setSheetState(() => formError = 'Enter the load reference.');
+                return;
+              }
+              setSheetState(() {
+                isSubmitting = true;
+                formError = null;
+              });
+              try {
+                final result = await SupabaseService.attachLoadReference(
+                  shiftId: activeShift.id,
+                  loadReference: loadRef,
+                  carrierName: carrierController.text,
+                );
+                if (result['success'] == true) {
+                  if (sheetContext.mounted) Navigator.pop(sheetContext);
+                  messenger.showSnackBar(
+                    const SnackBar(
+                      content: Text('Load attached to this shift.', style: TextStyle(fontWeight: FontWeight.bold)),
+                      backgroundColor: Color(0xFF10B981),
+                      behavior: SnackBarBehavior.floating,
+                    ),
+                  );
+                } else {
+                  setSheetState(() => formError = result['error']?.toString() ?? 'Could not attach the load.');
+                }
+              } finally {
+                if (sheetContext.mounted) setSheetState(() => isSubmitting = false);
+              }
+            }
+
+            InputDecoration fieldDecoration(String hint) => InputDecoration(
+              hintText: hint,
+              filled: true,
+              fillColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+            );
+
+            return Padding(
+              padding: EdgeInsets.only(left: 20, right: 20, top: 20, bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.local_shipping_outlined, color: Color(0xFFCC0000), size: 26),
+                      const SizedBox(width: 12),
+                      Text('ATTACH LOAD', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5, fontSize: 16, color: isDark ? Colors.white : Colors.black87)),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    "Tag this shift with what you're carrying — a manager rates it afterward.",
+                    style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(controller: loadRefController, decoration: fieldDecoration('Load reference *')),
+                  const SizedBox(height: 10),
+                  TextField(controller: carrierController, decoration: fieldDecoration('Customer / carrier (optional)')),
+                  if (formError != null) ...[
+                    const SizedBox(height: 10),
+                    Text(formError!, style: const TextStyle(color: Color(0xFFFF3333), fontSize: 12.5, fontWeight: FontWeight.w600)),
+                  ],
+                  const SizedBox(height: 16),
+                  ElevatedButton(
+                    onPressed: isSubmitting ? null : submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFCC0000),
+                      disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
+                      minimumSize: const Size(double.infinity, 48),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: isSubmitting
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
+                        : const Text('Attach Load', style: TextStyle(fontWeight: FontWeight.w800, color: Colors.white)),
+                  ),
+                ],
+              ),
             );
           },
         );
@@ -2231,6 +2883,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
             icon: const Icon(Icons.tune_rounded, size: 20, color: Color(0xFF333333)),
             tooltip: 'Quick actions',
             onPressed: () => _handleActionHub(context),
+          ),
+          IconButton(
+            icon: const Icon(Icons.fingerprint, size: 20, color: Color(0xFF333333)),
+            tooltip: 'Face ID / Fingerprint unlock',
+            onPressed: () => _handleBiometricSettingsAction(context),
           ),
           IconButton(
             icon: const Icon(Icons.logout, size: 18, color: Color(0xFF333333)),
@@ -2724,7 +3381,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     ElevatedButton(
                       onPressed: (state.isLoading || !state.isNearDepot || state.pendingAction != null)
                           ? null
-                          : () => ref.read(shiftProvider.notifier).clockOut(),
+                          : () => _startWalkAroundThenClockOut(context),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFCC0000),
                         disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),

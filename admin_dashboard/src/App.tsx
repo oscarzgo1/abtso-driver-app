@@ -86,7 +86,8 @@ import {
   Pencil,
   MoreVertical,
   Receipt,
-  Package
+  Package,
+  ParkingCircle
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
@@ -110,7 +111,10 @@ import Compliance from './pages/Compliance';
 import ComplianceDefects from './pages/ComplianceDefects';
 import FleetRoadworthiness from './pages/FleetRoadworthiness';
 import DriverHours from './pages/DriverHours';
+import WalkAroundHistory from './pages/WalkAroundHistory';
+import EmployeeHolidays from './pages/EmployeeHolidays';
 import CarrierSettlementImportModal from './pages/CarrierSettlementImportModal';
+import DriverBulkImportModal from './pages/DriverBulkImportModal';
 import PayrollDrawer, { type PayrollShiftContext, type PayrollDrawerSaveValues } from './pages/PayrollDrawer';
 
 // "Remember Me" stores only the administrator's email address for prefill —
@@ -411,6 +415,13 @@ export interface OrgAlertSettings {
   // Night Out" at all. Defaults false: an operator who doesn't run a
   // Night Out allowance scheme shouldn't see the option.
   allowDriverNightOutRequests: boolean;
+  // Alert Monitors consolidation (migration 056) — walkaroundCheckTargetMinutes
+  // existed on organizations since 052 but had no save path anywhere until
+  // now; the two fuel anomaly fields replace what used to be hardcoded
+  // constants in the fuel-theft detection logic with no admin control.
+  walkaroundCheckTargetMinutes: number;
+  fuelAnomalyMinMpg: number;
+  fuelAnomalyRollingDropPercent: number;
 }
 export const DEFAULT_ORG_ALERT_SETTINGS: OrgAlertSettings = {
   longShiftFlagHours: 18,
@@ -419,6 +430,9 @@ export const DEFAULT_ORG_ALERT_SETTINGS: OrgAlertSettings = {
   nightOutMaxGapHours: 15,
   complianceAlertLeadDays: 30,
   allowDriverNightOutRequests: false,
+  walkaroundCheckTargetMinutes: 15,
+  fuelAnomalyMinMpg: 6.5,
+  fuelAnomalyRollingDropPercent: 30,
 };
 
 // Compliance & Safety types now live in ./pages/Compliance.tsx, which owns
@@ -556,6 +570,11 @@ interface Shift {
    * matches one by registration. */
   vehicle_id?: string | null;
   vehicle_number?: string | null;
+  /** Real (migration 049) — independent nullable FK to the same
+   * vehicles table as vehicle_id; a shift can have a tractor with no
+   * trailer, or vice versa. */
+  trailer_id?: string | null;
+  trailer_number?: string | null;
   /** Real (migration 045) — set by the carrier settlement importer or
    * manually alongside load_reference; null for shifts never imported. */
   carrier_name?: string | null;
@@ -591,6 +610,42 @@ interface FuelReceipt {
   // is required), so a real row can and does arrive with this null.
   total_cost: number | null;
   vendor: string | null;
+  receipt_photo_path: string;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at: string;
+  // Anti-theft pass (migration 055) — odometer + dashboard photo are a
+  // second, independently-checkable data point alongside the receipt
+  // itself; GPS is captured silently by the driver app at submit time.
+  odometer_miles: number | null;
+  dashboard_photo_path: string | null;
+  gps_lat: number | null;
+  gps_lng: number | null;
+  fuel_tank_capacity_litres?: number | null;
+}
+
+// Litres → UK gallons — see fuelAnomalyByReceiptId. The MPG floor and
+// rolling-average-drop threshold themselves are per-org settings now
+// (orgAlertSettings.fuelAnomalyMinMpg/fuelAnomalyRollingDropPercent,
+// migration 056), not hardcoded here.
+const LITRES_TO_UK_GALLONS = 0.219969;
+
+interface FuelAnomaly {
+  deltaMiles: number | null;
+  calculatedMpg: number | null;
+  rollingAverageMpg: number | null;
+  isAnomaly: boolean;
+  anomalyReason: string | null;
+}
+
+interface ParkingExpense {
+  id: string;
+  driver_id: string;
+  driver_name?: string;
+  shift_id: string | null;
+  amount: number;
+  location: string | null;
+  parking_date: string;
+  note: string | null;
   receipt_photo_path: string;
   status: 'pending' | 'approved' | 'rejected';
   created_at: string;
@@ -755,7 +810,7 @@ export default function App() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [recoveryError, setRecoveryError] = useState('');
-  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects'>('live');
+  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects' | 'walkaround-history'>('live');
   // Sidebar expand/collapse — controlled here (not left to the component's
   // own internal state) so the brand header can also switch between the
   // full wordmark and the icon-only mark based on the same flag.
@@ -801,6 +856,9 @@ export default function App() {
     nightOutMinGapHours: String(DEFAULT_ORG_ALERT_SETTINGS.nightOutMinGapHours),
     nightOutMaxGapHours: String(DEFAULT_ORG_ALERT_SETTINGS.nightOutMaxGapHours),
     complianceAlertLeadDays: String(DEFAULT_ORG_ALERT_SETTINGS.complianceAlertLeadDays),
+    walkaroundCheckTargetMinutes: String(DEFAULT_ORG_ALERT_SETTINGS.walkaroundCheckTargetMinutes),
+    fuelAnomalyMinMpg: String(DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyMinMpg),
+    fuelAnomalyRollingDropPercent: String(DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyRollingDropPercent),
   });
   const [isSavingAlertSettings, setIsSavingAlertSettings] = useState(false);
   const [alertSettingsError, setAlertSettingsError] = useState('');
@@ -906,7 +964,7 @@ export default function App() {
     try {
       const { data, error } = await supabase
         .from('organizations')
-        .select('long_shift_flag_hours, idle_alert_minutes, night_out_min_gap_hours, night_out_max_gap_hours, compliance_alert_lead_days, allow_driver_night_out_requests')
+        .select('long_shift_flag_hours, idle_alert_minutes, night_out_min_gap_hours, night_out_max_gap_hours, compliance_alert_lead_days, allow_driver_night_out_requests, walkaround_check_target_minutes, fuel_anomaly_min_mpg, fuel_anomaly_rolling_drop_percent')
         .eq('id', orgId)
         .maybeSingle();
       if (error || !data) return;
@@ -917,6 +975,9 @@ export default function App() {
         nightOutMaxGapHours: data.night_out_max_gap_hours != null ? Number(data.night_out_max_gap_hours) : DEFAULT_ORG_ALERT_SETTINGS.nightOutMaxGapHours,
         complianceAlertLeadDays: Number(data.compliance_alert_lead_days) || DEFAULT_ORG_ALERT_SETTINGS.complianceAlertLeadDays,
         allowDriverNightOutRequests: data.allow_driver_night_out_requests === true,
+        walkaroundCheckTargetMinutes: Number(data.walkaround_check_target_minutes) || DEFAULT_ORG_ALERT_SETTINGS.walkaroundCheckTargetMinutes,
+        fuelAnomalyMinMpg: Number(data.fuel_anomaly_min_mpg) || DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyMinMpg,
+        fuelAnomalyRollingDropPercent: Number(data.fuel_anomaly_rolling_drop_percent) || DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyRollingDropPercent,
       });
     } catch (_) {
       // Migration 038 likely not applied on this environment yet — keep defaults.
@@ -927,18 +988,32 @@ export default function App() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [alerts, setAlerts] = useState<IdleAlert[]>([]);
-  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'sos' | 'idle50'>('all');
+  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending'>('all');
   const [depots, setDepots] = useState<Depot[]>([]);
   const [fleetVehicles, setFleetVehicles] = useState<FleetVehicle[]>([]);
   const [mileageByShift, setMileageByShift] = useState<Record<string, number>>({});
   const [fuelReceipts, setFuelReceipts] = useState<FuelReceipt[]>([]);
   const [fuelReceiptLightboxUrl, setFuelReceiptLightboxUrl] = useState<string | null>(null);
+  // GPS-vs-claimed-station comparison (migration 055) — the vendor name
+  // is driver-entered free text, not a geocoded/verified address (this
+  // project has no Google/Mapbox geocoding key), so it's shown as
+  // context alongside the real GPS pin, not matched against it.
+  const [gpsCompareReceipt, setGpsCompareReceipt] = useState<FuelReceipt | null>(null);
   const [reviewingFuelReceiptId, setReviewingFuelReceiptId] = useState<string | null>(null);
   // Fuel Receipts Audit modal — replaces the old full-width bottom
   // section; same data/handlers, just triggered from the toolbar now.
   const [analyticsTrendTab, setAnalyticsTrendTab] = useState<'margin' | 'revenue'>('margin');
   const [isFuelReceiptsModalOpen, setIsFuelReceiptsModalOpen] = useState(false);
   const [fuelModalDriverSearch, setFuelModalDriverSearch] = useState('');
+  // Overnight Parking Expenses — same review-queue shape as Fuel
+  // Receipts, except approving one also reimburses it into that
+  // shift's payroll (extras_amount) instead of feeding a cost KPI.
+  const [parkingExpenses, setParkingExpenses] = useState<ParkingExpense[]>([]);
+  const [parkingExpenseLightboxUrl, setParkingExpenseLightboxUrl] = useState<string | null>(null);
+  const [reviewingParkingExpenseId, setReviewingParkingExpenseId] = useState<string | null>(null);
+  const [isParkingExpensesModalOpen, setIsParkingExpensesModalOpen] = useState(false);
+  const [parkingModalDriverSearch, setParkingModalDriverSearch] = useState('');
+  const [parkingShiftAssignment, setParkingShiftAssignment] = useState<Record<string, string>>({});
   const [fuelModalVehicleFilter, setFuelModalVehicleFilter] = useState('');
   const [fuelModalDateStart, setFuelModalDateStart] = useState('');
   const [fuelModalDateEnd, setFuelModalDateEnd] = useState('');
@@ -964,6 +1039,7 @@ export default function App() {
   // replacing the old always-visible inline <input> in every row.
   const [revenuePopoverShiftId, setRevenuePopoverShiftId] = useState<string | null>(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isDriverBulkImportOpen, setIsDriverBulkImportOpen] = useState(false);
   const [vehicleAssignShiftId, setVehicleAssignShiftId] = useState<string | null>(null);
   const [clearedAlertIds, setClearedAlertIds] = useState<string[]>(() => {
     try {
@@ -1491,7 +1567,7 @@ export default function App() {
       // otherwise be able to read straight off their own shift row.
       const { data: sfts, error: shiftsError } = await supabase!
         .from('shifts')
-        .select('*, drivers(full_name, driver_id), depots(name), vehicles!vehicle_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name)')
+        .select('*, drivers(full_name, driver_id), depots(name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name)')
         .order('start_time', { ascending: false });
 
       // A Postgrest-level error here (RLS denial, a bad embed, anything)
@@ -1520,7 +1596,9 @@ export default function App() {
           revenue_amount: revenueRow?.revenue_amount ?? null,
           load_reference: revenueRow?.load_reference ?? null,
           vehicle_id: s.vehicle_id ?? null,
-          vehicle_number: s.vehicles?.vehicle_number ?? null,
+          vehicle_number: s.vehicle?.vehicle_number ?? null,
+          trailer_id: s.trailer_id ?? null,
+          trailer_number: s.trailer?.vehicle_number ?? null,
           carrier_name: revenueRow?.carrier_name ?? null,
         };
       });
@@ -1904,7 +1982,7 @@ export default function App() {
     if (isMockMode || !supabase || !currentOrgId) return;
     const { data, error } = await supabase
       .from('fuel_receipts')
-      .select('id, driver_id, shift_id, vehicle_id, liters, total_cost, vendor, receipt_photo_path, status, created_at, drivers(full_name), vehicles!vehicle_id(vehicle_number)')
+      .select('id, driver_id, shift_id, vehicle_id, liters, total_cost, vendor, receipt_photo_path, status, created_at, odometer_miles, dashboard_photo_path, gps_lat, gps_lng, drivers(full_name), vehicles!vehicle_id(vehicle_number, fuel_tank_capacity_litres)')
       .eq('organization_id', currentOrgId)
       .order('created_at', { ascending: false });
     // Was silently dropping a failed fetch (network error, RLS denial,
@@ -1921,6 +1999,7 @@ export default function App() {
         ...r,
         driver_name: r.drivers?.full_name,
         vehicle_number: r.vehicles?.vehicle_number,
+        fuel_tank_capacity_litres: r.vehicles?.fuel_tank_capacity_litres ?? null,
       })) as FuelReceipt[]);
     }
   }, [isMockMode, currentOrgId]);
@@ -1941,6 +2020,120 @@ export default function App() {
       supabase!.removeChannel(channel);
     };
   }, [isMockMode, currentOrgId, loadFuelReceipts]);
+
+  // Overnight Parking Expenses — same load/realtime shape as fuel
+  // receipts above.
+  const loadParkingExpenses = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const { data, error } = await supabase
+      .from('parking_expenses')
+      .select('id, driver_id, shift_id, amount, location, parking_date, note, receipt_photo_path, status, created_at, drivers(full_name)')
+      .eq('organization_id', currentOrgId)
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.error('loadParkingExpenses failed:', error.message, error);
+      showToast('Could not load parking expenses: ' + error.message, 'error');
+      return;
+    }
+    if (data) {
+      setParkingExpenses((data as any[]).map(r => ({
+        ...r,
+        driver_name: r.drivers?.full_name,
+      })) as ParkingExpense[]);
+    }
+  }, [isMockMode, currentOrgId]);
+
+  useEffect(() => {
+    loadParkingExpenses();
+  }, [loadParkingExpenses]);
+
+  useEffect(() => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const channel = supabase
+      .channel('realtime_parking_expenses')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'parking_expenses' }, () => {
+        loadParkingExpenses();
+      })
+      .subscribe();
+    return () => {
+      supabase!.removeChannel(channel);
+    };
+  }, [isMockMode, currentOrgId, loadParkingExpenses]);
+
+  const pendingParkingExpensesCount = useMemo(
+    () => parkingExpenses.filter(r => r.status === 'pending').length,
+    [parkingExpenses],
+  );
+
+  // Approving a claim reimburses it straight into that shift's payroll
+  // — added onto extras_amount/extras_note, the same "extra pay on top
+  // of the base rate" bucket getShiftFinancials() already folds into
+  // gross pay, rather than inventing a second payroll-adjustment path.
+  // A claim with no shift_id can't be approved until one's assigned
+  // (see parkingShiftAssignment / the modal's inline picker) — there's
+  // nowhere to actually credit the money otherwise.
+  const handleReviewParkingExpense = useCallback(async (expense: ParkingExpense, status: 'approved' | 'rejected') => {
+    if (isMockMode || !supabase) return;
+    const targetShiftId = expense.shift_id ?? parkingShiftAssignment[expense.id] ?? null;
+    if (status === 'approved' && !targetShiftId) {
+      showToast('Assign this claim to a shift before approving it.', 'error');
+      return;
+    }
+    setReviewingParkingExpenseId(expense.id);
+    try {
+      if (status === 'approved' && targetShiftId) {
+        const targetShift = shifts.find(s => s.id === targetShiftId);
+        const currentExtras = Number(targetShift?.extras_amount) || 0;
+        const currentNote = targetShift?.extras_note ?? undefined;
+        const claimNote = `Overnight parking${expense.location ? ` (${expense.location})` : ''}: £${expense.amount.toFixed(2)}`;
+        const { error: shiftError } = await supabase
+          .from('shifts')
+          .update({
+            extras_amount: Number((currentExtras + expense.amount).toFixed(2)),
+            extras_note: currentNote ? `${currentNote}; ${claimNote}` : claimNote,
+          })
+          .eq('id', targetShiftId);
+        if (shiftError) {
+          showToast('Could not add this to payroll: ' + shiftError.message, 'error');
+          return;
+        }
+      }
+      await supabase
+        .from('parking_expenses')
+        .update({ status, reviewed_at: new Date().toISOString(), ...(expense.shift_id ? {} : { shift_id: targetShiftId }) })
+        .eq('id', expense.id);
+      setParkingExpenses(prev => prev.map(r => (r.id === expense.id ? { ...r, status, shift_id: r.shift_id ?? targetShiftId } : r)));
+      if (status === 'approved') {
+        showToast(`£${expense.amount.toFixed(2)} added to payroll for this shift.`, 'success');
+        loadData();
+      }
+    } finally {
+      setReviewingParkingExpenseId(null);
+    }
+  }, [isMockMode, shifts, parkingShiftAssignment]);
+
+  const openParkingExpenseLightbox = useCallback(async (path: string) => {
+    if (isMockMode || !supabase) return;
+    const { data } = await supabase.storage.from('parking-receipts').createSignedUrl(path, 3600);
+    if (data?.signedUrl) setParkingExpenseLightboxUrl(data.signedUrl);
+  }, [isMockMode]);
+
+  const [parkingExpenseThumbUrls, setParkingExpenseThumbUrls] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (isMockMode || !supabase || parkingExpenses.length === 0) return;
+    const paths = parkingExpenses.map(r => r.receipt_photo_path).filter(p => !(p in parkingExpenseThumbUrls));
+    if (paths.length === 0) return;
+    let cancelled = false;
+    supabase.storage.from('parking-receipts').createSignedUrls(paths, 3600).then(({ data }) => {
+      if (cancelled || !data) return;
+      const updates: Record<string, string> = {};
+      data.forEach((d, i) => {
+        if (d.signedUrl) updates[paths[i]] = d.signedUrl;
+      });
+      setParkingExpenseThumbUrls(prev => ({ ...prev, ...updates }));
+    });
+    return () => { cancelled = true; };
+  }, [parkingExpenses, isMockMode, parkingExpenseThumbUrls]);
 
   // Drives the Analytics sidebar nav badge — fuelReceipts itself is loaded
   // and kept live (realtime subscription above) regardless of which tab is
@@ -1975,6 +2168,68 @@ export default function App() {
     }
     return map;
   }, [fuelReceipts]);
+
+  // Fuel theft / skimming detection (migration 055) — a valid receipt
+  // proves litres were PAID for, not that they went in THIS tank. The
+  // real tell is distance achieved per litre claimed: siphon fuel or
+  // split it across a jerry can/second vehicle and the truck covers
+  // fewer miles than that litre figure should buy, so calculated MPG
+  // reads low. Two independent triggers, either one flags the row:
+  //   1. An absolute floor — implausible for any laden 44t HGV.
+  //   2. A sudden drop vs. that specific vehicle's own recent average
+  //      — catches a vehicle that's normally efficient suddenly
+  //      isn't, even if its absolute MPG is still "reasonable".
+  // Deliberately computed live from real columns (grouped by vehicle,
+  // sorted by created_at) rather than a stored column — a stored value
+  // would go stale the moment an earlier receipt's litres/odometer are
+  // corrected, the same reason getShiftFinancials computes gross pay
+  // live instead of trusting a stored figure.
+  const fuelAnomalyByReceiptId = useMemo(() => {
+    const result: Record<string, FuelAnomaly> = {};
+    const byVehicle = new Map<string, FuelReceipt[]>();
+    for (const r of fuelReceipts) {
+      if (!r.vehicle_id || r.odometer_miles === null) continue;
+      (byVehicle.get(r.vehicle_id) ?? byVehicle.set(r.vehicle_id, []).get(r.vehicle_id)!).push(r);
+    }
+    for (const [, rows] of byVehicle) {
+      // Chronological by when the fill actually happened, not by
+      // insertion/review order.
+      const sorted = [...rows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      const mpgHistory: number[] = [];
+      for (let i = 0; i < sorted.length; i++) {
+        const current = sorted[i];
+        const previous = sorted[i - 1];
+        let deltaMiles: number | null = null;
+        let calculatedMpg: number | null = null;
+        if (
+          previous &&
+          current.odometer_miles !== null &&
+          previous.odometer_miles !== null &&
+          current.odometer_miles > previous.odometer_miles &&
+          current.liters
+        ) {
+          deltaMiles = current.odometer_miles - previous.odometer_miles;
+          calculatedMpg = deltaMiles / (current.liters * LITRES_TO_UK_GALLONS);
+        }
+        const rollingAverageMpg = mpgHistory.length > 0 ? mpgHistory.reduce((a, b) => a + b, 0) / mpgHistory.length : null;
+        let isAnomaly = false;
+        let anomalyReason: string | null = null;
+        if (calculatedMpg !== null) {
+          if (calculatedMpg < orgAlertSettings.fuelAnomalyMinMpg) {
+            isAnomaly = true;
+            anomalyReason = `${calculatedMpg.toFixed(1)} MPG is below the ${orgAlertSettings.fuelAnomalyMinMpg} MPG floor`;
+          } else if (rollingAverageMpg !== null && calculatedMpg < rollingAverageMpg * (1 - orgAlertSettings.fuelAnomalyRollingDropPercent / 100)) {
+            isAnomaly = true;
+            anomalyReason = `${calculatedMpg.toFixed(1)} MPG is a ${Math.round((1 - calculatedMpg / rollingAverageMpg) * 100)}% drop from this vehicle's recent average (${rollingAverageMpg.toFixed(1)} MPG)`;
+          }
+          mpgHistory.push(calculatedMpg);
+          if (mpgHistory.length > 5) mpgHistory.shift();
+        }
+        result[current.id] = { deltaMiles, calculatedMpg, rollingAverageMpg, isAnomaly, anomalyReason };
+      }
+    }
+    return result;
+  }, [fuelReceipts, orgAlertSettings.fuelAnomalyMinMpg, orgAlertSettings.fuelAnomalyRollingDropPercent]);
 
   const handleReviewFuelReceipt = useCallback(async (id: string, status: 'approved' | 'rejected') => {
     if (isMockMode || !supabase) return;
@@ -2280,6 +2535,9 @@ export default function App() {
       nightOutMinGapHours: String(orgAlertSettings.nightOutMinGapHours),
       nightOutMaxGapHours: String(orgAlertSettings.nightOutMaxGapHours),
       complianceAlertLeadDays: String(orgAlertSettings.complianceAlertLeadDays),
+      walkaroundCheckTargetMinutes: String(orgAlertSettings.walkaroundCheckTargetMinutes),
+      fuelAnomalyMinMpg: String(orgAlertSettings.fuelAnomalyMinMpg),
+      fuelAnomalyRollingDropPercent: String(orgAlertSettings.fuelAnomalyRollingDropPercent),
     });
   }, [orgAlertSettings]);
 
@@ -2294,6 +2552,9 @@ export default function App() {
     const nightOutMinGapHours = parseFloat(alertSettingsForm.nightOutMinGapHours);
     const nightOutMaxGapHours = parseFloat(alertSettingsForm.nightOutMaxGapHours);
     const complianceAlertLeadDays = parseInt(alertSettingsForm.complianceAlertLeadDays, 10);
+    const walkaroundCheckTargetMinutes = parseInt(alertSettingsForm.walkaroundCheckTargetMinutes, 10);
+    const fuelAnomalyMinMpg = parseFloat(alertSettingsForm.fuelAnomalyMinMpg);
+    const fuelAnomalyRollingDropPercent = parseInt(alertSettingsForm.fuelAnomalyRollingDropPercent, 10);
 
     setAlertSettingsError('');
     setAlertSettingsSuccess('');
@@ -2318,6 +2579,18 @@ export default function App() {
       setAlertSettingsError('MOT alert lead time must be a positive whole number of days.');
       return;
     }
+    if (!Number.isInteger(walkaroundCheckTargetMinutes) || walkaroundCheckTargetMinutes <= 0) {
+      setAlertSettingsError('Walk-around check target must be a positive whole number of minutes.');
+      return;
+    }
+    if (!Number.isFinite(fuelAnomalyMinMpg) || fuelAnomalyMinMpg <= 0) {
+      setAlertSettingsError('Fuel anomaly MPG floor must be a positive number.');
+      return;
+    }
+    if (!Number.isInteger(fuelAnomalyRollingDropPercent) || fuelAnomalyRollingDropPercent <= 0 || fuelAnomalyRollingDropPercent >= 100) {
+      setAlertSettingsError('Fuel anomaly rolling-average drop must be a whole percentage between 1 and 99.');
+      return;
+    }
 
     setIsSavingAlertSettings(true);
     try {
@@ -2329,13 +2602,19 @@ export default function App() {
           nightOutMinGapHours,
           nightOutMaxGapHours,
           complianceAlertLeadDays,
+          walkaroundCheckTargetMinutes,
+          fuelAnomalyMinMpg,
+          fuelAnomalyRollingDropPercent,
         },
       });
       const failure = await readFunctionError(data, error);
       if (failure) {
         setAlertSettingsError(failure);
       } else {
-        setOrgAlertSettings(prev => ({ ...prev, longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays }));
+        setOrgAlertSettings(prev => ({
+          ...prev, longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays,
+          walkaroundCheckTargetMinutes, fuelAnomalyMinMpg, fuelAnomalyRollingDropPercent,
+        }));
         setAlertSettingsSuccess('Saved.');
         setTimeout(() => setAlertSettingsSuccess(''), 1800);
       }
@@ -3568,6 +3847,40 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  // Export Drivers — the full current roster's non-secret fields. PINs are
+  // deliberately excluded: they're bcrypt-hashed the moment they're saved
+  // and genuinely can't be recovered here (same reason "Reset Default PIN"
+  // exists) — an admin who needs a driver's login uses that action instead,
+  // which shows the new PIN once at the point it's generated.
+  const handleExportEmployees = () => {
+    if (employees.length === 0) {
+      showToast('No drivers to export.', 'error');
+      return;
+    }
+    const exportData = employees.map(emp => {
+      const rate = employeeRates[emp.id] || employeeRates[emp.driver_id];
+      const isFixed = Boolean(rate?.rate_type?.toLowerCase().includes('fixed'));
+      return {
+        'Driver ID': emp.driver_id,
+        'Full Name': emp.full_name,
+        'Phone': emp.phone || '',
+        'Role': emp.profession ?? 'driver',
+        'Agency': (emp as any).agency_name || (emp as any).agency || rate?.agency_name || 'Direct',
+        'Rate Type': rate?.rate_type || 'Hourly',
+        'Rate (£)': (isFixed ? rate?.fixed_rate : rate?.mon_fri_rate ?? emp.hourly_rate) ?? '',
+        'Active': emp.is_active ? 'Yes' : 'No',
+      };
+    });
+    const csv = Papa.unparse(exportData);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `drivers-export-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handleFillExcelTemplate = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -4288,6 +4601,16 @@ export default function App() {
         // Update position if marker already exists
         markersRef.current[loc.driver_id].setLatLng([displayLat, displayLng]);
       } else {
+        // Current tractor/trailer — same source (shifts.vehicle_id/
+        // trailer_id) as the Employee Database's "Current Unit" column
+        // and the Driver Hours calendar, not a separate lookup, so this
+        // stays consistent with those rather than becoming a third
+        // independent place this fact could drift out of sync.
+        const activeShiftForMarker = shifts.find(s => (s.driver_id === loc.driver_id) && !s.end_time && s.status !== 'completed');
+        const unitLine = activeShiftForMarker && (activeShiftForMarker.vehicle_number || activeShiftForMarker.trailer_number)
+          ? `<span style="color:#333333;font-size:11px;font-weight:bold;">${[activeShiftForMarker.vehicle_number, activeShiftForMarker.trailer_number].filter(Boolean).join(' / ')}</span><br>`
+          : '';
+
         // Create new marker
         const marker = L.marker([displayLat, displayLng], {
           icon: L.divIcon({
@@ -4298,6 +4621,7 @@ export default function App() {
         }).addTo(mapRef.current!).bindPopup(`
           <div style="font-family:'Inter',sans-serif;">
             <b style="font-size:13px;color:#333333;">${loc.driver_name}</b><br>
+            ${unitLine}
             <span style="color:#888888;font-size:11px;">Speed: ${loc.speed_mph.toFixed(0)} mph</span><br>
             <span style="color:${loc.status === 'idle' ? '#CC0000' : '#2E7D32'};font-size:11px;font-weight:bold;">
               Status: ${loc.status.toUpperCase()}
@@ -5053,7 +5377,7 @@ export default function App() {
                   type="button"
                   onClick={() => setIsDriverProfilesExpanded(v => !v)}
                   aria-expanded={isDriverProfilesExpanded}
-                  className={`nav-item ${(activeTab === 'drivers' || activeTab === 'rates') ? 'active' : ''}`}
+                  className={`nav-item ${(activeTab === 'drivers' || activeTab === 'rates' || activeTab === 'holidays') ? 'active' : ''}`}
                   style={{ width: '100%', borderTop: 'none', borderRight: 'none', borderBottom: 'none' }}
                 >
                   <span className="nav-icon">
@@ -5083,6 +5407,7 @@ export default function App() {
                         {([
                           ['drivers', 'Employee Database', 0] as const,
                           ...(userRole === 'payroll_admin' ? [['rates', 'Compensation Summary', pendingNightOutsCount] as const] : []),
+                          ['holidays', 'Employee Holidays', 0] as const,
                         ]).map(([tab, label, count]) => (
                           <button
                             key={tab}
@@ -5121,7 +5446,7 @@ export default function App() {
                   type="button"
                   onClick={() => setIsComplianceExpanded(v => !v)}
                   aria-expanded={isComplianceExpanded}
-                  className={`nav-item ${(activeTab === 'compliance' || activeTab === 'fleet-roadworthiness' || activeTab === 'driver-hours' || activeTab === 'compliance-defects') ? 'active' : ''}`}
+                  className={`nav-item ${(activeTab === 'compliance' || activeTab === 'fleet-roadworthiness' || activeTab === 'driver-hours' || activeTab === 'compliance-defects' || activeTab === 'walkaround-history') ? 'active' : ''}`}
                   style={{ width: '100%', borderTop: 'none', borderRight: 'none', borderBottom: 'none' }}
                 >
                   <span className="nav-icon">
@@ -5153,6 +5478,7 @@ export default function App() {
                           ['fleet-roadworthiness', 'Fleet Roadworthiness', fleetAlertCount] as const,
                           ['driver-hours', 'Driver Hours & WTD', wtdAlertCount] as const,
                           ['compliance-defects', 'Defect Registry', 0] as const,
+                          ['walkaround-history', 'Walk-Around Checks', 0] as const,
                         ]).map(([tab, label, count]) => (
                           <button
                             key={tab}
@@ -5189,9 +5515,9 @@ export default function App() {
                     icon: (
                       <span className="nav-icon">
                         <BarChart3 size={18} />
-                        {pendingFuelReceiptsCount > 0 && (
-                          <span className="nav-count-badge" title={`${pendingFuelReceiptsCount} fuel receipt${pendingFuelReceiptsCount === 1 ? '' : 's'} awaiting review`}>
-                            {pendingFuelReceiptsCount > 9 ? '9+' : pendingFuelReceiptsCount}
+                        {(pendingFuelReceiptsCount + pendingParkingExpensesCount) > 0 && (
+                          <span className="nav-count-badge" title={`${pendingFuelReceiptsCount} fuel receipt${pendingFuelReceiptsCount === 1 ? '' : 's'} + ${pendingParkingExpensesCount} parking claim${pendingParkingExpensesCount === 1 ? '' : 's'} awaiting review`}>
+                            {(pendingFuelReceiptsCount + pendingParkingExpensesCount) > 9 ? '9+' : pendingFuelReceiptsCount + pendingParkingExpensesCount}
                           </span>
                         )}
                       </span>
@@ -5592,13 +5918,14 @@ export default function App() {
                           <th>Last Ping Location</th>
                           {sortHeader('speed', 'Speed')}
                           <th>Telemetry Status</th>
+                          <th>Active Load</th>
                           {sortHeader('timestamp', 'Timestamp')}
                         </tr>
                       </thead>
                       <tbody>
                         {sortedRows.length === 0 ? (
                           <tr>
-                            <td colSpan={5}>
+                            <td colSpan={6}>
                               <Empty>
                                 <EmptyHeader>
                                   <EmptyMedia variant="icon">
@@ -5648,6 +5975,26 @@ export default function App() {
                                   {loc.status}
                                 </span>
                               </td>
+                              <td>
+                                {(() => {
+                                  // Same source as the Employee Database's
+                                  // "Current Unit" column and the Live
+                                  // Dispatch map's marker popup — one place
+                                  // this fact lives (shifts.load_reference
+                                  // via shift_revenue), not a separate
+                                  // lookup that could drift out of sync.
+                                  const activeShiftForRow = shifts.find(s => (s.driver_id === loc.driver_id) && !s.end_time && s.status !== 'completed');
+                                  return activeShiftForRow?.load_reference ? (
+                                    <span className="font-mono font-bold" style={{ fontSize: '11px', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '2px 8px', borderRadius: '4px' }}>
+                                      {activeShiftForRow.load_reference}
+                                    </span>
+                                  ) : activeShiftForRow ? (
+                                    <span className="text-xs text-muted">No Load</span>
+                                  ) : (
+                                    <span className="text-xs text-muted">—</span>
+                                  );
+                                })()}
+                              </td>
                               <td className="text-secondary text-sm">{loc.last_ping ? new Date(loc.last_ping).toLocaleTimeString() : '—'}</td>
                             </tr>
                           ))
@@ -5694,25 +6041,130 @@ export default function App() {
                 this schema — idle_alerts ARE the geofence/stationary
                 alerts (this page's own title uses the word loosely); a
                 4th pill duplicating "Idle" with no distinct backing data
-                would just be a fake filter, so it's deliberately not here. */}
-            <div className="flex gap-8 mb-16">
+                would just be a fake filter, so it's deliberately not here.
+                Fuel Anomaly / Fuel Pending / Parking Pending (Alert
+                Monitors consolidation) reuse the same fuelReceipts/
+                parkingExpenses/fuelAnomalyByReceiptId this file already
+                loads for Analytics — no new query, just a second place
+                those same categories surface, since "All Alerts" above is
+                SOS/Idle only and these three had no home outside their
+                own review modals until now. */}
+            <div className="flex gap-8 mb-16" style={{ flexWrap: 'wrap' }}>
               {([
-                ['all', 'All Alerts'],
-                ['sos', 'Emergency SOS'],
-                ['idle50', 'Idle >50m'],
-              ] as const).map(([key, label]) => (
+                ['all', 'All Alerts', alerts.length],
+                ['sos', 'Emergency SOS', alerts.filter(a => a.is_sos).length],
+                ['idle50', 'Idle >50m', null],
+                ['fuel_anomaly', 'Fuel Anomaly', Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length],
+                ['fuel_pending', 'Fuel Receipts Pending', pendingFuelReceiptsCount],
+                ['parking_pending', 'Parking Claims Pending', pendingParkingExpensesCount],
+              ] as const).map(([key, label, count]) => (
                 <button
                   key={key}
                   type="button"
                   onClick={() => setAlertCategoryFilter(key)}
                   className={`payroll-pill-btn ${alertCategoryFilter === key ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
                 >
-                  {label}
+                  {label}{count !== null && count > 0 ? ` (${count})` : ''}
                 </button>
               ))}
             </div>
 
-            {(() => {
+            {/* Fuel Anomaly / Fuel Pending / Parking Pending — same card
+                shell as the SOS/Idle cards below, driving from data this
+                file already loads for Analytics rather than a new query.
+                Each card links out to its real review modal (Fuel Audit /
+                Parking Claims) instead of duplicating the approve/reject
+                actions here. */}
+            {(alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending') ? (() => {
+              const renderQueueAlertCards = (
+                items: { key: string; driverName?: string; subtitle?: string; dateStr: string; reasonText: string }[],
+                emptyTitle: string,
+                emptyDescription: string,
+                badgeLabel: string,
+                reviewLabel: string,
+                onReview: () => void,
+              ) => items.length === 0 ? (
+                <div className="glass-card">
+                  <Empty>
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon"><CircleCheck /></EmptyMedia>
+                      <EmptyTitle>{emptyTitle}</EmptyTitle>
+                      <EmptyDescription>{emptyDescription}</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                </div>
+              ) : (
+                <div className="flex flex-col" style={{ gap: '12px' }}>
+                  {items.map(item => (
+                    <div key={item.key} className="alert-card alert-card--idle">
+                      <div className="flex align-center justify-between mb-8">
+                        <span className="alert-badge-pill alert-badge-pill--idle">
+                          <AlertTriangle size={12} /> {badgeLabel}
+                        </span>
+                        <span className="font-mono tabular-nums text-xs text-muted">{item.dateStr}</span>
+                      </div>
+                      <div className="flex align-center mb-4" style={{ flexWrap: 'wrap' }}>
+                        <span className="font-semibold text-primary" style={{ fontSize: '13.5px' }}>{item.driverName || 'Unknown Driver'}</span>
+                        {item.subtitle && (
+                          <span className="font-mono font-bold text-secondary" style={{ fontSize: '12px', marginLeft: '8px', textTransform: 'uppercase' }}>{item.subtitle}</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-secondary" style={{ margin: '0 0 10px' }}>{item.reasonText}</p>
+                      <button type="button" className="alert-ack-btn" onClick={onReview}>
+                        <ExternalLink size={13} /> {reviewLabel}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              );
+
+              if (alertCategoryFilter === 'fuel_anomaly') {
+                return renderQueueAlertCards(
+                  fuelReceipts.filter(r => fuelAnomalyByReceiptId[r.id]?.isAnomaly).map(r => ({
+                    key: r.id,
+                    driverName: toTitleCase(r.driver_name ?? ''),
+                    subtitle: r.vehicle_number,
+                    dateStr: new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+                    reasonText: fuelAnomalyByReceiptId[r.id]?.anomalyReason ?? 'Flagged as anomalous.',
+                  })),
+                  'No Fuel Anomalies',
+                  "Every fuel log's MPG is within normal range for its vehicle.",
+                  'Fuel Anomaly',
+                  'Review in Fuel Audit',
+                  () => setIsFuelReceiptsModalOpen(true),
+                );
+              }
+              if (alertCategoryFilter === 'fuel_pending') {
+                return renderQueueAlertCards(
+                  fuelReceipts.filter(r => r.status === 'pending').map(r => ({
+                    key: r.id,
+                    driverName: toTitleCase(r.driver_name ?? ''),
+                    subtitle: r.vehicle_number,
+                    dateStr: new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+                    reasonText: `${r.liters === null ? '—' : r.liters.toFixed(1)} L${r.total_cost != null ? ` · £${r.total_cost.toFixed(2)}` : ''} — awaiting approval.`,
+                  })),
+                  'No Fuel Receipts Pending',
+                  'Every submitted fuel receipt has been reviewed.',
+                  'Awaiting Review',
+                  'Review in Fuel Audit',
+                  () => setIsFuelReceiptsModalOpen(true),
+                );
+              }
+              return renderQueueAlertCards(
+                parkingExpenses.filter(r => r.status === 'pending').map(r => ({
+                  key: r.id,
+                  driverName: toTitleCase(r.driver_name ?? ''),
+                  subtitle: r.location ?? undefined,
+                  dateStr: new Date(r.parking_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+                  reasonText: `£${r.amount.toFixed(2)} — awaiting approval before it's added to payroll.`,
+                })),
+                'No Parking Claims Pending',
+                'Every submitted overnight parking claim has been reviewed.',
+                'Awaiting Review',
+                'Review Claims',
+                () => setIsParkingExpensesModalOpen(true),
+              );
+            })() : (() => {
               const diffMinsFor = (alert: IdleAlert) => {
                 const rawTs = alert.is_sos ? alert.created_at : alert.started_at;
                 const ms = rawTs ? new Date(normalizeUtcIso(rawTs)).getTime() : Date.now();
@@ -5829,14 +6281,32 @@ export default function App() {
                   frequent, utilitarian action inside a data table — back
                   to a static button matching the rest of this app's
                   buttons. */}
-              <button
-                type="button"
-                className="btn flex align-center"
-                style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
-                onClick={() => setIsAddingEmployee(!isAddingEmployee)}
-              >
-                <UserPlus size={15} /> Add Employee
-              </button>
+              <div className="flex align-center" style={{ gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary flex align-center"
+                  style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800 }}
+                  onClick={handleExportEmployees}
+                >
+                  <Download size={15} /> Export Drivers
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary flex align-center"
+                  style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800 }}
+                  onClick={() => setIsDriverBulkImportOpen(true)}
+                >
+                  <UploadCloud size={15} /> Bulk Import
+                </button>
+                <button
+                  type="button"
+                  className="btn flex align-center"
+                  style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
+                  onClick={() => setIsAddingEmployee(!isAddingEmployee)}
+                >
+                  <UserPlus size={15} /> Add Employee
+                </button>
+              </div>
             </div>
 
             {/* Add Employee — centered dialog, identity + compensation in
@@ -6034,6 +6504,7 @@ export default function App() {
                     <th>Role &amp; Agency</th>
                     <th>Compensation</th>
                     <th>Status</th>
+                    <th>Current Unit</th>
                     <th style={{ textAlign: 'right' }}>Actions</th>
                   </tr>
                 </thead>
@@ -6124,6 +6595,27 @@ export default function App() {
                             <span className="badge" style={{ width: 'fit-content', background: 'var(--card-bg-hover)', color: 'var(--charcoal-light)', border: '1px solid var(--border-color)' }}>
                               Offline
                             </span>
+                          )}
+                        </td>
+                        <td>
+                          {/* Which tractor/trailer this driver is currently in —
+                              a single, central place for this instead of
+                              scattered across tabs (shifts.vehicle_id/trailer_id,
+                              migrations 045/049), matching Live Dispatch and the
+                              Driver Hours calendar's own history view. */}
+                          {activeShift && (activeShift.vehicle_number || activeShift.trailer_number) ? (
+                            <span className="flex flex-col" style={{ gap: '2px' }}>
+                              {activeShift.vehicle_number && (
+                                <span className="font-mono font-bold" style={{ fontSize: '11px', textTransform: 'uppercase', color: 'var(--charcoal)' }}>{activeShift.vehicle_number}</span>
+                              )}
+                              {activeShift.trailer_number && (
+                                <span className="font-mono" style={{ fontSize: '10.5px', textTransform: 'uppercase', color: 'var(--charcoal-light)' }}>{activeShift.trailer_number}</span>
+                              )}
+                            </span>
+                          ) : activeShift ? (
+                            <span className="text-xs text-muted">Unassigned</span>
+                          ) : (
+                            <span className="text-xs text-muted">—</span>
                           )}
                         </td>
                         <td style={{ position: 'relative', textAlign: 'right' }}>
@@ -6224,6 +6716,24 @@ export default function App() {
           />
         )}
 
+        {/* ── Walk-Around Check History — every start/end-of-shift vehicle
+             check with how long it took, reached via the Compliance &
+             Safety accordion. ──────────────────────────────────────── */}
+        {activeTab === 'walkaround-history' && (
+          <WalkAroundHistory
+            organizationId={currentOrgId}
+            targetMinutes={orgAlertSettings.walkaroundCheckTargetMinutes}
+            onBack={() => setActiveTab('compliance')}
+          />
+        )}
+
+        {activeTab === 'holidays' && (
+          <EmployeeHolidays
+            organizationId={currentOrgId}
+            onBack={() => setActiveTab('drivers')}
+          />
+        )}
+
         {/* ── Fleet Roadworthiness — MOT/PMI/VOR asset register, reached
              via the Compliance & Safety hover flyout. ─────────────────── */}
         {activeTab === 'fleet-roadworthiness' && (
@@ -6254,6 +6764,15 @@ export default function App() {
           <CarrierSettlementImportModal
             organizationId={currentOrgId}
             onClose={() => setIsImportModalOpen(false)}
+            onImported={() => loadData()}
+          />
+        )}
+
+        {isDriverBulkImportOpen && (
+          <DriverBulkImportModal
+            organizationId={currentOrgId}
+            existingDriverIds={employees.map(e => e.driver_id)}
+            onClose={() => setIsDriverBulkImportOpen(false)}
             onImported={() => loadData()}
           />
         )}
@@ -7555,6 +8074,30 @@ export default function App() {
                     )}
                   </button>
                 )}
+                {activeTab === 'analytics' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsParkingExpensesModalOpen(true)}
+                    className="flex items-center text-xs font-semibold"
+                    style={{ gap: '8px', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
+                  >
+                    <ParkingCircle size={14} />
+                    Overnight Parking
+                    {parkingExpenses.length > 0 && (
+                      <span
+                        className="font-mono tabular-nums"
+                        style={{
+                          fontSize: '10px', fontWeight: 800, minWidth: '17px', height: '17px', padding: '0 4px',
+                          borderRadius: '999px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                          background: parkingExpenses.some(r => r.status === 'pending') ? '#FEF3C7' : 'var(--card-bg-hover)',
+                          color: parkingExpenses.some(r => r.status === 'pending') ? '#92400E' : 'var(--charcoal-light)',
+                        }}
+                      >
+                        {parkingExpenses.length}
+                      </span>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -7643,7 +8186,7 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
-                  {pendingFuelReceiptsCount === 0 && flaggedShiftsCount === 0 && !worstLossShift ? (
+                  {pendingFuelReceiptsCount === 0 && pendingParkingExpensesCount === 0 && flaggedShiftsCount === 0 && !worstLossShift ? (
                     <span className="flex items-center text-xs font-semibold" style={{ gap: '6px', color: '#065F46' }}>
                       <CheckCircle2 size={14} />
                       Nothing needs attention for this period.
@@ -7653,6 +8196,11 @@ export default function App() {
                       {pendingFuelReceiptsCount > 0 && (
                         <button type="button" onClick={() => setIsFuelReceiptsModalOpen(true)} className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', border: 'none', cursor: 'pointer', background: '#FEF3C7', color: '#92400E' }}>
                           {pendingFuelReceiptsCount} fuel receipt{pendingFuelReceiptsCount === 1 ? '' : 's'} awaiting review
+                        </button>
+                      )}
+                      {pendingParkingExpensesCount > 0 && (
+                        <button type="button" onClick={() => setIsParkingExpensesModalOpen(true)} className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', border: 'none', cursor: 'pointer', background: '#FEF3C7', color: '#92400E' }}>
+                          {pendingParkingExpensesCount} parking claim{pendingParkingExpensesCount === 1 ? '' : 's'} awaiting review
                         </button>
                       )}
                       {flaggedShiftsCount > 0 && (
@@ -7915,8 +8463,12 @@ export default function App() {
                       <span className="flex items-center" style={{ gap: '10px' }}>
                         <Receipt size={18} color="var(--charcoal)" />
                         <h2 className="text-lg font-black text-primary m-0">Fuel &amp; AdBlue Receipts Audit</h2>
-                        <span className="badge badge-accent" style={{ fontSize: '10px' }}>OCR Scanned</span>
                         {pendingCount > 0 && <span className="badge badge-warning font-mono">{pendingCount} awaiting review</span>}
+                        {Object.values(fuelAnomalyByReceiptId).some(a => a.isAnomaly) && (
+                          <span className="badge badge-danger font-mono">
+                            {Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length} anomal{Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length === 1 ? 'y' : 'ies'}
+                          </span>
+                        )}
                       </span>
                       <button
                         type="button"
@@ -7987,12 +8539,14 @@ export default function App() {
                         <table className="data-table data-table--nowrap">
                           <thead>
                             <tr>
-                              <th>Receipt Photo</th>
+                              <th>Photos</th>
                               <th>Driver Name</th>
                               <th>Vehicle Reg</th>
                               <th>Date &amp; Time</th>
+                              <th>Odometer (mi)</th>
                               <th>Volume (L)</th>
                               <th>Total Cost (£)</th>
+                              <th>Δ Miles / MPG</th>
                               <th>Station / Vendor</th>
                               <th>Status</th>
                               <th></th>
@@ -8001,37 +8555,360 @@ export default function App() {
                           <tbody>
                             {filteredReceipts.map(r => {
                               const thumbUrl = fuelReceiptThumbUrls[r.receipt_photo_path];
+                              const dashboardThumbUrl = r.dashboard_photo_path ? fuelReceiptThumbUrls[r.dashboard_photo_path] : undefined;
+                              const anomaly = fuelAnomalyByReceiptId[r.id];
+                              return (
+                                <React.Fragment key={r.id}>
+                                  <tr style={anomaly?.isAnomaly ? { background: 'rgba(204,0,0,0.05)' } : undefined}>
+                                    <td>
+                                      <div className="flex items-center" style={{ gap: '4px' }}>
+                                        <button
+                                          type="button"
+                                          onClick={() => openFuelReceiptLightbox(r.receipt_photo_path)}
+                                          style={{ position: 'relative', width: '36px', height: '36px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
+                                          title="View pump/receipt photo"
+                                        >
+                                          {thumbUrl ? (
+                                            <img src={thumbUrl} alt="Fuel receipt" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                          ) : (
+                                            <Fuel size={13} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
+                                          )}
+                                        </button>
+                                        {r.dashboard_photo_path ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => openFuelReceiptLightbox(r.dashboard_photo_path!)}
+                                            style={{ position: 'relative', width: '36px', height: '36px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
+                                            title="View dashboard photo (odometer + fuel gauge)"
+                                          >
+                                            {dashboardThumbUrl ? (
+                                              <img src={dashboardThumbUrl} alt="Dashboard" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                            ) : (
+                                              <Gauge size={13} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
+                                            )}
+                                          </button>
+                                        ) : (
+                                          <span title="No dashboard photo (submitted before this check existed)" style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '6px', background: 'var(--card-bg-hover)' }}>
+                                            <Gauge size={13} color="var(--charcoal-light)" style={{ opacity: 0.3 }} />
+                                          </span>
+                                        )}
+                                        {r.gps_lat !== null && r.gps_lng !== null && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setGpsCompareReceipt(r)}
+                                            title="Compare GPS location vs. claimed station"
+                                            style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: '6px', background: 'var(--card-bg-hover)', cursor: 'pointer', color: 'var(--charcoal)' }}
+                                          >
+                                            <MapPin size={13} />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                    <td className="font-medium text-primary" style={{ fontSize: '13px' }}>{toTitleCase(r.driver_name ?? '') || '—'}</td>
+                                    <td>
+                                      {r.vehicle_number ? (
+                                        <span className="font-mono font-bold" style={{ fontSize: '11px', textTransform: 'uppercase', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '2px 8px', borderRadius: '4px' }}>
+                                          {r.vehicle_number}
+                                        </span>
+                                      ) : '—'}
+                                    </td>
+                                    <td className="whitespace-nowrap font-mono tabular-nums text-xs">
+                                      {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}{' '}
+                                      {new Date(r.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                                    </td>
+                                    <td className="font-mono tabular-nums text-xs">{r.odometer_miles === null ? '—' : r.odometer_miles.toLocaleString('en-GB')}</td>
+                                    <td className="font-mono tabular-nums font-semibold text-xs">
+                                      {r.liters === null ? '—' : r.liters.toFixed(1)}
+                                      {r.fuel_tank_capacity_litres != null && r.liters !== null && r.liters > r.fuel_tank_capacity_litres && (
+                                        <AlertTriangle size={11} color="#CC0000" style={{ marginLeft: '4px', verticalAlign: 'middle' }} />
+                                      )}
+                                    </td>
+                                    <td className="font-mono tabular-nums font-semibold">{r.total_cost === null ? '—' : `£${r.total_cost.toFixed(2)}`}</td>
+                                    <td className="whitespace-nowrap">
+                                      {anomaly?.calculatedMpg != null ? (
+                                        <div className="flex flex-col" style={{ gap: '2px' }}>
+                                          <span className="font-mono tabular-nums text-xs" style={{ color: anomaly.isAnomaly ? '#CC0000' : 'var(--charcoal-mid)', fontWeight: anomaly.isAnomaly ? 800 : 500 }}>
+                                            {anomaly.deltaMiles}mi / {anomaly.calculatedMpg.toFixed(1)} MPG
+                                          </span>
+                                          {anomaly.isAnomaly && (
+                                            <span
+                                              className="flex items-center text-xs font-bold"
+                                              style={{ gap: '3px', color: '#CC0000' }}
+                                              title={anomaly.anomalyReason ?? undefined}
+                                            >
+                                              <AlertTriangle size={11} /> Fuel Anomaly
+                                            </span>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        <span className="text-xs text-muted">{r.odometer_miles === null ? 'No odometer' : 'First fill logged'}</span>
+                                      )}
+                                    </td>
+                                    <td className="text-xs">{r.vendor ?? '—'}</td>
+                                    <td>
+                                      <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
+                                        {r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : 'Pending'}
+                                      </span>
+                                    </td>
+                                    <td className="whitespace-nowrap">
+                                      {r.status === 'pending' && (
+                                        <div className="flex items-center" style={{ gap: '6px' }}>
+                                          <button
+                                            type="button"
+                                            disabled={reviewingFuelReceiptId === r.id}
+                                            onClick={() => handleReviewFuelReceipt(r.id, 'approved')}
+                                            title={anomaly?.isAnomaly ? 'Flagged as an anomaly — approve only after checking the photos/GPS' : 'Approve'}
+                                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#10B981' }}
+                                          >
+                                            <CircleCheck size={18} />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={reviewingFuelReceiptId === r.id}
+                                            onClick={() => handleReviewFuelReceipt(r.id, 'rejected')}
+                                            title="Reject"
+                                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--brand-red)' }}
+                                          >
+                                            <CircleX size={18} />
+                                          </button>
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                  {r.vehicle_id && r.fuel_tank_capacity_litres == null && (
+                                    <tr>
+                                      <td colSpan={11} style={{ padding: '4px 8px', background: 'var(--card-bg-hover)' }}>
+                                        <span className="flex items-center text-xs" style={{ gap: '6px', color: 'var(--charcoal-light)' }}>
+                                          <AlertTriangle size={11} />
+                                          {r.vehicle_number ?? 'This vehicle'}'s tank capacity isn't set — the over-capacity check is skipped until it is.
+                                          <input
+                                            type="number"
+                                            placeholder="Capacity (L)"
+                                            className="input-field"
+                                            style={{ width: '110px', fontSize: '11px', padding: '2px 6px' }}
+                                            onKeyDown={async (e) => {
+                                              if (e.key !== 'Enter' || isMockMode || !supabase || !r.vehicle_id) return;
+                                              const value = parseInt((e.target as HTMLInputElement).value, 10);
+                                              if (!value || value <= 0) return;
+                                              await supabase.from('vehicles').update({ fuel_tank_capacity_litres: value }).eq('id', r.vehicle_id);
+                                              loadFuelReceipts();
+                                            }}
+                                          />
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+
+            <ImageLightbox url={fuelReceiptLightboxUrl} onClose={() => setFuelReceiptLightboxUrl(null)} alt="Fuel receipt, full size" />
+
+            {/* GPS vs. claimed station — a real embedded map centred on
+                the driver's actual submit-time GPS fix (OpenStreetMap's
+                public embed endpoint, no API key needed), with the
+                vendor name shown as plain driver-entered text next to
+                it. Honest about what this is NOT: without a geocoding
+                key (Google/Mapbox) there's no way to plot where "Shell
+                Membury" actually is and measure a distance — an admin
+                has to eyeball whether the pin plausibly matches. */}
+            {gpsCompareReceipt && gpsCompareReceipt.gps_lat !== null && gpsCompareReceipt.gps_lng !== null && (() => {
+              const lat = gpsCompareReceipt.gps_lat!;
+              const lng = gpsCompareReceipt.gps_lng!;
+              const delta = 0.01;
+              const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
+              const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`;
+              const externalUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+              return (
+                <>
+                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 }} onClick={() => setGpsCompareReceipt(null)} />
+                  <div
+                    className="glass-panel"
+                    style={{
+                      position: 'fixed', top: '8vh', left: '50%', transform: 'translateX(-50%)',
+                      width: 'min(560px, 92vw)', zIndex: 999, borderRadius: '14px', padding: '20px',
+                      background: 'var(--card-bg)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between mb-12">
+                      <span className="flex items-center text-sm font-bold" style={{ gap: '8px' }}>
+                        <MapPin size={16} color="var(--brand-red)" /> GPS at Submission
+                      </span>
+                      <button type="button" onClick={() => setGpsCompareReceipt(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}>
+                        <X size={18} />
+                      </button>
+                    </div>
+                    <div className="mb-12" style={{ padding: '10px 12px', borderRadius: '8px', background: 'var(--card-bg-hover)' }}>
+                      <p className="text-xs font-bold text-muted m-0" style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>Claimed station (driver-entered, not verified)</p>
+                      <p className="text-sm font-semibold text-primary m-0 mt-4">{gpsCompareReceipt.vendor || 'No vendor name entered'}</p>
+                    </div>
+                    <div style={{ borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                      <iframe
+                        title="Fuel log GPS location"
+                        width="100%"
+                        height="320"
+                        style={{ border: 0, display: 'block' }}
+                        src={embedUrl}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between mt-8">
+                      <span className="font-mono text-xs text-muted">{lat.toFixed(5)}, {lng.toFixed(5)}</span>
+                      <a href={externalUrl} target="_blank" rel="noreferrer" className="text-xs font-bold" style={{ color: 'var(--brand-red)' }}>
+                        Open in Google Maps <ExternalLink size={11} style={{ verticalAlign: 'middle', marginLeft: '2px' }} />
+                      </a>
+                    </div>
+                    <p className="text-xs text-muted mt-8 m-0">
+                      This confirms where the driver's device was when the log was submitted — not the station's real address (no geocoding is configured), so treat a mismatch as a prompt to ask, not final proof.
+                    </p>
+                  </div>
+                </>
+              );
+            })()}
+
+            {/* Overnight Parking Expenses — same review-queue shape as the
+                Fuel Receipts Audit modal above, except approving a claim
+                also reimburses it into that shift's payroll (extras_amount)
+                — see handleReviewParkingExpense. A claim with no shift_id
+                gets an inline "assign to shift" picker instead of the
+                usual approve/reject pair, since there's nowhere to credit
+                the money until one's chosen. */}
+            {isParkingExpensesModalOpen && (() => {
+              const modalDriverQuery = parkingModalDriverSearch.trim().toLowerCase();
+              const filteredExpenses = parkingExpenses.filter(r => {
+                if (modalDriverQuery && !(r.driver_name ?? '').toLowerCase().includes(modalDriverQuery)) return false;
+                return true;
+              });
+              const pendingCount = parkingExpenses.filter(r => r.status === 'pending').length;
+
+              return (
+                <>
+                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 }} onClick={() => setIsParkingExpensesModalOpen(false)} />
+                  <div
+                    className="glass-panel"
+                    style={{
+                      position: 'fixed', top: '5vh', left: '50%', transform: 'translateX(-50%)',
+                      width: 'min(1200px, 96vw)', maxHeight: '90vh', overflowY: 'auto', zIndex: 999,
+                      borderRadius: '14px', padding: '24px', background: 'var(--card-bg)',
+                      boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                      <span className="flex items-center" style={{ gap: '10px' }}>
+                        <ParkingCircle size={18} color="var(--charcoal)" />
+                        <h2 className="text-lg font-black text-primary m-0">Overnight Parking Claims</h2>
+                        {pendingCount > 0 && <span className="badge badge-warning font-mono">{pendingCount} awaiting review</span>}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsParkingExpensesModalOpen(false)}
+                        aria-label="Close"
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)', display: 'flex' }}
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
+                      <div className="telemetry-search-wrap" style={{ minWidth: '200px' }}>
+                        <Search size={14} />
+                        <input
+                          type="text"
+                          placeholder="Search driver name…"
+                          value={parkingModalDriverSearch}
+                          onChange={(e) => setParkingModalDriverSearch(e.target.value)}
+                        />
+                      </div>
+                      <span className="text-xs text-muted" style={{ marginLeft: 'auto' }}>{filteredExpenses.length} of {parkingExpenses.length} claims</span>
+                    </div>
+
+                    {parkingExpenses.length === 0 ? (
+                      <Empty className="py-24">
+                        <EmptyHeader>
+                          <EmptyMedia variant="icon"><ParkingCircle /></EmptyMedia>
+                          <EmptyTitle>No Parking Claims Yet</EmptyTitle>
+                          <EmptyDescription>Overnight parking receipts drivers photograph from the app will show up here for approval.</EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    ) : filteredExpenses.length === 0 ? (
+                      <Empty className="py-24">
+                        <EmptyHeader>
+                          <EmptyMedia variant="icon"><Search /></EmptyMedia>
+                          <EmptyTitle>No Matches</EmptyTitle>
+                          <EmptyDescription>No claims match the current search.</EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    ) : (
+                      <div className="table-container">
+                        <table className="data-table data-table--nowrap">
+                          <thead>
+                            <tr>
+                              <th>Receipt Photo</th>
+                              <th>Driver Name</th>
+                              <th>Location</th>
+                              <th>Date</th>
+                              <th>Amount (£)</th>
+                              <th>Shift</th>
+                              <th>Status</th>
+                              <th></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filteredExpenses.map(r => {
+                              const thumbUrl = parkingExpenseThumbUrls[r.receipt_photo_path];
+                              const driverRecentShifts = shifts
+                                .filter(s => (s.driver_id === r.driver_id) && s.status === 'completed')
+                                .slice(0, 20);
                               return (
                                 <tr key={r.id}>
                                   <td>
                                     <button
                                       type="button"
-                                      onClick={() => openFuelReceiptLightbox(r.receipt_photo_path)}
+                                      onClick={() => openParkingExpenseLightbox(r.receipt_photo_path)}
                                       style={{ position: 'relative', width: '40px', height: '40px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
                                       title="View receipt photo"
                                     >
                                       {thumbUrl ? (
-                                        <img src={thumbUrl} alt="Fuel receipt" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                        <img src={thumbUrl} alt="Parking receipt" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                       ) : (
-                                        <Fuel size={14} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
+                                        <ParkingCircle size={14} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
                                       )}
                                     </button>
                                   </td>
                                   <td className="font-medium text-primary" style={{ fontSize: '13px' }}>{toTitleCase(r.driver_name ?? '') || '—'}</td>
+                                  <td className="text-xs">{r.location ?? '—'}</td>
+                                  <td className="whitespace-nowrap font-mono tabular-nums text-xs">
+                                    {new Date(r.parking_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                                  </td>
+                                  <td className="font-mono tabular-nums font-semibold">£{r.amount.toFixed(2)}</td>
                                   <td>
-                                    {r.vehicle_number ? (
-                                      <span className="font-mono font-bold" style={{ fontSize: '11px', textTransform: 'uppercase', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '2px 8px', borderRadius: '4px' }}>
-                                        {r.vehicle_number}
-                                      </span>
+                                    {r.shift_id ? (
+                                      <CircleCheck size={14} color="#10B981" />
+                                    ) : r.status === 'pending' ? (
+                                      <select
+                                        className="select-field"
+                                        style={{ fontSize: '11px', padding: '4px 6px' }}
+                                        value={parkingShiftAssignment[r.id] ?? ''}
+                                        onChange={(e) => setParkingShiftAssignment(prev => ({ ...prev, [r.id]: e.target.value }))}
+                                      >
+                                        <option value="">Assign shift…</option>
+                                        {driverRecentShifts.map(s => (
+                                          <option key={s.id} value={s.id}>
+                                            {new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
+                                          </option>
+                                        ))}
+                                      </select>
                                     ) : '—'}
                                   </td>
-                                  <td className="whitespace-nowrap font-mono tabular-nums text-xs">
-                                    {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}{' '}
-                                    {new Date(r.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
-                                  </td>
-                                  <td className="font-mono tabular-nums font-semibold text-xs">{r.liters === null ? '—' : r.liters.toFixed(1)}</td>
-                                  <td className="font-mono tabular-nums font-semibold">{r.total_cost === null ? '—' : `£${r.total_cost.toFixed(2)}`}</td>
-                                  <td className="text-xs">{r.vendor ?? '—'}</td>
                                   <td>
                                     <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
                                       {r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : 'Pending'}
@@ -8042,17 +8919,17 @@ export default function App() {
                                       <div className="flex items-center" style={{ gap: '6px' }}>
                                         <button
                                           type="button"
-                                          disabled={reviewingFuelReceiptId === r.id}
-                                          onClick={() => handleReviewFuelReceipt(r.id, 'approved')}
-                                          title="Approve"
-                                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#10B981' }}
+                                          disabled={reviewingParkingExpenseId === r.id}
+                                          onClick={() => handleReviewParkingExpense(r, 'approved')}
+                                          title={r.shift_id || parkingShiftAssignment[r.id] ? 'Approve — reimburses into payroll' : 'Assign a shift first'}
+                                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#10B981', opacity: (r.shift_id || parkingShiftAssignment[r.id]) ? 1 : 0.4 }}
                                         >
                                           <CircleCheck size={18} />
                                         </button>
                                         <button
                                           type="button"
-                                          disabled={reviewingFuelReceiptId === r.id}
-                                          onClick={() => handleReviewFuelReceipt(r.id, 'rejected')}
+                                          disabled={reviewingParkingExpenseId === r.id}
+                                          onClick={() => handleReviewParkingExpense(r, 'rejected')}
                                           title="Reject"
                                           style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--brand-red)' }}
                                         >
@@ -8073,7 +8950,7 @@ export default function App() {
               );
             })()}
 
-            <ImageLightbox url={fuelReceiptLightboxUrl} onClose={() => setFuelReceiptLightboxUrl(null)} alt="Fuel receipt, full size" />
+            <ImageLightbox url={parkingExpenseLightboxUrl} onClose={() => setParkingExpenseLightboxUrl(null)} alt="Parking receipt, full size" />
 
             {activeTab === 'shipments' && (
             <>
@@ -8085,6 +8962,77 @@ export default function App() {
                 CSV-export helpers, revenue-edit state, etc.) as Analytics
                 since both read the same underlying shift data, just
                 presenting different slices of it. */}
+
+            {/* Active Loads — the board the ledger below can't show: that
+                table only ever lists COMPLETED shifts (revenue can't be
+                rated until a shift finishes), so a driver currently out on
+                the road with a load attached (or without one) had nowhere
+                to show up until now. Same shifts state as everywhere else
+                on this tab — no separate query. */}
+            {(() => {
+              const activeLoadShifts = shifts
+                .filter(s => !s.end_time && s.status !== 'completed')
+                .sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
+              return (
+                <div className="mt-16" style={{ maxWidth: '1600px', width: '100%' }}>
+                  <RevealOnMount index={0} className="analytics-chart-card">
+                    <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em', margin: 0 }}>Active Loads — Live Board</p>
+                      <span className="text-xs text-muted">{activeLoadShifts.length} driver{activeLoadShifts.length === 1 ? '' : 's'} on shift now</span>
+                    </div>
+                    {activeLoadShifts.length === 0 ? (
+                      <Empty className="py-16">
+                        <EmptyHeader>
+                          <EmptyMedia variant="icon"><Truck /></EmptyMedia>
+                          <EmptyTitle>Nobody On Shift Right Now</EmptyTitle>
+                          <EmptyDescription>Active shifts with a load attached will show up here.</EmptyDescription>
+                        </EmptyHeader>
+                      </Empty>
+                    ) : (
+                      <div className="table-container">
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>Driver</th>
+                              <th>Assigned Unit</th>
+                              <th>Load Reference</th>
+                              <th>Customer / Carrier</th>
+                              <th>Shift Start</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {activeLoadShifts.map(s => (
+                              <tr key={s.id}>
+                                <td className="font-medium text-primary" style={{ fontSize: '13px' }}>{toTitleCase(s.driver_name ?? '')}</td>
+                                <td>
+                                  {s.vehicle_number ? (
+                                    <span className="font-mono font-bold" style={{ fontSize: '11px', textTransform: 'uppercase', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '2px 8px', borderRadius: '4px' }}>
+                                      {[s.vehicle_number, s.trailer_number].filter(Boolean).join(' / ')}
+                                    </span>
+                                  ) : '—'}
+                                </td>
+                                <td>
+                                  {s.load_reference ? (
+                                    <span className="font-mono font-semibold" style={{ fontSize: '12.5px' }}>{s.load_reference}</span>
+                                  ) : (
+                                    <span className="badge" style={{ background: 'var(--card-bg-hover)', color: 'var(--charcoal-light)', border: '1px solid var(--border-color)' }}>No Load Attached</span>
+                                  )}
+                                </td>
+                                <td className="text-secondary text-xs">{s.carrier_name ?? '—'}</td>
+                                <td className="whitespace-nowrap font-mono tabular-nums text-xs">
+                                  {new Date(s.start_time).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </RevealOnMount>
+                </div>
+              );
+            })()}
+
             <div className="mt-16" style={{ maxWidth: '1600px', width: '100%' }}>
               <RevealOnMount index={1} className="analytics-chart-card">
                 <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
@@ -8811,6 +9759,53 @@ export default function App() {
                         How many days before an inspection (MOT, PMI, Tacho, Brake Test, LOLER) is due it shows as "Due Soon" — drives the Fleet Roadworthiness table, the notifications bell, and the Compliance &amp; Safety overview.
                       </p>
                     </div>
+
+                    <div className="input-group">
+                      <label className="input-label" htmlFor="walkaround-target-minutes">WALK-AROUND CHECK TARGET (MINUTES)</label>
+                      <input
+                        id="walkaround-target-minutes"
+                        type="number"
+                        min="1"
+                        step="1"
+                        className="input-field"
+                        value={alertSettingsForm.walkaroundCheckTargetMinutes}
+                        onChange={(e) => setAlertSettingsForm(f => ({ ...f, walkaroundCheckTargetMinutes: e.target.value }))}
+                      />
+                      <p className="text-xs text-muted mt-4">
+                        A completed walk-around check under this many minutes is flagged as possibly rushed in Walk-Around Check History — a benchmark you set, not a DVSA-mandated minimum.
+                      </p>
+                    </div>
+
+                    <div className="flex" style={{ gap: '12px' }}>
+                      <div className="input-group" style={{ flex: 1 }}>
+                        <label className="input-label" htmlFor="fuel-anomaly-min-mpg">FUEL ANOMALY FLOOR (MPG)</label>
+                        <input
+                          id="fuel-anomaly-min-mpg"
+                          type="number"
+                          min="0.1"
+                          step="0.1"
+                          className="input-field"
+                          value={alertSettingsForm.fuelAnomalyMinMpg}
+                          onChange={(e) => setAlertSettingsForm(f => ({ ...f, fuelAnomalyMinMpg: e.target.value }))}
+                        />
+                      </div>
+                      <div className="input-group" style={{ flex: 1 }}>
+                        <label className="input-label" htmlFor="fuel-anomaly-drop-percent">ROLLING-AVERAGE DROP (%)</label>
+                        <input
+                          id="fuel-anomaly-drop-percent"
+                          type="number"
+                          min="1"
+                          max="99"
+                          step="1"
+                          className="input-field"
+                          value={alertSettingsForm.fuelAnomalyRollingDropPercent}
+                          onChange={(e) => setAlertSettingsForm(f => ({ ...f, fuelAnomalyRollingDropPercent: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted mb-16">
+                      A fuel log gets flagged as a Fuel Anomaly if its calculated MPG is below the floor, or drops this many percent below that specific vehicle's own recent average — either one is enough to flag it. Drives the Fuel &amp; AdBlue Receipts Audit.
+                    </p>
 
                     <button type="button" className="btn btn-primary" disabled={isSavingAlertSettings} onClick={handleSaveAlertSettings}>
                       {(isSavingAlertSettings || alertSettingsSuccess) && <SaveIcon saving={isSavingAlertSettings} success={!!alertSettingsSuccess} />}
