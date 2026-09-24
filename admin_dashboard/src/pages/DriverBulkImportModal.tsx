@@ -107,13 +107,12 @@ const SAMPLE_CSV =
   'Maria Kowalski,+44 7700 900101,driver,,,Hourly,16.50,Direct\n';
 
 interface DriverBulkImportModalProps {
-  organizationId: string | null;
   existingDriverIds: string[];
   onClose: () => void;
   onImported: () => void;
 }
 
-export default function DriverBulkImportModal({ organizationId, existingDriverIds, onClose, onImported }: DriverBulkImportModalProps) {
+export default function DriverBulkImportModal({ existingDriverIds, onClose, onImported }: DriverBulkImportModalProps) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
   const [rows, setRows] = useState<ParsedDriverRow[] | null>(null);

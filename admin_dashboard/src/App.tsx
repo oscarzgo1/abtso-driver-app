@@ -6774,7 +6774,6 @@ export default function App() {
 
         {isDriverBulkImportOpen && (
           <DriverBulkImportModal
-            organizationId={currentOrgId}
             existingDriverIds={employees.map(e => e.driver_id)}
             onClose={() => setIsDriverBulkImportOpen(false)}
             onImported={() => loadData()}
