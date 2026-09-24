@@ -612,6 +612,7 @@ interface FuelReceipt {
   vendor: string | null;
   receipt_photo_path: string;
   status: 'pending' | 'approved' | 'rejected';
+  auto_approved?: boolean;
   created_at: string;
   // Anti-theft pass (migration 055) — odometer + dashboard photo are a
   // second, independently-checkable data point alongside the receipt
@@ -648,6 +649,7 @@ interface ParkingExpense {
   note: string | null;
   receipt_photo_path: string;
   status: 'pending' | 'approved' | 'rejected';
+  auto_approved?: boolean;
   created_at: string;
 }
 
@@ -1982,7 +1984,7 @@ export default function App() {
     if (isMockMode || !supabase || !currentOrgId) return;
     const { data, error } = await supabase
       .from('fuel_receipts')
-      .select('id, driver_id, shift_id, vehicle_id, liters, total_cost, vendor, receipt_photo_path, status, created_at, odometer_miles, dashboard_photo_path, gps_lat, gps_lng, drivers(full_name), vehicles!vehicle_id(vehicle_number, fuel_tank_capacity_litres)')
+      .select('id, driver_id, shift_id, vehicle_id, liters, total_cost, vendor, receipt_photo_path, status, auto_approved, created_at, odometer_miles, dashboard_photo_path, gps_lat, gps_lng, drivers(full_name), vehicles!vehicle_id(vehicle_number, fuel_tank_capacity_litres)')
       .eq('organization_id', currentOrgId)
       .order('created_at', { ascending: false });
     // Was silently dropping a failed fetch (network error, RLS denial,
@@ -2027,7 +2029,7 @@ export default function App() {
     if (isMockMode || !supabase || !currentOrgId) return;
     const { data, error } = await supabase
       .from('parking_expenses')
-      .select('id, driver_id, shift_id, amount, location, parking_date, note, receipt_photo_path, status, created_at, drivers(full_name)')
+      .select('id, driver_id, shift_id, amount, location, parking_date, note, receipt_photo_path, status, auto_approved, created_at, drivers(full_name)')
       .eq('organization_id', currentOrgId)
       .order('created_at', { ascending: false });
     if (error) {
@@ -5274,7 +5276,10 @@ export default function App() {
 
   // Calculate quick stats
   const activeEmployeeCount = kpiActiveEmployeeCount;
-  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length;
+  // Includes fuel/parking items still awaiting review — the Alert Panel
+  // (Alert Monitors) is now the only place those get approved, so the
+  // "needs attention" badge belongs on this nav item, not Analytics'.
+  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + pendingFuelReceiptsCount + pendingParkingExpensesCount;
   const idleAlertsCount = kpiIdleAlertsCount;
   const completedShiftsCount = kpiCompletedShiftsCount;
   const pendingNightOutsCount = shifts.filter(s => s.night_out_status === 'pending').length;
@@ -5352,7 +5357,7 @@ export default function App() {
                     <span className="nav-icon">
                       <Bell size={18} />
                       {activeAlertsCount > 0 && (
-                        <span className="nav-count-badge" title={`${activeAlertsCount} unacknowledged alert${activeAlertsCount === 1 ? '' : 's'}`}>
+                        <span className="nav-count-badge" title={`${activeAlertsCount} item${activeAlertsCount === 1 ? '' : 's'} needing attention`}>
                           {activeAlertsCount > 9 ? '9+' : activeAlertsCount}
                         </span>
                       )}
@@ -5515,11 +5520,6 @@ export default function App() {
                     icon: (
                       <span className="nav-icon">
                         <BarChart3 size={18} />
-                        {(pendingFuelReceiptsCount + pendingParkingExpensesCount) > 0 && (
-                          <span className="nav-count-badge" title={`${pendingFuelReceiptsCount} fuel receipt${pendingFuelReceiptsCount === 1 ? '' : 's'} + ${pendingParkingExpensesCount} parking claim${pendingParkingExpensesCount === 1 ? '' : 's'} awaiting review`}>
-                            {(pendingFuelReceiptsCount + pendingParkingExpensesCount) > 9 ? '9+' : pendingFuelReceiptsCount + pendingParkingExpensesCount}
-                          </span>
-                        )}
                       </span>
                     ),
                   }}
@@ -6013,7 +6013,7 @@ export default function App() {
         {activeTab === 'alerts' && (
           <div className="flex-1">
             <div className="flex align-center justify-between mb-16">
-              <h2 className="text-xl font-black text-primary m-0">ACTIVE GEOFENCE & IDLE ALERTS</h2>
+              <h2 className="text-xl font-black text-primary m-0">ALERT PANEL</h2>
 
               <div className="flex gap-12">
                 {/* Audio controller toggle */}
@@ -6034,39 +6034,43 @@ export default function App() {
               </div>
             </div>
 
-            {/* Category filter pills — quick segmentation instead of the
-                old always-on solid-colour SOS/Idle group banners below.
-                "Idle >50m" is a real threshold on real alert age, not an
-                invented figure. There's no separate "Geofence" category in
-                this schema — idle_alerts ARE the geofence/stationary
-                alerts (this page's own title uses the word loosely); a
-                4th pill duplicating "Idle" with no distinct backing data
-                would just be a fake filter, so it's deliberately not here.
-                Fuel Anomaly / Fuel Pending / Parking Pending (Alert
+            {/* Category dropdown — was a row of filter pills, but the
+                Alert Monitors consolidation grew this list to 6 categories
+                and a pill row that wraps across two lines reads as
+                cluttered; a single dropdown scales better as more
+                categories join this panel over time. "Idle >50m" is a
+                real threshold on real alert age, not an invented figure.
+                There's no separate "Geofence" category in this schema —
+                idle_alerts ARE the geofence/stationary alerts; a 4th
+                option duplicating "Idle" with no distinct backing data
+                would just be a fake filter, so it's deliberately not
+                here. Fuel Anomaly / Fuel Pending / Parking Pending (Alert
                 Monitors consolidation) reuse the same fuelReceipts/
                 parkingExpenses/fuelAnomalyByReceiptId this file already
                 loads for Analytics — no new query, just a second place
-                those same categories surface, since "All Alerts" above is
-                SOS/Idle only and these three had no home outside their
-                own review modals until now. */}
-            <div className="flex gap-8 mb-16" style={{ flexWrap: 'wrap' }}>
-              {([
-                ['all', 'All Alerts', alerts.length],
-                ['sos', 'Emergency SOS', alerts.filter(a => a.is_sos).length],
-                ['idle50', 'Idle >50m', null],
-                ['fuel_anomaly', 'Fuel Anomaly', Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length],
-                ['fuel_pending', 'Fuel Receipts Pending', pendingFuelReceiptsCount],
-                ['parking_pending', 'Parking Claims Pending', pendingParkingExpensesCount],
-              ] as const).map(([key, label, count]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setAlertCategoryFilter(key)}
-                  className={`payroll-pill-btn ${alertCategoryFilter === key ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
-                >
-                  {label}{count !== null && count > 0 ? ` (${count})` : ''}
-                </button>
-              ))}
+                those same categories surface; this panel is now the only
+                place a fuel receipt or parking claim gets approved,
+                Analytics only shows the already-approved totals. */}
+            <div className="mb-16" style={{ maxWidth: '320px' }}>
+              <select
+                value={alertCategoryFilter}
+                onChange={e => setAlertCategoryFilter(e.target.value as typeof alertCategoryFilter)}
+                className="input"
+                style={{ fontWeight: 700, cursor: 'pointer' }}
+              >
+                {([
+                  ['all', 'All Alerts', alerts.length],
+                  ['sos', 'Emergency SOS', alerts.filter(a => a.is_sos).length],
+                  ['idle50', 'Idle >50m', null],
+                  ['fuel_anomaly', 'Fuel Anomaly', Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length],
+                  ['fuel_pending', 'Fuel Receipts Pending', pendingFuelReceiptsCount],
+                  ['parking_pending', 'Parking Claims Pending', pendingParkingExpensesCount],
+                ] as const).map(([key, label, count]) => (
+                  <option key={key} value={key}>
+                    {label}{count !== null && count > 0 ? ` (${count})` : ''}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {/* Fuel Anomaly / Fuel Pending / Parking Pending — same card
@@ -6296,7 +6300,7 @@ export default function App() {
                   style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800 }}
                   onClick={() => setIsDriverBulkImportOpen(true)}
                 >
-                  <UploadCloud size={15} /> Bulk Import
+                  <UploadCloud size={15} /> Import Data
                 </button>
                 <button
                   type="button"
@@ -8036,9 +8040,11 @@ export default function App() {
                   }}
                 />
                 {/* Import Carrier Load Files lives on Shipments now (it's
-                    load data entry, not an Analytics stat); Fuel Receipts
-                    stays on Analytics, where the fuel P&L figure and its
-                    "awaiting review" status pill already live. */}
+                    load data entry, not an Analytics stat). Fuel Receipts
+                    / Overnight Parking review moved to the Alert Panel
+                    (Alert Monitors consolidation) — this tab only ever
+                    shows the already-approved totals now, so there's no
+                    review entry point left to render here. */}
                 {activeTab === 'shipments' && (
                   <button
                     type="button"
@@ -8048,54 +8054,6 @@ export default function App() {
                   >
                     <UploadCloud size={14} />
                     Import Carrier Load Files
-                  </button>
-                )}
-                {activeTab === 'analytics' && (
-                  <button
-                    type="button"
-                    onClick={() => setIsFuelReceiptsModalOpen(true)}
-                    className="flex items-center text-xs font-semibold"
-                    style={{ gap: '8px', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
-                  >
-                    <Receipt size={14} />
-                    Fuel Receipts
-                    {fuelReceipts.length > 0 && (
-                      <span
-                        className="font-mono tabular-nums"
-                        style={{
-                          fontSize: '10px', fontWeight: 800, minWidth: '17px', height: '17px', padding: '0 4px',
-                          borderRadius: '999px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                          background: fuelReceipts.some(r => r.status === 'pending') ? '#FEF3C7' : 'var(--card-bg-hover)',
-                          color: fuelReceipts.some(r => r.status === 'pending') ? '#92400E' : 'var(--charcoal-light)',
-                        }}
-                      >
-                        {fuelReceipts.length}
-                      </span>
-                    )}
-                  </button>
-                )}
-                {activeTab === 'analytics' && (
-                  <button
-                    type="button"
-                    onClick={() => setIsParkingExpensesModalOpen(true)}
-                    className="flex items-center text-xs font-semibold"
-                    style={{ gap: '8px', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
-                  >
-                    <ParkingCircle size={14} />
-                    Overnight Parking
-                    {parkingExpenses.length > 0 && (
-                      <span
-                        className="font-mono tabular-nums"
-                        style={{
-                          fontSize: '10px', fontWeight: 800, minWidth: '17px', height: '17px', padding: '0 4px',
-                          borderRadius: '999px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                          background: parkingExpenses.some(r => r.status === 'pending') ? '#FEF3C7' : 'var(--card-bg-hover)',
-                          color: parkingExpenses.some(r => r.status === 'pending') ? '#92400E' : 'var(--charcoal-light)',
-                        }}
-                      >
-                        {parkingExpenses.length}
-                      </span>
-                    )}
                   </button>
                 )}
               </div>
@@ -8186,23 +8144,13 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
-                  {pendingFuelReceiptsCount === 0 && pendingParkingExpensesCount === 0 && flaggedShiftsCount === 0 && !worstLossShift ? (
+                  {flaggedShiftsCount === 0 && !worstLossShift ? (
                     <span className="flex items-center text-xs font-semibold" style={{ gap: '6px', color: '#065F46' }}>
                       <CheckCircle2 size={14} />
                       Nothing needs attention for this period.
                     </span>
                   ) : (
                     <>
-                      {pendingFuelReceiptsCount > 0 && (
-                        <button type="button" onClick={() => setIsFuelReceiptsModalOpen(true)} className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', border: 'none', cursor: 'pointer', background: '#FEF3C7', color: '#92400E' }}>
-                          {pendingFuelReceiptsCount} fuel receipt{pendingFuelReceiptsCount === 1 ? '' : 's'} awaiting review
-                        </button>
-                      )}
-                      {pendingParkingExpensesCount > 0 && (
-                        <button type="button" onClick={() => setIsParkingExpensesModalOpen(true)} className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', border: 'none', cursor: 'pointer', background: '#FEF3C7', color: '#92400E' }}>
-                          {pendingParkingExpensesCount} parking claim{pendingParkingExpensesCount === 1 ? '' : 's'} awaiting review
-                        </button>
-                      )}
                       {flaggedShiftsCount > 0 && (
                         <span className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', background: '#FEE2E2', color: '#991B1B' }}>
                           {flaggedShiftsCount} shift{flaggedShiftsCount === 1 ? '' : 's'} over {orgAlertSettings.longShiftFlagHours}h
@@ -8649,6 +8597,11 @@ export default function App() {
                                       <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
                                         {r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : 'Pending'}
                                       </span>
+                                      {r.auto_approved && (
+                                        <span className="text-xs text-muted" style={{ marginLeft: '6px' }} title="No admin reviewed this within 10 hours, so it was approved automatically.">
+                                          (auto)
+                                        </span>
+                                      )}
                                     </td>
                                     <td className="whitespace-nowrap">
                                       {r.status === 'pending' && (
@@ -8913,6 +8866,11 @@ export default function App() {
                                     <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
                                       {r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : 'Pending'}
                                     </span>
+                                    {r.auto_approved && (
+                                      <span className="text-xs text-muted" style={{ marginLeft: '6px' }} title="No admin reviewed this within 10 hours, so it was approved automatically.">
+                                        (auto)
+                                      </span>
+                                    )}
                                   </td>
                                   <td className="whitespace-nowrap">
                                     {r.status === 'pending' && (
