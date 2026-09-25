@@ -25,7 +25,6 @@ import {
   Check, 
   Volume2, 
   VolumeX,
-  Compass,
   RefreshCw,
   Mail,
   Lock,
@@ -34,7 +33,6 @@ import {
   MapPinned,
   FileText,
   User,
-  Briefcase,
   PoundSterling,
   ChevronUp,
   ChevronLeft,
@@ -51,9 +49,6 @@ import {
   Calendar,
   AlertTriangle,
   CreditCard,
-  TrendingUp,
-  TrendingDown,
-  Minus,
   LocateFixed,
   Radio,
   Gauge,
@@ -86,14 +81,11 @@ import {
   Pencil,
   MoreVertical,
   Receipt,
-  Package,
   ParkingCircle
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { BrandLogo } from './components/ui/brand-logo';
-import { useMetricHistory, getMetricTrend } from './hooks/useMetricHistory';
-import { KpiSparkline } from './components/ui/kpi-sparkline';
 import { AnalyticsGroupedBarChart } from './components/ui/analytics-grouped-bar-chart';
 import { BadgeDelta, type BadgeDeltaDirection, type BadgeDeltaTone } from './components/ui/badge-delta';
 import TableFilter, { type TableFilterGroup } from './components/ui/table-filter';
@@ -113,6 +105,8 @@ import FleetRoadworthiness from './pages/FleetRoadworthiness';
 import DriverHours from './pages/DriverHours';
 import WalkAroundHistory from './pages/WalkAroundHistory';
 import EmployeeHolidays from './pages/EmployeeHolidays';
+import DispatchDashboard from './pages/DispatchDashboard';
+import { computeShiftCompliance, walkaroundIssues, formatCheckDuration, type ComplianceCheck } from './lib/walkaround-compliance';
 import CarrierSettlementImportModal from './pages/CarrierSettlementImportModal';
 import DriverBulkImportModal from './pages/DriverBulkImportModal';
 import PayrollDrawer, { type PayrollShiftContext, type PayrollDrawerSaveValues } from './pages/PayrollDrawer';
@@ -422,6 +416,9 @@ export interface OrgAlertSettings {
   walkaroundCheckTargetMinutes: number;
   fuelAnomalyMinMpg: number;
   fuelAnomalyRollingDropPercent: number;
+  // Migration 059 — minutes a driver's vehicle is stationary before the
+  // app reminds them to attach a load or confirm its delivery.
+  loadReminderMinutes: number;
 }
 export const DEFAULT_ORG_ALERT_SETTINGS: OrgAlertSettings = {
   longShiftFlagHours: 18,
@@ -433,6 +430,7 @@ export const DEFAULT_ORG_ALERT_SETTINGS: OrgAlertSettings = {
   walkaroundCheckTargetMinutes: 15,
   fuelAnomalyMinMpg: 6.5,
   fuelAnomalyRollingDropPercent: 30,
+  loadReminderMinutes: 30,
 };
 
 // Compliance & Safety types now live in ./pages/Compliance.tsx, which owns
@@ -565,6 +563,8 @@ interface Shift {
    * until a dispatcher sets it from Analytics → Load Revenue. */
   revenue_amount?: number | null;
   load_reference?: string | null;
+  /** When the driver confirmed delivery in the app (migration 059). */
+  load_delivered_at?: string | null;
   /** Real (migration 045) — nullable until an admin assigns a vehicle to
    * this shift from the Profitability ledger or a settlement import
    * matches one by registration. */
@@ -812,7 +812,7 @@ export default function App() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [recoveryError, setRecoveryError] = useState('');
-  const [activeTab, setActiveTab] = useState<'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects' | 'walkaround-history'>('live');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects' | 'walkaround-history'>('dashboard');
   // Sidebar expand/collapse — controlled here (not left to the component's
   // own internal state) so the brand header can also switch between the
   // full wordmark and the icon-only mark based on the same flag.
@@ -829,7 +829,7 @@ export default function App() {
   // company at all. Billing is a modal, not a tab, and gated separately.
   useEffect(() => {
     if (userRole === 'logistics' && (activeTab === 'rates' || activeTab === 'analytics' || activeTab === 'shipments')) {
-      setActiveTab('live');
+      setActiveTab('dashboard');
     }
   }, [userRole, activeTab]);
 
@@ -861,6 +861,7 @@ export default function App() {
     walkaroundCheckTargetMinutes: String(DEFAULT_ORG_ALERT_SETTINGS.walkaroundCheckTargetMinutes),
     fuelAnomalyMinMpg: String(DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyMinMpg),
     fuelAnomalyRollingDropPercent: String(DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyRollingDropPercent),
+    loadReminderMinutes: String(DEFAULT_ORG_ALERT_SETTINGS.loadReminderMinutes),
   });
   const [isSavingAlertSettings, setIsSavingAlertSettings] = useState(false);
   const [alertSettingsError, setAlertSettingsError] = useState('');
@@ -878,6 +879,7 @@ export default function App() {
   const [fleetAlertCount, setFleetAlertCount] = useState(0);
   const [wtdAlertCount, setWtdAlertCount] = useState(0);
   const complianceAlertCount = fleetAlertCount + wtdAlertCount;
+  const [isDispatchExpanded, setIsDispatchExpanded] = useState(true);
   const [isComplianceExpanded, setIsComplianceExpanded] = useState(false);
   const [isDriverProfilesExpanded, setIsDriverProfilesExpanded] = useState(false);
   // Brief "done" flash on export buttons — these builds are synchronous
@@ -966,7 +968,7 @@ export default function App() {
     try {
       const { data, error } = await supabase
         .from('organizations')
-        .select('long_shift_flag_hours, idle_alert_minutes, night_out_min_gap_hours, night_out_max_gap_hours, compliance_alert_lead_days, allow_driver_night_out_requests, walkaround_check_target_minutes, fuel_anomaly_min_mpg, fuel_anomaly_rolling_drop_percent')
+        .select('long_shift_flag_hours, idle_alert_minutes, night_out_min_gap_hours, night_out_max_gap_hours, compliance_alert_lead_days, allow_driver_night_out_requests, walkaround_check_target_minutes, fuel_anomaly_min_mpg, fuel_anomaly_rolling_drop_percent, load_reminder_minutes')
         .eq('id', orgId)
         .maybeSingle();
       if (error || !data) return;
@@ -980,6 +982,7 @@ export default function App() {
         walkaroundCheckTargetMinutes: Number(data.walkaround_check_target_minutes) || DEFAULT_ORG_ALERT_SETTINGS.walkaroundCheckTargetMinutes,
         fuelAnomalyMinMpg: Number(data.fuel_anomaly_min_mpg) || DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyMinMpg,
         fuelAnomalyRollingDropPercent: Number(data.fuel_anomaly_rolling_drop_percent) || DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyRollingDropPercent,
+        loadReminderMinutes: Number(data.load_reminder_minutes) || DEFAULT_ORG_ALERT_SETTINGS.loadReminderMinutes,
       });
     } catch (_) {
       // Migration 038 likely not applied on this environment yet — keep defaults.
@@ -990,7 +993,7 @@ export default function App() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [shifts, setShifts] = useState<Shift[]>([]);
   const [alerts, setAlerts] = useState<IdleAlert[]>([]);
-  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending'>('all');
+  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending' | 'walkaround'>('all');
   const [depots, setDepots] = useState<Depot[]>([]);
   const [fleetVehicles, setFleetVehicles] = useState<FleetVehicle[]>([]);
   const [mileageByShift, setMileageByShift] = useState<Record<string, number>>({});
@@ -1055,10 +1058,6 @@ export default function App() {
 
 
   const [liveLocations, setLiveLocations] = useState<LiveLocation[]>([]);
-  // Flips true once the first loadData() resolves — gates useMetricHistory
-  // so the KPI trend/sparkline never mistakes "data just finished loading"
-  // for a genuine change (see useMetricHistory.ts).
-  const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   // Active Telemetry Feed panel (Live Dispatch Board) — view, search and
   // filter state. "All Activity" shows the full roster (including drivers
@@ -1569,7 +1568,7 @@ export default function App() {
       // otherwise be able to read straight off their own shift row.
       const { data: sfts, error: shiftsError } = await supabase!
         .from('shifts')
-        .select('*, drivers(full_name, driver_id), depots(name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name)')
+        .select('*, drivers(full_name, driver_id), depots(name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name, delivered_at)')
         .order('start_time', { ascending: false });
 
       // A Postgrest-level error here (RLS denial, a bad embed, anything)
@@ -1597,6 +1596,7 @@ export default function App() {
           total_pay: s.total_pay ?? null,
           revenue_amount: revenueRow?.revenue_amount ?? null,
           load_reference: revenueRow?.load_reference ?? null,
+          load_delivered_at: revenueRow?.delivered_at ?? null,
           vehicle_id: s.vehicle_id ?? null,
           vehicle_number: s.vehicle?.vehicle_number ?? null,
           trailer_id: s.trailer_id ?? null,
@@ -1786,7 +1786,7 @@ export default function App() {
 
    useEffect(() => {
     if (isAuthenticated) {
-      loadData().finally(() => setInitialDataLoaded(true));
+      loadData();
     }
   }, [isAuthenticated, loadData]);
 
@@ -2066,6 +2066,62 @@ export default function App() {
     () => parkingExpenses.filter(r => r.status === 'pending').length,
     [parkingExpenses],
   );
+
+  // ── Walk-around check compliance (Alert Panel) ──────────────
+  // Last 14 days is plenty for "who skipped or rushed a check this
+  // week"; the full history lives on the Walk-Around Checks page.
+  const [recentWalkarounds, setRecentWalkarounds] = useState<ComplianceCheck[]>([]);
+  const loadRecentWalkarounds = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabase
+      .from('walkaround_checks')
+      .select('id, shift_id, check_type, completed_at, duration_seconds')
+      .eq('organization_id', currentOrgId)
+      .gte('started_at', since);
+    if (error) {
+      console.error('loadRecentWalkarounds failed:', error.message);
+      return;
+    }
+    setRecentWalkarounds((data ?? []) as ComplianceCheck[]);
+  }, [isMockMode, currentOrgId]);
+
+  useEffect(() => {
+    loadRecentWalkarounds();
+  }, [loadRecentWalkarounds]);
+
+  useEffect(() => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const channel = supabase
+      .channel('realtime_walkaround_alerts')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'walkaround_checks' }, () => loadRecentWalkarounds())
+      .subscribe();
+    return () => {
+      supabase!.removeChannel(channel);
+    };
+  }, [isMockMode, currentOrgId, loadRecentWalkarounds]);
+
+  // Logistics/dispatch staff don't take vehicles out, so they're exempt
+  // from walk-around checks (the driver app skips the step for them too).
+  const walkaroundExemptIds = useMemo(
+    () => new Set(employees.filter(e => e.profession === 'logistics').map(e => e.id)),
+    [employees],
+  );
+
+  const walkaroundAlertIssues = useMemo(() => {
+    const compliance = computeShiftCompliance(shifts, recentWalkarounds, {
+      targetMinutes: orgAlertSettings.walkaroundCheckTargetMinutes,
+      since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      isFieldRole: driverId => !walkaroundExemptIds.has(driverId),
+    });
+    return walkaroundIssues(compliance);
+  }, [shifts, recentWalkarounds, walkaroundExemptIds, orgAlertSettings.walkaroundCheckTargetMinutes]);
+
+  const walkaroundIssuesToday = useMemo(() => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    return walkaroundAlertIssues.filter(i => new Date(i.at) >= midnight).length;
+  }, [walkaroundAlertIssues]);
 
   // Approving a claim reimburses it straight into that shift's payroll
   // — added onto extras_amount/extras_note, the same "extra pay on top
@@ -2540,6 +2596,7 @@ export default function App() {
       walkaroundCheckTargetMinutes: String(orgAlertSettings.walkaroundCheckTargetMinutes),
       fuelAnomalyMinMpg: String(orgAlertSettings.fuelAnomalyMinMpg),
       fuelAnomalyRollingDropPercent: String(orgAlertSettings.fuelAnomalyRollingDropPercent),
+      loadReminderMinutes: String(orgAlertSettings.loadReminderMinutes),
     });
   }, [orgAlertSettings]);
 
@@ -2557,6 +2614,7 @@ export default function App() {
     const walkaroundCheckTargetMinutes = parseInt(alertSettingsForm.walkaroundCheckTargetMinutes, 10);
     const fuelAnomalyMinMpg = parseFloat(alertSettingsForm.fuelAnomalyMinMpg);
     const fuelAnomalyRollingDropPercent = parseInt(alertSettingsForm.fuelAnomalyRollingDropPercent, 10);
+    const loadReminderMinutes = parseInt(alertSettingsForm.loadReminderMinutes, 10);
 
     setAlertSettingsError('');
     setAlertSettingsSuccess('');
@@ -2593,6 +2651,10 @@ export default function App() {
       setAlertSettingsError('Fuel anomaly rolling-average drop must be a whole percentage between 1 and 99.');
       return;
     }
+    if (!Number.isInteger(loadReminderMinutes) || loadReminderMinutes < 5 || loadReminderMinutes > 600) {
+      setAlertSettingsError('Load reminder must be a whole number of minutes between 5 and 600.');
+      return;
+    }
 
     setIsSavingAlertSettings(true);
     try {
@@ -2607,6 +2669,7 @@ export default function App() {
           walkaroundCheckTargetMinutes,
           fuelAnomalyMinMpg,
           fuelAnomalyRollingDropPercent,
+          loadReminderMinutes,
         },
       });
       const failure = await readFunctionError(data, error);
@@ -2615,7 +2678,7 @@ export default function App() {
       } else {
         setOrgAlertSettings(prev => ({
           ...prev, longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays,
-          walkaroundCheckTargetMinutes, fuelAnomalyMinMpg, fuelAnomalyRollingDropPercent,
+          walkaroundCheckTargetMinutes, fuelAnomalyMinMpg, fuelAnomalyRollingDropPercent, loadReminderMinutes,
         }));
         setAlertSettingsSuccess('Saved.');
         setTimeout(() => setAlertSettingsSuccess(''), 1800);
@@ -3014,7 +3077,7 @@ export default function App() {
         localStorage.setItem('admin_session', 'true');
         localStorage.setItem('admin_role', 'logistics');
         persistRememberedEmail(loginEmail);
-        setActiveTab('live');
+        setActiveTab('dashboard');
       } else if (
         loginEmail === 'payroll@example.com' &&
         loginPassword === 'payroll123'
@@ -3063,7 +3126,7 @@ export default function App() {
           loadOrgAlertSettings(organizationId);
         }
         if (resolvedRole === 'logistics') {
-          setActiveTab('live');
+          setActiveTab('dashboard');
         }
       }
     } catch (_) {
@@ -3078,7 +3141,7 @@ export default function App() {
     setIsAuthenticated(false);
     localStorage.removeItem('admin_session');
     localStorage.removeItem('admin_role');
-    setActiveTab('live');
+    setActiveTab('dashboard');
   };
 
   // ── Alert Acknowledgement & Clearing ───────────────────────
@@ -4679,27 +4742,6 @@ export default function App() {
 
   }, [isAuthenticated, activeTab, liveLocations, alerts, depots]);
 
-  // Quick-stats KPI values, hoisted above the login-screen early returns
-  // below so their rolling-history hooks (real sampled values, not
-  // fabricated demo data) obey the Rules of Hooks regardless of auth state.
-  const kpiActiveEmployeeCount = liveLocations.length;
-  const kpiIdleAlertsCount = alerts.filter(a => !a.acknowledged && !a.is_sos).length;
-  const kpiCompletedShiftsCount = shifts.filter(s => s.status === 'completed').length;
-  // Was summing total_pay across every shift regardless of status — an
-  // orphaned/still-open shift (never clocked out, sometimes running for
-  // days in seed/demo data) has a live-computed total_pay that kept
-  // inflating this figure past what the Analytics tab's own payroll total
-  // (scoped to completed shifts only) reported for the same period.
-  // Filtering to completed shifts here, matching kpiCompletedShiftsCount
-  // right above it, is what actually fixes the mismatch — no arbitrary
-  // ">24h" cutoff needed, since a genuinely stuck shift is by definition
-  // never completed.
-  const kpiTotalWeeklyPayout = shifts.filter(s => s.status === 'completed').reduce((sum, s) => sum + (s.total_pay || 0), 0);
-  const employeeHistory = useMetricHistory(kpiActiveEmployeeCount, initialDataLoaded);
-  const idleAlertsHistory = useMetricHistory(kpiIdleAlertsCount, initialDataLoaded);
-  const completedShiftsHistory = useMetricHistory(kpiCompletedShiftsCount, initialDataLoaded);
-  const payoutHistory = useMetricHistory(Math.round(kpiTotalWeeklyPayout * 100) / 100, initialDataLoaded);
-
   // ── Render login Page if Unauthenticated ───────────────────
   // ── Department Sign-Up ─────────────────────────────────────
   // ── Company Sign-Up: register a brand-new tenant ────────────
@@ -5274,36 +5316,11 @@ export default function App() {
     );
   }
 
-  // Calculate quick stats
-  const activeEmployeeCount = kpiActiveEmployeeCount;
   // Includes fuel/parking items still awaiting review — the Alert Panel
   // (Alert Monitors) is now the only place those get approved, so the
   // "needs attention" badge belongs on this nav item, not Analytics'.
-  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + pendingFuelReceiptsCount + pendingParkingExpensesCount;
-  const idleAlertsCount = kpiIdleAlertsCount;
-  const completedShiftsCount = kpiCompletedShiftsCount;
+  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + pendingFuelReceiptsCount + pendingParkingExpensesCount + walkaroundIssuesToday;
   const pendingNightOutsCount = shifts.filter(s => s.night_out_status === 'pending').length;
-  const totalWeeklyPayout = kpiTotalWeeklyPayout;
-
-
-  // Renders the trend pill + sparkline for a KPI card from its real sample
-  // history. Returns null (no fabricated "flat" reading) until there are
-  // at least two distinct samples to compare.
-  const renderKpiTrend = (history: number[]) => {
-    const trend = getMetricTrend(history);
-    if (!trend) return null;
-    const color = trend.direction === 'up' ? '#16A34A' : trend.direction === 'down' ? '#DC2626' : '#64748B';
-    const TrendIcon = trend.direction === 'up' ? TrendingUp : trend.direction === 'down' ? TrendingDown : Minus;
-    return (
-      <div className="kpi-trend-col" title="Change across the most recent live updates">
-        <span className={`kpi-trend kpi-trend--${trend.direction}`}>
-          <TrendIcon size={11} />
-          {trend.percent === null ? 'New' : `${trend.percent > 0 ? '+' : ''}${trend.percent.toFixed(0)}%`}
-        </span>
-        <KpiSparkline data={history} color={color} />
-      </div>
-    );
-  };
 
   return (
     <div className="flex min-h-screen">
@@ -5335,17 +5352,71 @@ export default function App() {
             </div>
 
             <nav className="flex flex-col" style={{ gap: '2px' }}>
-              <SidebarLink
-                link={{
-                  label: 'Live Dispatch Board',
-                  href: '#',
-                  active: activeTab === 'live',
-                  onClick: () => setActiveTab('live'),
-                  icon: <span className="nav-icon"><Truck size={18} /></span>,
-                }}
-                className={`nav-item ${activeTab === 'live' ? 'active' : ''}`}
-                labelClassName="text-inherit dark:text-inherit"
-              />
+              {/* Same in-sidebar accordion pattern as Driver Profiles and
+                  Compliance & Safety below. Shipments stays payroll_admin
+                  only inside the sub-item list, as it was as a standalone
+                  item. */}
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setIsDispatchExpanded(v => !v)}
+                  aria-expanded={isDispatchExpanded}
+                  className={`nav-item ${(activeTab === 'dashboard' || activeTab === 'live' || activeTab === 'shipments') ? 'active' : ''}`}
+                  style={{ width: '100%', borderTop: 'none', borderRight: 'none', borderBottom: 'none' }}
+                >
+                  <span className="nav-icon">
+                    <Truck size={18} />
+                    {userRole === 'payroll_admin' && pendingLoadsCount > 0 && (
+                      <span className="nav-count-badge" title={`${pendingLoadsCount} load${pendingLoadsCount === 1 ? '' : 's'} awaiting a rate`}>
+                        {pendingLoadsCount > 9 ? '9+' : pendingLoadsCount}
+                      </span>
+                    )}
+                  </span>
+                  {railExpanded && (
+                    <>
+                      <span className="text-inherit dark:text-inherit" style={{ flex: 1, textAlign: 'left' }}>Dispatch Board</span>
+                      {isDispatchExpanded ? (
+                        <ChevronDown size={14} style={{ flexShrink: 0, opacity: 0.6 }} />
+                      ) : (
+                        <ChevronRight size={14} style={{ flexShrink: 0, opacity: 0.6 }} />
+                      )}
+                    </>
+                  )}
+                </button>
+
+                {railExpanded && (
+                  <AnimateChangeInHeight>
+                    {isDispatchExpanded && (
+                      <div className="nav-subitem-group">
+                        {([
+                          ['dashboard', 'Dashboard', 0] as const,
+                          ['live', 'Live Map', 0] as const,
+                          ...(userRole === 'payroll_admin' ? [['shipments', 'Shipments', pendingLoadsCount] as const] : []),
+                        ]).map(([tab, label, count]) => (
+                          <button
+                            key={tab}
+                            type="button"
+                            onClick={() => setActiveTab(tab)}
+                            className={`nav-subitem ${activeTab === tab ? 'active' : ''}`}
+                          >
+                            {label}
+                            {count > 0 && (
+                              <span
+                                style={{
+                                  fontSize: '10px', fontWeight: 800, padding: '1px 6px', borderRadius: '8px',
+                                  background: '#FFFBEB', color: '#F59E0B',
+                                }}
+                              >
+                                {count}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </AnimateChangeInHeight>
+                )}
+              </div>
 
               <SidebarLink
                 link={{
@@ -5528,29 +5599,6 @@ export default function App() {
                 />
               )}
 
-              {userRole === 'payroll_admin' && (
-                <SidebarLink
-                  link={{
-                    label: 'Shipments',
-                    href: '#',
-                    active: activeTab === 'shipments',
-                    onClick: () => setActiveTab('shipments'),
-                    icon: (
-                      <span className="nav-icon">
-                        <Package size={18} />
-                        {pendingLoadsCount > 0 && (
-                          <span className="nav-count-badge" title={`${pendingLoadsCount} load${pendingLoadsCount === 1 ? '' : 's'} awaiting a rate`}>
-                            {pendingLoadsCount > 9 ? '9+' : pendingLoadsCount}
-                          </span>
-                        )}
-                      </span>
-                    ),
-                  }}
-                  className={`nav-item ${activeTab === 'shipments' ? 'active' : ''}`}
-                  labelClassName="text-inherit dark:text-inherit"
-                />
-              )}
-
             </nav>
           </div>
 
@@ -5627,79 +5675,26 @@ export default function App() {
       {/* ── Main Dashboard Content ─────────────────────────── */}
       <div className="p-32 flex flex-col overflow-auto" style={{ height: '100vh', flex: 1, minWidth: 0 }}>
         
-        {/* Header Stats Row — now shown on every tab, Analytics included,
-            for consistency with the rest of the app (it used to skip
-            Analytics on the reasoning that page already has its own
-            dedicated financial KPI strip further down; that's still
-            true, this row is a different, org-wide "who's on shift right
-            now" summary, not a duplicate of it). */}
-        <div className="kpi-grid">
-          <div className="kpi-card">
-            <div className="kpi-card-main">
-              <span className="kpi-icon kpi-icon--red"><User size={18} /></span>
-              <div className="kpi-body">
-                <h2 className="kpi-value">{activeEmployeeCount}</h2>
-                <span className="kpi-label">Employees logged in</span>
-              </div>
-            </div>
-            {renderKpiTrend(employeeHistory)}
-          </div>
+        {activeTab === 'dashboard' && (
+          <DispatchDashboard
+            liveLocations={liveLocations}
+            employees={employees}
+            shifts={shifts}
+            alerts={alerts}
+            idleThresholdMinutes={orgAlertSettings.idleAlertMinutes}
+            fuelCostByShift={approvedFuelCostByShift}
+            showFinancials={userRole === 'payroll_admin'}
+            onNavigate={setActiveTab}
+          />
+        )}
 
-          <div className="kpi-card">
-            <div className="kpi-card-main">
-              <span className="kpi-icon kpi-icon--red"><Clock size={18} /></span>
-              <div className="kpi-body">
-                <h2 className="kpi-value">{idleAlertsCount}</h2>
-                <span className="kpi-label">Stops &gt; 50 mins (Break)</span>
-              </div>
-            </div>
-            {renderKpiTrend(idleAlertsHistory)}
-          </div>
-
-          <div className="kpi-card">
-            <div className="kpi-card-main">
-              <span className="kpi-icon kpi-icon--red"><Briefcase size={18} /></span>
-              <div className="kpi-body">
-                <h2 className="kpi-value">{completedShiftsCount}</h2>
-                <span className="kpi-label">Calculated shifts</span>
-              </div>
-            </div>
-            {renderKpiTrend(completedShiftsHistory)}
-          </div>
-
-          {userRole === 'payroll_admin' ? (
-            <div className="kpi-card">
-              <div className="kpi-card-main">
-                <span className="kpi-icon kpi-icon--red"><PoundSterling size={18} /></span>
-                <div className="kpi-body">
-                  <h2 className="kpi-value">£{(totalWeeklyPayout || 0).toFixed(2)}</h2>
-                  <span className="kpi-label">Calculated gross pay</span>
-                </div>
-              </div>
-              {renderKpiTrend(payoutHistory)}
-            </div>
-          ) : (
-            <div className="kpi-card">
-              <div className="kpi-card-main">
-                <span className="kpi-icon kpi-icon--red"><Compass size={18} /></span>
-                <div className="kpi-body">
-                  <h2 className="kpi-value">{depots.length}</h2>
-                  <span className="kpi-label">
-                    {depots.length === 0
-                      ? 'No depots configured yet'
-                      : depots.length <= 2
-                        ? `Active depot${depots.length === 1 ? '' : 's'} (${depots.map(d => d.name).join(' & ')})`
-                        : `Active depots across ${depots.length} locations`}
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* -- TAB 1: Live Dispatch Board ------------------- */}
         {activeTab === 'live' && (
-          <div className="flex-1 grid gap-24" style={{ gridTemplateRows: '1fr auto', minHeight: 0 }}>
+          <div className="flex-1 grid gap-24" style={{ gridTemplateRows: 'auto 1fr auto', minHeight: 0 }}>
+            <div>
+              <h2 className="text-xl font-black text-primary m-0">LIVE MAP</h2>
+              <p className="text-xs text-muted m-0 mt-4">Every driver's last known position, depots and active alerts.</p>
+            </div>
+
             {/* Live map layout */}
             <div className="map-shell">
               <div id="live-dispatch-map" className="h-full w-full"></div>
@@ -6065,6 +6060,7 @@ export default function App() {
                   ['fuel_anomaly', 'Fuel Anomaly', Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length],
                   ['fuel_pending', 'Fuel Receipts Pending', pendingFuelReceiptsCount],
                   ['parking_pending', 'Parking Claims Pending', pendingParkingExpensesCount],
+                  ['walkaround', 'Walk-Around Checks', walkaroundAlertIssues.length],
                 ] as const).map(([key, label, count]) => (
                   <option key={key} value={key}>
                     {label}{count !== null && count > 0 ? ` (${count})` : ''}
@@ -6079,7 +6075,7 @@ export default function App() {
                 Each card links out to its real review modal (Fuel Audit /
                 Parking Claims) instead of duplicating the approve/reject
                 actions here. */}
-            {(alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending') ? (() => {
+            {(alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending' || alertCategoryFilter === 'walkaround') ? (() => {
               const renderQueueAlertCards = (
                 items: { key: string; driverName?: string; subtitle?: string; dateStr: string; reasonText: string }[],
                 emptyTitle: string,
@@ -6152,6 +6148,25 @@ export default function App() {
                   'Awaiting Review',
                   'Review in Fuel Audit',
                   () => setIsFuelReceiptsModalOpen(true),
+                );
+              }
+              if (alertCategoryFilter === 'walkaround') {
+                const checkLabel = (type: string) => (type === 'start_of_shift' ? 'start-of-shift check' : 'end-of-shift inspection');
+                return renderQueueAlertCards(
+                  walkaroundAlertIssues.map(issue => ({
+                    key: issue.key,
+                    driverName: toTitleCase(issue.shift.driver_name ?? ''),
+                    subtitle: issue.shift.vehicle_number ?? undefined,
+                    dateStr: new Date(issue.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
+                    reasonText: issue.kind === 'rushed'
+                      ? `${checkLabel(issue.checkType)[0].toUpperCase()}${checkLabel(issue.checkType).slice(1)} took ${formatCheckDuration(issue.durationSeconds)} — under the ${orgAlertSettings.walkaroundCheckTargetMinutes}-minute target.`
+                      : `Skipped the ${checkLabel(issue.checkType)} — no check was submitted for this shift.`,
+                  })),
+                  'No Walk-Around Issues',
+                  `Every driver and mechanic completed their checks in the last 7 days, all within the ${orgAlertSettings.walkaroundCheckTargetMinutes}-minute target.`,
+                  'Walk-Around',
+                  'Open Walk-Around Checks',
+                  () => setActiveTab('walkaround-history'),
                 );
               }
               return renderQueueAlertCards(
@@ -6727,6 +6742,8 @@ export default function App() {
           <WalkAroundHistory
             organizationId={currentOrgId}
             targetMinutes={orgAlertSettings.walkaroundCheckTargetMinutes}
+            shifts={shifts}
+            exemptDriverIds={walkaroundExemptIds}
             onBack={() => setActiveTab('compliance')}
           />
         )}
@@ -9762,6 +9779,23 @@ export default function App() {
                     </div>
                     <p className="text-xs text-muted mb-16">
                       A fuel log gets flagged as a Fuel Anomaly if its calculated MPG is below the floor, or drops this many percent below that specific vehicle's own recent average — either one is enough to flag it. Drives the Fuel &amp; AdBlue Receipts Audit.
+                    </p>
+
+                    <div className="input-group">
+                      <label className="input-label" htmlFor="load-reminder-minutes">LOAD REMINDER (MINUTES STATIONARY)</label>
+                      <input
+                        id="load-reminder-minutes"
+                        type="number"
+                        min="5"
+                        max="600"
+                        step="1"
+                        className="input-field"
+                        value={alertSettingsForm.loadReminderMinutes}
+                        onChange={(e) => setAlertSettingsForm(f => ({ ...f, loadReminderMinutes: e.target.value }))}
+                      />
+                    </div>
+                    <p className="text-xs text-muted mb-16">
+                      When a driver's or mechanic's vehicle has been stationary this long, the app reminds them to attach a load (if none is attached) or to confirm its delivery (if it isn't confirmed yet). One reminder per stop.
                     </p>
 
                     <button type="button" className="btn btn-primary" disabled={isSavingAlertSettings} onClick={handleSaveAlertSettings}>

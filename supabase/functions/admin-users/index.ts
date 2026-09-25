@@ -341,6 +341,7 @@ serve(async (req: Request) => {
       const walkaroundCheckTargetMinutes = Number(body.walkaroundCheckTargetMinutes);
       const fuelAnomalyMinMpg = Number(body.fuelAnomalyMinMpg);
       const fuelAnomalyRollingDropPercent = Number(body.fuelAnomalyRollingDropPercent);
+      const loadReminderMinutes = Number(body.loadReminderMinutes);
 
       if (!Number.isFinite(longShiftFlagHours) || longShiftFlagHours <= 0) {
         return json({ error: "Long-shift flag threshold must be a positive number of hours." }, 400);
@@ -359,6 +360,9 @@ serve(async (req: Request) => {
       }
       if (!Number.isInteger(walkaroundCheckTargetMinutes) || walkaroundCheckTargetMinutes <= 0) {
         return json({ error: "Walk-around check target must be a positive whole number of minutes." }, 400);
+      }
+      if (!Number.isInteger(loadReminderMinutes) || loadReminderMinutes < 5 || loadReminderMinutes > 600) {
+        return json({ error: "Load reminder must be a whole number of minutes between 5 and 600." }, 400);
       }
       if (!Number.isFinite(fuelAnomalyMinMpg) || fuelAnomalyMinMpg <= 0) {
         return json({ error: "Fuel anomaly MPG floor must be a positive number." }, 400);
@@ -380,6 +384,7 @@ serve(async (req: Request) => {
         walkaround_check_target_minutes: walkaroundCheckTargetMinutes,
         fuel_anomaly_min_mpg: fuelAnomalyMinMpg,
         fuel_anomaly_rolling_drop_percent: fuelAnomalyRollingDropPercent,
+        load_reminder_minutes: loadReminderMinutes,
       };
       if (typeof body.allowDriverNightOutRequests === "boolean") {
         updatePayload.allow_driver_night_out_requests = body.allowDriverNightOutRequests;
@@ -399,7 +404,7 @@ serve(async (req: Request) => {
         success: true,
         settings: {
           longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays,
-          walkaroundCheckTargetMinutes, fuelAnomalyMinMpg, fuelAnomalyRollingDropPercent,
+          walkaroundCheckTargetMinutes, fuelAnomalyMinMpg, fuelAnomalyRollingDropPercent, loadReminderMinutes,
         },
       });
     }

@@ -59,6 +59,17 @@ export function FleetStatusDonutChart({
   // toggle, window resize).
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+
+  // Defensive normalization — a slice with an undefined/NaN value (never
+  // supposed to happen given DonutSlice's own type, but a bad upstream
+  // computation should degrade to "counts as 0" here, not silently break
+  // the whole chart) never reaches Pie's data array.
+  const safeData = data.map(d => ({ ...d, value: Number.isFinite(d.value) ? d.value : 0 })).filter(d => d.value > 0);
+  const total = safeData.reduce((sum, d) => sum + d.value, 0);
+  const hasData = total > 0;
+
+  // Keyed on hasData: while empty, the container below isn't mounted, so
+  // data arriving after first render (async load) must trigger a measure.
   useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -70,16 +81,9 @@ export function FleetStatusDonutChart({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [hasData]);
 
-  // Defensive normalization — a slice with an undefined/NaN value (never
-  // supposed to happen given DonutSlice's own type, but a bad upstream
-  // computation should degrade to "counts as 0" here, not silently break
-  // the whole chart) never reaches Pie's data array.
-  const safeData = data.map(d => ({ ...d, value: Number.isFinite(d.value) ? d.value : 0 })).filter(d => d.value > 0);
-  const total = safeData.reduce((sum, d) => sum + d.value, 0);
-
-  if (total === 0) {
+  if (!hasData) {
     return (
       <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Empty className="py-0">

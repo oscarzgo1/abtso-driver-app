@@ -1,8 +1,9 @@
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, ChevronDown, Clock, ClipboardCheck, AlertTriangle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, Clock, ClipboardCheck, AlertTriangle, ListChecks, CalendarCheck } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../components/ui/empty';
 import TableFilter, { type TableFilterGroup } from '../components/ui/table-filter';
+import { computeShiftCompliance, formatCheckDuration, type CheckState, type ComplianceShift } from '../lib/walkaround-compliance';
 
 // ============================================================
 // Walk-Around Check History — full, filterable, paginated log of
@@ -30,6 +31,7 @@ interface WalkaroundItem {
 
 interface WalkaroundRow {
   id: string;
+  shift_id: string | null;
   driver_id: string;
   driver_name?: string;
   vehicle_id: string;
@@ -46,13 +48,9 @@ interface WalkaroundRow {
 }
 
 const PAGE_SIZE = 15;
+const BY_SHIFT_DAYS = 14;
 
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return '—';
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}m ${s.toString().padStart(2, '0')}s`;
-}
+const formatDuration = formatCheckDuration;
 
 interface WalkAroundHistoryProps {
   organizationId: string | null;
@@ -61,10 +59,37 @@ interface WalkAroundHistoryProps {
   // same pattern as Compliance/FleetRoadworthiness's thresholdDays,
   // instead of this page fetching it itself.
   targetMinutes: number;
+  /** For the "By Shift" view — the app's already-loaded shifts. */
+  shifts: ComplianceShift[];
+  /** Employees whose role doesn't do walk-around checks (logistics). */
+  exemptDriverIds: Set<string>;
   onBack?: () => void;
 }
 
-export default function WalkAroundHistory({ organizationId, targetMinutes, onBack }: WalkAroundHistoryProps) {
+function CheckStateBadge({ state, onOpen }: { state: CheckState; onOpen?: () => void }) {
+  if (state.status === 'not_due') {
+    return <span className="badge badge-accent">On shift</span>;
+  }
+  if (state.status === 'missing') {
+    return <span className="badge badge-danger">Missing</span>;
+  }
+  const rushed = state.status === 'rushed';
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`badge ${rushed ? 'badge-warning' : 'badge-success'}`}
+      style={{ cursor: 'pointer', fontFamily: 'inherit' }}
+      title="Open this check"
+    >
+      {rushed ? <AlertTriangle size={11} /> : <Clock size={11} />}
+      {rushed ? 'Rushed' : 'Done'} · {formatDuration(state.check?.duration_seconds ?? null)}
+    </button>
+  );
+}
+
+export default function WalkAroundHistory({ organizationId, targetMinutes, shifts, exemptDriverIds, onBack }: WalkAroundHistoryProps) {
+  const [view, setView] = useState<'log' | 'shifts'>('log');
   const [checks, setChecks] = useState<WalkaroundRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -82,7 +107,7 @@ export default function WalkAroundHistory({ organizationId, targetMinutes, onBac
     try {
       const { data, error: fetchError } = await supabase
         .from('walkaround_checks')
-        .select('id, driver_id, vehicle_id, trailer_id, check_type, started_at, completed_at, duration_seconds, items, overall_result, defect_note, drivers(full_name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number)')
+        .select('id, shift_id, driver_id, vehicle_id, trailer_id, check_type, started_at, completed_at, duration_seconds, items, overall_result, defect_note, drivers(full_name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number)')
         .eq('organization_id', organizationId)
         .order('started_at', { ascending: false });
       if (fetchError) throw fetchError;
@@ -168,6 +193,35 @@ export default function WalkAroundHistory({ organizationId, targetMinutes, onBac
   const pageChecks = filteredChecks.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
   const targetSeconds = targetMinutes * 60;
 
+  const shiftCompliance = useMemo(
+    () => computeShiftCompliance(shifts, checks, {
+      targetMinutes,
+      since: new Date(Date.now() - BY_SHIFT_DAYS * 24 * 60 * 60 * 1000),
+      isFieldRole: driverId => !exemptDriverIds.has(driverId),
+    }),
+    [shifts, checks, targetMinutes, exemptDriverIds],
+  );
+  const shiftSummary = useMemo(() => {
+    let complete = 0, missing = 0, rushed = 0;
+    for (const { start, end } of shiftCompliance) {
+      const states = [start.status, end.status];
+      if (states.includes('missing')) missing += 1;
+      if (states.includes('rushed')) rushed += 1;
+      if (states.every(s => s === 'done' || s === 'not_due')) complete += 1;
+    }
+    return { complete, missing, rushed };
+  }, [shiftCompliance]);
+
+  /** Jump from the By Shift view to that check in the log, expanded. */
+  const openCheck = (checkId: string) => {
+    setTypeFilter([]);
+    setResultFilter([]);
+    const index = checks.findIndex(c => c.id === checkId);
+    if (index >= 0) setPage(Math.floor(index / PAGE_SIZE));
+    setExpandedId(checkId);
+    setView('log');
+  };
+
   return (
     <div className="flex-1">
       <div className="flex align-center justify-between mb-16">
@@ -191,6 +245,68 @@ export default function WalkAroundHistory({ organizationId, targetMinutes, onBac
 
       {error && <div className="login-notice login-notice--error mb-16">{error}</div>}
 
+      <div className="telemetry-tabs mb-16" style={{ borderBottom: '1px solid var(--border-color)' }}>
+        <button type="button" className={`telemetry-tab ${view === 'log' ? 'telemetry-tab--active' : ''}`} onClick={() => setView('log')}>
+          <ListChecks size={13} /> Check Log
+        </button>
+        <button type="button" className={`telemetry-tab ${view === 'shifts' ? 'telemetry-tab--active' : ''}`} onClick={() => setView('shifts')}>
+          <CalendarCheck size={13} /> By Shift
+          {shiftSummary.missing + shiftSummary.rushed > 0 && (
+            <span className="badge badge-danger" style={{ marginLeft: '4px' }}>{shiftSummary.missing + shiftSummary.rushed}</span>
+          )}
+        </button>
+      </div>
+
+      {view === 'shifts' ? (
+        <div className="glass-card" style={{ overflow: 'hidden' }}>
+          <div className="p-16 flex align-center justify-between" style={{ borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', gap: '10px' }}>
+            <span className="text-xs text-muted">
+              Every driver and mechanic shift in the last {BY_SHIFT_DAYS} days — logistics staff don't do walk-around checks.
+            </span>
+            <span className="flex align-center" style={{ gap: '6px' }}>
+              <span className="badge badge-success">{shiftSummary.complete} complete</span>
+              <span className="badge badge-warning">{shiftSummary.rushed} rushed</span>
+              <span className="badge badge-danger">{shiftSummary.missing} missing</span>
+            </span>
+          </div>
+          {shiftCompliance.length === 0 ? (
+            <Empty className="py-24">
+              <EmptyHeader>
+                <EmptyMedia variant="icon"><CalendarCheck /></EmptyMedia>
+                <EmptyTitle>No Shifts Yet</EmptyTitle>
+                <EmptyDescription>Driver and mechanic shifts from the last {BY_SHIFT_DAYS} days will show up here.</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          ) : (
+            <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Shift Started</th>
+                    <th>Employee</th>
+                    <th>Tractor</th>
+                    <th>Start-of-Shift Check</th>
+                    <th>End-of-Shift Inspection</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shiftCompliance.map(({ shift, start, end }) => (
+                    <tr key={shift.id}>
+                      <td className="text-secondary font-mono tabular-nums text-xs whitespace-nowrap">
+                        {new Date(shift.start_time).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                      <td className="font-bold text-primary">{shift.driver_name ?? '—'}</td>
+                      <td className="font-mono text-accent">{shift.vehicle_number ?? '—'}</td>
+                      <td><CheckStateBadge state={start} onOpen={start.check ? () => openCheck(start.check!.id) : undefined} /></td>
+                      <td><CheckStateBadge state={end} onOpen={end.check ? () => openCheck(end.check!.id) : undefined} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : (
       <div className="glass-card" style={{ overflow: 'hidden' }}>
         <div className="p-16 flex align-center justify-between" style={{ borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', gap: '10px' }}>
           <TableFilter groups={filterGroups} />
@@ -269,8 +385,42 @@ export default function WalkAroundHistory({ organizationId, targetMinutes, onBac
                               {c.defect_note && (
                                 <p className="text-xs font-bold mb-8" style={{ color: '#E65100' }}>Defect details: {c.defect_note}</p>
                               )}
+                              {(() => {
+                                const photos = c.items.filter(i => i.type === 'photo' && typeof i.value === 'string' && i.value);
+                                if (photos.length === 0) return null;
+                                return (
+                                  <div className="mb-16">
+                                    <p className="text-xs font-bold mb-8" style={{ color: 'var(--charcoal)' }}>
+                                      Photos ({photos.length}) — taken with the phone camera during the check
+                                    </p>
+                                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '10px' }}>
+                                      {photos.map(photo => {
+                                        const url = photoUrls[photo.value as string];
+                                        return (
+                                          <a
+                                            key={photo.key}
+                                            href={url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            style={{ display: 'block', textDecoration: 'none', background: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '8px', overflow: 'hidden', pointerEvents: url ? 'auto' : 'none' }}
+                                          >
+                                            {url ? (
+                                              <img src={url} alt={photo.label} style={{ width: '100%', height: '110px', objectFit: 'cover', display: 'block' }} />
+                                            ) : (
+                                              <div className="text-xs text-muted flex align-center justify-center" style={{ height: '110px' }}>Loading…</div>
+                                            )}
+                                            <span className="text-xs text-secondary" style={{ display: 'block', padding: '6px 8px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                              {photo.label}
+                                            </span>
+                                          </a>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                               <div className="flex flex-col" style={{ gap: '6px' }}>
-                                {c.items.map(item => (
+                                {c.items.filter(item => item.type !== 'photo' || !item.value).map(item => (
                                   <div key={item.key}>
                                     {item.section && (
                                       <p className="text-xs font-bold mt-8 mb-4" style={{ color: 'var(--charcoal)' }}>{item.section}</p>
@@ -341,6 +491,7 @@ export default function WalkAroundHistory({ organizationId, targetMinutes, onBac
           </>
         )}
       </div>
+      )}
     </div>
   );
 }
