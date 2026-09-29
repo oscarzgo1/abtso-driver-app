@@ -360,17 +360,21 @@ export default function CarrierSettlementImportModal({ organizationId, onClose, 
 
       let successCount = 0;
       for (const load of toImport) {
-        const { error: upsertError } = await supabase
-          .from('shift_revenue')
-          .upsert(
-            {
-              shift_id: load.assignedShiftId,
-              revenue_amount: load.amount,
-              load_reference: load.loadRef || null,
-              carrier_name: preset.label,
-            },
-            { onConflict: 'shift_id' },
-          );
+        // Per-load since migration 063: rate the matching load on the
+        // shift (same reference, or the only unrated one), else add it.
+        const { data: shiftLoads } = await supabase
+          .from('shift_loads')
+          .select('id, load_reference, revenue_amount')
+          .eq('shift_id', load.assignedShiftId);
+        const ref = (load.loadRef || '').trim().toLowerCase();
+        const existing = (shiftLoads ?? []).find(l => ref && (l.load_reference ?? '').trim().toLowerCase() === ref)
+          ?? ((shiftLoads ?? []).filter(l => l.revenue_amount === null).length === 1 && !ref
+            ? (shiftLoads ?? []).find(l => l.revenue_amount === null)
+            : undefined);
+        const payload = { revenue_amount: load.amount, load_reference: load.loadRef || null, carrier_name: preset.label };
+        const { error: upsertError } = existing
+          ? await supabase.from('shift_loads').update(payload).eq('id', existing.id)
+          : await supabase.from('shift_loads').insert({ shift_id: load.assignedShiftId, ...payload });
         if (upsertError) continue;
         successCount += 1;
 

@@ -20,7 +20,7 @@ export const metadata: Metadata = {
     template: "%s — Tachyo",
   },
   description:
-    "Tachyo puts live dispatch, driver cost, and load revenue on one screen — so UK haulage operators always know which routes are actually profitable.",
+    "Tachyo puts live dispatch, walk-around checks, proof of delivery, fuel, payroll and margin on one screen — so UK haulage operators know which routes actually pay and can prove every delivery.",
   metadataBase: new URL("https://tachyo.co.uk"),
 };
 

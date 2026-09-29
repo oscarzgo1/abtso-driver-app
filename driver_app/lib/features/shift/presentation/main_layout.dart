@@ -5,9 +5,14 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
+import 'package:table_calendar/table_calendar.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../core/network/supabase_service.dart';
+import '../../../core/services/entrance_gate.dart';
 import 'home_screen.dart';
+import 'shift_provider.dart';
+import 'widgets/progress_ring.dart';
+import '../../dispatch/load_history_screen.dart';
 import '../../auth/presentation/auth_provider.dart';
 import '../../legal/presentation/legal_compliance_screen.dart';
 
@@ -34,6 +39,18 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
     ];
     // Terms & Conditions are accepted via the checkbox on the login screen,
     // before a session exists — there is no in-app gate to enforce here.
+
+    // Persist whether a shift is running so the next cold start can skip the
+    // entrance cinematic mid-shift (SOS must stay one tap away). Only real
+    // transitions are written: the initial "not loaded yet" null must not
+    // overwrite a true left behind by a shift that is still running.
+    ref.listenManual<ShiftState>(shiftProvider, (prev, next) {
+      if (next.activeShift != null) {
+        EntranceGate.recordShiftActive(true);
+      } else if (prev?.activeShift != null) {
+        EntranceGate.recordShiftActive(false);
+      }
+    }, fireImmediately: true);
   }
 
   @override
@@ -267,6 +284,39 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
   bool _isLoading = false;
   RealtimeChannel? _historyShiftsChannel;
 
+  // ── Calendar (item 1) ──────────────────────────────────────────────
+  // Replaces the plain showDateRangePicker with an embedded month/week
+  // calendar (table_calendar) so a driver can see which days actually
+  // have logged shifts at a glance, not just pick a blind date range.
+  // Reimplements the visual language of 21st.dev's community calendar
+  // pattern natively — that catalogue is React-only and can't run in a
+  // Flutter app, so this is a from-scratch Flutter equivalent rather
+  // than an import.
+  CalendarFormat _calendarFormat = CalendarFormat.week;
+  DateTime _focusedDay = DateTime.now();
+  DateTime? _rangeStart;
+  DateTime? _rangeEnd;
+
+  // ── Progress rings (item 3) ─────────────────────────────────────────
+  // Follow whatever range is currently selected (_startDate.._endDate) —
+  // pick a day, a week, or a whole month on the calendar and the rings
+  // recompute for exactly that period, rather than being pinned to a
+  // fixed "this week".
+  List<Map<String, dynamic>> _ringPeriodShifts = [];
+  List<Map<String, dynamic>> _ringBaselineShifts = [];
+  List<Map<String, dynamic>> _ringPeriodFuel = [];
+  bool _ringsLoading = false;
+
+  // ── Hours table (telemetry driving hours vs logged working hours) ──
+  // A second view for this same _startDate.._endDate range, toggled
+  // alongside the shift list rather than added as unbounded extra
+  // content — see the SHIFTS/HOURS segmented control in build().
+  bool _showHoursTable = false;
+  List<Map<String, dynamic>> _hoursGpsPings = [];
+  bool _hoursLoading = false;
+
+  static DateTime _sundayOf(DateTime d) => DateTime(d.year, d.month, d.day).subtract(Duration(days: d.weekday % 7));
+
   @override
   void initState() {
     super.initState();
@@ -275,8 +325,72 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
     final int daysToSubtract = now.weekday % 7; // Sunday maps to 0, Monday to 1, Saturday to 6
     _startDate = DateTime(now.year, now.month, now.day).subtract(Duration(days: daysToSubtract));
     _endDate = _startDate.add(const Duration(days: 6));
-    _loadShifts();
+    _reloadForCurrentRange();
     _setupHistoryRealtime();
+  }
+
+  /// The single place that reloads everything driven by _startDate.._endDate
+  /// — the shift list/summary card AND the progress rings — so the two
+  /// can never drift out of sync with each other.
+  Future<void> _reloadForCurrentRange() async {
+    await Future.wait([_loadShifts(), _loadRingsData(), _loadHoursGps()]);
+  }
+
+  /// Raw GPS pings for the selected range — the Hours table's telemetry
+  /// source. Fetched alongside the shift list (not derived from it) since
+  /// it only needs the driver id and date range, same as _loadShifts.
+  Future<void> _loadHoursGps() async {
+    final driverId = SupabaseService.currentDriverId;
+    if (driverId == null) return;
+    setState(() => _hoursLoading = true);
+    try {
+      final pings = await SupabaseService.fetchDriverGpsPings(
+        driverId: driverId,
+        startDate: _startDate,
+        endDate: _endDate,
+      );
+      if (mounted) setState(() { _hoursGpsPings = pings; _hoursLoading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _hoursLoading = false);
+    }
+  }
+
+  /// Fetches the selected period's shifts (for the earnings ring), an
+  /// equal-length period immediately before it (as an "average" baseline
+  /// to compare against — there's no separate earnings-target field in
+  /// the schema, so the driver's own recent period of the same length is
+  /// the honest, always-available comparison), and the period's fuel
+  /// receipts (for the fuel ring).
+  Future<void> _loadRingsData() async {
+    final driverId = SupabaseService.currentDriverId;
+    if (driverId == null) return;
+    setState(() => _ringsLoading = true);
+    final periodDays = _endDate.difference(_startDate).inDays + 1;
+    final baselineEnd = _startDate.subtract(const Duration(days: 1));
+    final baselineStart = baselineEnd.subtract(Duration(days: periodDays - 1));
+    try {
+      final results = await Future.wait([
+        SupabaseService.fetchDriverShifts(driverId: driverId, startDate: _startDate, endDate: _endDate),
+        SupabaseService.fetchDriverShifts(driverId: driverId, startDate: baselineStart, endDate: baselineEnd),
+        SupabaseService.fetchMyFuelReceipts(since: _startDate),
+      ]);
+      if (mounted) {
+        setState(() {
+          _ringPeriodShifts = results[0];
+          _ringBaselineShifts = results[1];
+          // fetchMyFuelReceipts is "since" only (no upper bound) — trim
+          // to the selected period's end here so a range in the past
+          // doesn't pick up fuel logged after it.
+          _ringPeriodFuel = (results[2]).where((r) {
+            final created = DateTime.tryParse(r['created_at']?.toString() ?? '')?.toLocal();
+            return created != null && !created.isAfter(DateTime(_endDate.year, _endDate.month, _endDate.day, 23, 59, 59));
+          }).toList();
+          _ringsLoading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _ringsLoading = false);
+    }
   }
 
   void _setupHistoryRealtime() {
@@ -298,7 +412,7 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
             callback: (_) {
               debugPrint('⚡ Shifts updated via Realtime in HistoryTab. Refreshing...');
               if (mounted) {
-                _loadShifts();
+                _reloadForCurrentRange();
                 ref.read(authProvider.notifier).refreshProfile();
               }
             },
@@ -345,36 +459,154 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
     }
   }
 
-  Future<void> _selectDateRange() async {
-    final pickedRange = await showDateRangePicker(
+  /// A day has "activity" if any loaded shift started on it — the
+  /// calendar's dot marker. Only checks _shifts (whatever's currently
+  /// loaded for the selected range/month), so switching to Month format
+  /// and paging to a different month reloads that month's shifts first
+  /// (see onPageChanged below) rather than needing a second, separate
+  /// marker query.
+  List<dynamic> _eventsForDay(DateTime day) {
+    final dayOnly = DateTime(day.year, day.month, day.day);
+    return _shifts.where((s) {
+      final start = DateTime.tryParse(s['start_time']?.toString() ?? '')?.toLocal();
+      if (start == null) return false;
+      return DateTime(start.year, start.month, start.day) == dayOnly;
+    }).toList();
+  }
+
+  void _applyRange(DateTime start, DateTime end) {
+    setState(() {
+      _startDate = DateTime(start.year, start.month, start.day);
+      _endDate = DateTime(end.year, end.month, end.day);
+      _rangeStart = _startDate;
+      _rangeEnd = _endDate;
+      _focusedDay = start;
+    });
+    _reloadForCurrentRange();
+  }
+
+  void _jumpToThisWeek() {
+    final weekStart = _sundayOf(DateTime.now());
+    setState(() {
+      _rangeStart = null;
+      _rangeEnd = null;
+    });
+    _applyRange(weekStart, weekStart.add(const Duration(days: 6)));
+  }
+
+  /// The calendar itself is unchanged — same TableCalendar, same day
+  /// markers, same range selection — only its presentation changed: it
+  /// now lives in this bottom sheet instead of expanding inline on the
+  /// page, so the page only ever shows the compact icon + range chip.
+  void _openCalendarSheet() {
+    showModalBottomSheet(
       context: context,
-      firstDate: DateTime(2025),
-      lastDate: DateTime(2030),
-      initialDateRange: DateTimeRange(start: _startDate, end: _endDate),
-      builder: (context, child) {
-        return Theme(
-          data: ThemeData.light().copyWith(
-            colorScheme: const ColorScheme.light(
-              primary: Color(0xFFCC0000), // brand red
-              onPrimary: Colors.white,
-              onSurface: Color(0xFF333333),
-            ),
-            textButtonTheme: TextButtonThemeData(
-              style: TextButton.styleFrom(foregroundColor: const Color(0xFFCC0000)),
-            ),
-          ),
-          child: child!,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setModalState) {
+            void applyAndRefreshSheet(DateTime start, DateTime end) {
+              _applyRange(start, end);
+              setModalState(() {});
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(left: 12, right: 12, top: 12, bottom: 12 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(width: 36, height: 4, decoration: BoxDecoration(color: const Color(0xFFE0E0E0), borderRadius: BorderRadius.circular(2))),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      TextButton(
+                        onPressed: () {
+                          _jumpToThisWeek();
+                          setModalState(() {});
+                        },
+                        child: const Text('THIS WEEK', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFFCC0000))),
+                      ),
+                      TextButton(
+                        onPressed: () => setModalState(() {
+                          _calendarFormat = _calendarFormat == CalendarFormat.week ? CalendarFormat.month : CalendarFormat.week;
+                        }),
+                        child: Text(
+                          _calendarFormat == CalendarFormat.week ? 'SHOW MONTH' : 'SHOW WEEK',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: Color(0xFF666666)),
+                        ),
+                      ),
+                    ],
+                  ),
+                  TableCalendar(
+                    firstDay: DateTime(2025),
+                    lastDay: DateTime(2030),
+                    focusedDay: _focusedDay,
+                    calendarFormat: _calendarFormat,
+                    rangeStartDay: _rangeStart,
+                    rangeEndDay: _rangeEnd,
+                    rangeSelectionMode: RangeSelectionMode.toggledOn,
+                    eventLoader: _eventsForDay,
+                    startingDayOfWeek: StartingDayOfWeek.sunday,
+                    headerStyle: const HeaderStyle(
+                      formatButtonVisible: false,
+                      titleCentered: true,
+                      titleTextStyle: TextStyle(fontSize: 14, fontWeight: FontWeight.w900, color: Color(0xFF333333)),
+                      leftChevronIcon: Icon(Icons.chevron_left, color: Color(0xFFCC0000)),
+                      rightChevronIcon: Icon(Icons.chevron_right, color: Color(0xFFCC0000)),
+                    ),
+                    calendarStyle: const CalendarStyle(
+                      outsideDaysVisible: false,
+                      todayDecoration: BoxDecoration(color: Color(0xFFF5D9D9), shape: BoxShape.circle),
+                      todayTextStyle: TextStyle(color: Color(0xFF333333), fontWeight: FontWeight.w800),
+                      rangeStartDecoration: BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                      rangeEndDecoration: BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                      withinRangeDecoration: BoxDecoration(color: Color(0xFFF5D9D9), shape: BoxShape.circle),
+                      selectedDecoration: BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                      markerDecoration: BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                      markersMaxCount: 1,
+                      markerSize: 5,
+                      markerMargin: EdgeInsets.only(top: 4),
+                    ),
+                    onDaySelected: (selected, focused) => applyAndRefreshSheet(selected, selected),
+                    onRangeSelected: (start, end, focused) {
+                      if (start != null && end != null) {
+                        applyAndRefreshSheet(start, end);
+                      } else if (start != null) {
+                        setState(() {
+                          _rangeStart = start;
+                          _rangeEnd = null;
+                          _focusedDay = start;
+                        });
+                        setModalState(() {});
+                      }
+                    },
+                    onPageChanged: (focused) {
+                      // Month view: load that whole month's shifts up
+                      // front so every day's marker dot is correct as
+                      // soon as it's on screen, not just the days the
+                      // driver has already selected into a range.
+                      _focusedDay = focused;
+                      if (_calendarFormat == CalendarFormat.month) {
+                        final monthStart = DateTime(focused.year, focused.month, 1);
+                        final monthEnd = DateTime(focused.year, focused.month + 1, 0);
+                        setState(() {
+                          _startDate = monthStart;
+                          _endDate = monthEnd;
+                        });
+                        _reloadForCurrentRange();
+                      }
+                    },
+                  ),
+                ],
+              ),
+            );
+          },
         );
       },
     );
-
-    if (pickedRange != null) {
-      setState(() {
-        _startDate = pickedRange.start;
-        _endDate = pickedRange.end;
-      });
-      _loadShifts();
-    }
   }
 
   @override
@@ -417,6 +649,13 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
             Image.asset('assets/images/tachyo_logo.png', height: 24, fit: BoxFit.contain),
           ],
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.local_shipping_outlined, size: 20, color: Color(0xFF333333)),
+            tooltip: 'Load history',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoadHistoryScreen())),
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
           child: Container(height: 1, color: const Color(0xFFE0E0E0)),
@@ -426,37 +665,38 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Period Range Selection Header
+            // Period Range — minimized to just an icon + the date range
+            // it represents. The calendar itself is unchanged (same
+            // TableCalendar, same markers, same range selection); tapping
+            // this chip opens it in a bottom sheet instead of taking up
+            // space inline on the page.
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
               child: InkWell(
-                onTap: _selectDateRange,
-                borderRadius: BorderRadius.circular(12),
+                onTap: _openCalendarSheet,
+                borderRadius: BorderRadius.circular(24),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(24),
                     border: Border.all(color: const Color(0xFFBBBBBB), width: 1.5),
                   ),
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Row(
-                        children: [
-                          const Icon(Icons.calendar_today_outlined, size: 16, color: Color(0xFFCC0000)),
-                          const SizedBox(width: 12),
-                          Text(
-                            rangeText.toUpperCase(),
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w900,
-                              color: const Color(0xFF333333),
-                            ),
-                          ),
-                        ],
+                      const Icon(Icons.calendar_today_outlined, size: 15, color: Color(0xFFCC0000)),
+                      const SizedBox(width: 10),
+                      Text(
+                        rangeText.toUpperCase(),
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w900,
+                          color: const Color(0xFF333333),
+                        ),
                       ),
-                      const Icon(Icons.arrow_drop_down, color: Color(0xFF888888)),
+                      const SizedBox(width: 6),
+                      const Icon(Icons.expand_more, size: 16, color: Color(0xFF888888)),
                     ],
                   ),
                 ),
@@ -557,21 +797,36 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
               ),
             ),
 
+            // ── Shifts / Hours toggle — grouped with the period chip and
+            // the earnings card right above it (not buried below the
+            // rings), since switching between them is really "what am I
+            // looking at for this period" — the same question the period
+            // chip and earnings card above already answer.
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 4),
-              child: Text(
-                'LOGGED SHIFTS',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: 1.0,
-                  color: const Color(0xFF888888),
-                ),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _viewToggleButton(theme, label: 'LOGGED SHIFTS', selected: !_showHoursTable, onTap: () => setState(() => _showHoursTable = false)),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: _viewToggleButton(theme, label: 'HOURS', selected: _showHoursTable, onTap: () => setState(() => _showHoursTable = true)),
+                  ),
+                ],
               ),
             ),
+            const SizedBox(height: 4),
+
+            // ── Progress rings (item 3) — only for the Shifts view; the
+            // Hours view has its own dense DVSA compliance content and
+            // doesn't need these too.
+            if (!_showHoursTable) _buildProgressRings(theme),
 
             Expanded(
-              child: _isLoading
+              child: _showHoursTable
+                  ? _buildHoursTable(theme)
+                  : _isLoading
                   ? const Center(
                       child: CircularProgressIndicator(
                         color: Color(0xFFCC0000),
@@ -731,6 +986,316 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
       ),
     );
   }
+
+  Widget _viewToggleButton(ThemeData theme, {required String label, required bool selected, required VoidCallback onTap}) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xFF333333) : Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: selected ? const Color(0xFF333333) : const Color(0xFFDDDDDD), width: 1),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 1.0,
+            color: selected ? Colors.white : const Color(0xFF888888),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Three rings for "how's this period going" — they now follow
+  /// whatever range is selected above (_startDate.._endDate), recomputed
+  /// every time that range changes, rather than being pinned to a fixed
+  /// week.
+  ///
+  /// - Fuel: the period's average full-tank MPG (migration 070's engine —
+  ///   the same calculated_mpg the admin audit uses) against a 9.0 MPG
+  ///   "good economy" reference for a laden HGV. No fill-ups in the
+  ///   period shows an honest "no data" ring rather than a fake 0%.
+  /// - Earnings: the period's pay so far against an equal-length period
+  ///   immediately before it — there's no separate earnings-target field
+  ///   anywhere in the schema, so comparing against the driver's own
+  ///   immediately-preceding period of the same length is the only
+  ///   honest, always-available baseline, and it's explicitly labelled
+  ///   as such rather than implying a company target.
+  /// - Rest: hours NOT on shift in the period against a proportional
+  ///   reference (120h per 7 days, scaled to the period's actual length)
+  ///   — a plain "time off the clock" indicator, deliberately not framed
+  ///   as WTD/tachograph legal compliance, which the app's own privacy
+  ///   policy already disclaims as advisory-only elsewhere.
+  Widget _buildProgressRings(ThemeData theme) {
+    final periodDays = _endDate.difference(_startDate).inDays + 1;
+    final periodLabel = periodDays <= 1
+        ? 'THIS DAY\'S PROGRESS'
+        : periodDays <= 7
+            ? 'THIS PERIOD\'S PROGRESS'
+            : 'THIS MONTH\'S PROGRESS';
+
+    // Fuel
+    final fullTankLogs = _ringPeriodFuel.where((r) => r['is_full_tank'] == true && r['calculated_mpg'] != null).toList();
+    final hasFuelData = fullTankLogs.isNotEmpty;
+    final avgMpg = hasFuelData
+        ? fullTankLogs.map((r) => (r['calculated_mpg'] as num).toDouble()).reduce((a, b) => a + b) / fullTankLogs.length
+        : 0.0;
+    const goodMpgReference = 9.0;
+    final fuelProgress = hasFuelData ? (avgMpg / goodMpgReference).clamp(0.0, 1.0) : 0.0;
+    final anyTheftFlag = fullTankLogs.any((r) => r['theft_flag'] == true);
+
+    // Earnings
+    double sumPay(List<Map<String, dynamic>> shifts) => shifts.fold(0.0, (sum, s) => sum + ((s['total_pay'] as num?)?.toDouble() ?? 0.0));
+    final periodPay = sumPay(_ringPeriodShifts);
+    final baselinePay = sumPay(_ringBaselineShifts);
+    final hasEarningsBaseline = baselinePay > 0;
+    final earningsProgress = hasEarningsBaseline ? (periodPay / baselinePay).clamp(0.0, 1.0) : (periodPay > 0 ? 1.0 : 0.0);
+
+    // Rest
+    final hoursWorked = _ringPeriodShifts.fold(0.0, (sum, s) => sum + ((s['total_hours'] as num?)?.toDouble() ?? 0.0));
+    final periodHours = periodDays * 24.0;
+    final restReferenceHours = (120.0 / 7.0) * periodDays;
+    final restHours = (periodHours - hoursWorked).clamp(0.0, periodHours);
+    final restProgress = restReferenceHours > 0 ? (restHours / restReferenceHours).clamp(0.0, 1.0) : 0.0;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF5F5F5),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                periodLabel,
+                style: theme.textTheme.bodyMedium?.copyWith(fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.0, color: const Color(0xFF888888)),
+              ),
+              if (_ringsLoading) const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFCC0000))),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              ProgressRing(
+                progress: fuelProgress,
+                isDark: false,
+                centerText: hasFuelData ? avgMpg.toStringAsFixed(1) : '—',
+                label: hasFuelData ? 'FUEL (MPG)' : 'FUEL\n(no fill-ups)',
+                // Higher = better here (closer to/above the 9 MPG
+                // reference), the opposite of ProgressRing's default
+                // escalation (which reddens as progress climbs, meant
+                // for "approaching a limit" rings) — so this is always
+                // an explicit colour, never the auto one: green normally,
+                // forced red the moment any full-tank fill in this
+                // period tripped the theft-detection engine (migration
+                // 070), regardless of how good the average otherwise
+                // looks.
+                color: anyTheftFlag ? const Color(0xFFCC0000) : const Color(0xFF10B981),
+              ),
+              ProgressRing(
+                progress: earningsProgress,
+                isDark: false,
+                centerText: '£${periodPay.toStringAsFixed(0)}',
+                label: hasEarningsBaseline ? 'EARNINGS\nvs prior period' : 'EARNINGS',
+                color: const Color(0xFFCC0000),
+              ),
+              ProgressRing(
+                progress: restProgress,
+                isDark: false,
+                centerText: '${restHours.toStringAsFixed(0)}h',
+                label: 'REST\ntime off the clock',
+                color: const Color(0xFF3B82F6),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Hours table: telemetry driving hours vs logged working hours ───
+  // Driving minutes are derived from real GPS speed pings (the same
+  // telemetry source and 0.5 m/s moving threshold the admin dashboard's
+  // Driver Hours page uses) — genuinely "what happened", not the shift's
+  // logged duration. Working hours are the shift's own total_hours (the
+  // payroll-trusted on-duty figure). "Available" is what's left of a
+  // fixed daily reference before that limit is reached — advisory only,
+  // from GPS telemetry, not a certified tachograph record; this app has
+  // no tachograph head fitted to any vehicle.
+  static const double _drivingSpeedThresholdMps = 0.5;
+  static const int _maxPingGapMinutes = 30;
+  static const int _dailyDrivingLimitMinutes = 540; // 9h — EC561 daily driving limit
+  static const int _dailyWorkingLimitMinutes = 900; // 15h — daily duty span ceiling
+
+  static double _minutesBetween(String a, String b) =>
+      (DateTime.parse(b).difference(DateTime.parse(a))).inSeconds / 60.0;
+
+  /// Total driving minutes in a shift from its GPS pings — sums every gap
+  /// where the ping at the end of it shows the driver moving, skipping
+  /// any gap too large to trust as continuous (a dropped signal isn't
+  /// assumed to be driving).
+  static double _shiftDrivingMinutes(List<Map<String, dynamic>> pings) {
+    double minutes = 0;
+    for (int i = 1; i < pings.length; i++) {
+      final gap = _minutesBetween(pings[i - 1]['recorded_at'] as String, pings[i]['recorded_at'] as String);
+      if (gap <= 0 || gap > _maxPingGapMinutes) continue;
+      final speed = (pings[i]['speed'] as num?)?.toDouble() ?? 0.0;
+      if (speed >= _drivingSpeedThresholdMps) minutes += gap;
+    }
+    return minutes;
+  }
+
+  /// One row per calendar day in the selected range that actually has a
+  /// logged shift, oldest first.
+  List<_DayHoursRow> _buildDailyHoursRows() {
+    final pingsByShift = <String, List<Map<String, dynamic>>>{};
+    for (final p in _hoursGpsPings) {
+      final sid = p['shift_id']?.toString();
+      if (sid == null) continue;
+      (pingsByShift[sid] ??= []).add(p);
+    }
+
+    final byDay = <DateTime, List<Map<String, dynamic>>>{};
+    for (final s in _shifts) {
+      final start = DateTime.tryParse(s['start_time']?.toString() ?? '')?.toLocal();
+      if (start == null) continue;
+      final dayKey = DateTime(start.year, start.month, start.day);
+      (byDay[dayKey] ??= []).add(s);
+    }
+
+    final rows = byDay.entries.map((entry) {
+      double drivingMinutes = 0;
+      double workingMinutes = 0;
+      for (final s in entry.value) {
+        final shiftId = s['id']?.toString();
+        final pings = shiftId != null ? (pingsByShift[shiftId] ?? const []) : const <Map<String, dynamic>>[];
+        drivingMinutes += _shiftDrivingMinutes(pings);
+        workingMinutes += (((s['total_hours'] as num?)?.toDouble() ?? 0.0)) * 60.0;
+      }
+      return _DayHoursRow(
+        day: entry.key,
+        drivingMinutes: drivingMinutes,
+        workingMinutes: workingMinutes,
+      );
+    }).toList()
+      ..sort((a, b) => b.day.compareTo(a.day));
+    return rows;
+  }
+
+  static String _formatHM(double totalMinutes) {
+    final m = totalMinutes.round().clamp(0, 1 << 30);
+    final h = m ~/ 60;
+    final mm = m % 60;
+    if (h == 0) return '${mm}m';
+    if (mm == 0) return '${h}h';
+    return '${h}h ${mm}m';
+  }
+
+  Widget _buildHoursTable(ThemeData theme) {
+    final rows = _buildDailyHoursRows();
+    final dayFormat = DateFormat('EEE d MMM');
+
+    if (_hoursLoading || _isLoading) {
+      return const Padding(
+        padding: EdgeInsets.only(top: 40),
+        child: Center(child: CircularProgressIndicator(color: Color(0xFFCC0000))),
+      );
+    }
+    if (rows.isEmpty) {
+      return Center(
+        child: Text(
+          'NO SHIFTS LOGGED IN THIS PERIOD',
+          style: theme.textTheme.bodyMedium?.copyWith(fontSize: 11, fontWeight: FontWeight.w800, color: const Color(0xFF888888)),
+        ),
+      );
+    }
+
+    Widget headerCell(String text, {bool alignEnd = true}) => Text(
+          text,
+          textAlign: alignEnd ? TextAlign.right : TextAlign.left,
+          style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 0.4, color: Color(0xFF888888)),
+        );
+
+    Widget valueCell(String text, {Color color = const Color(0xFF333333)}) => Text(
+          text,
+          textAlign: TextAlign.right,
+          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: color),
+        );
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            margin: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              children: [
+                const Expanded(flex: 3, child: Text('DAY', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 0.4, color: Color(0xFF888888)))),
+                Expanded(flex: 3, child: headerCell('DRIVING')),
+                Expanded(flex: 3, child: headerCell('DRV. AVAIL.')),
+                Expanded(flex: 3, child: headerCell('WORKING')),
+                Expanded(flex: 3, child: headerCell('WRK. AVAIL.')),
+              ],
+            ),
+          ),
+          const Divider(height: 1, color: Color(0xFFE0E0E0)),
+          ...rows.map((r) {
+            final drivingAvail = (_dailyDrivingLimitMinutes - r.drivingMinutes).clamp(0.0, _dailyDrivingLimitMinutes.toDouble());
+            final workingAvail = (_dailyWorkingLimitMinutes - r.workingMinutes).clamp(0.0, _dailyWorkingLimitMinutes.toDouble());
+            final drivingOver = r.drivingMinutes > _dailyDrivingLimitMinutes;
+            final workingOver = r.workingMinutes > _dailyWorkingLimitMinutes;
+            return Container(
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+              decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFFF0F0F0), width: 1))),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: Text(
+                      dayFormat.format(r.day),
+                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w900, color: Color(0xFF333333)),
+                    ),
+                  ),
+                  Expanded(flex: 3, child: valueCell(_formatHM(r.drivingMinutes), color: drivingOver ? const Color(0xFFCC0000) : const Color(0xFF333333))),
+                  Expanded(flex: 3, child: valueCell(_formatHM(drivingAvail), color: const Color(0xFF10B981))),
+                  Expanded(flex: 3, child: valueCell(_formatHM(r.workingMinutes), color: workingOver ? const Color(0xFFCC0000) : const Color(0xFF333333))),
+                  Expanded(flex: 3, child: valueCell(_formatHM(workingAvail), color: const Color(0xFF10B981))),
+                ],
+              ),
+            );
+          }),
+          const SizedBox(height: 12),
+          Text(
+            'Driving hours are from GPS telemetry (speed readings), not a certified tachograph. '
+            'Available = ${_dailyDrivingLimitMinutes ~/ 60}h daily driving / ${_dailyWorkingLimitMinutes ~/ 60}h daily working, minus what was logged that day — advisory only.',
+            style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600, color: Color(0xFF999999), height: 1.4),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DayHoursRow {
+  final DateTime day;
+  final double drivingMinutes;
+  final double workingMinutes;
+  const _DayHoursRow({required this.day, required this.drivingMinutes, required this.workingMinutes});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1255,7 +1820,7 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
-                  color: statusGranted ? const Color(0xFF2E7D32) : const Color(0xFF8E8E93),
+                  color: statusGranted ? const Color(0xFFCC0000) : const Color(0xFF8E8E93),
                 ),
               ),
               const SizedBox(width: 6),

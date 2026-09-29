@@ -92,7 +92,17 @@ serve(async (req: Request) => {
 
     // ── 3. Parse request body ────────────────────────────────
     const body = await req.json();
-    const { action, driver_id, full_name, phone, pin, id: targetId } = body;
+    const { action, driver_id, phone, id: targetId } = body;
+    // "john o'brien-smith" -> "John O'Brien-Smith" — normalised here too,
+    // not just client-side, so a name is always stored capitalised
+    // regardless of caller (admin panel form validation can't be trusted
+    // as the only guard on data actually written to the DB).
+    const full_name: string | undefined = typeof body.full_name === "string"
+      ? body.full_name.trim().replace(/\s+/g, " ").toLowerCase().replace(/(^|[\s\-'])([a-z])/g, (_m: string, sep: string, ch: string) => sep + ch.toUpperCase())
+      : body.full_name;
+    // Admins no longer choose a PIN (migration 065). If an old admin
+    // panel still sends `pin`, we ignore it and issue an activation
+    // code instead.
 
     console.log("Action:", action ?? "create", "| Caller:", callerEmail);
 
@@ -157,24 +167,10 @@ serve(async (req: Request) => {
         );
       }
 
-      // A PIN shorter than 6 digits would be silently unusable: the driver
-      // app's own login screen and in-app "Change PIN" screen both require
-      // exactly 6 digits before they'll even submit, and Supabase Auth's
-      // own password minimum is 6 characters. Accepting anything shorter
-      // here previously created accounts the driver could never log into —
-      // reject clearly instead of silently no-op'ing the change.
-      if (pin && pin.trim().length > 0 && pin.trim().length !== 6) {
-        return new Response(
-          JSON.stringify({ error: "PIN must be exactly 6 digits." }),
-          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-
       const updatePayload: Record<string, any> = {};
       if (full_name) updatePayload.full_name = full_name.trim();
       if (driver_id) updatePayload.driver_id = driver_id.trim();
       if (phone !== undefined) updatePayload.phone = phone.trim();
-      if (pin && pin.trim().length === 6) updatePayload.pin_hash = pin.trim();
 
       const { data: updatedDriver, error: updateError } = await supabaseAdmin
         .from("drivers")
@@ -192,11 +188,9 @@ serve(async (req: Request) => {
         );
       }
 
-      // If PIN is provided or username changed, update Auth user credentials
+      // Only the driver_id can change here — PIN resets go through
+      // `reset_pin` which issues a new activation code.
       const authUpdates: Record<string, any> = {};
-      if (pin && pin.trim().length === 6) {
-        authUpdates.password = pin.trim();
-      }
       if (driver_id) {
         const cleanEmail = `${driver_id.trim().toLowerCase()}@${orgSlug}.driver.internal`;
         authUpdates.email = cleanEmail;
@@ -216,21 +210,45 @@ serve(async (req: Request) => {
     }
 
     // ──────────────────────────────────────────────────────────
-    // CREATE action (default)
+    // RESET PIN action — cancel any old code, issue a fresh one.
     // ──────────────────────────────────────────────────────────
-    if (!driver_id || !full_name || !pin) {
+    if (action === "reset_pin") {
+      if (!targetId) {
+        return new Response(
+          JSON.stringify({ error: "id is required to reset a driver's PIN" }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      const { data: driver } = await supabaseAdmin
+        .from("drivers").select("id, organization_id, driver_id")
+        .eq("id", targetId).eq("organization_id", callerOrgId).maybeSingle();
+      if (!driver) {
+        return new Response(
+          JSON.stringify({ error: "Driver not found in your company." }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+      // Call as the authenticated admin so is_org_admin() passes.
+      const { data: code, error: codeErr } = await userClient.rpc("issue_driver_activation_code", { p_driver_id: targetId, p_reason: "reset_admin" });
+      if (codeErr) {
+        return new Response(
+          JSON.stringify({ error: `Could not issue an activation code: ${codeErr.message}` }),
+          { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
       return new Response(
-        JSON.stringify({ error: "driver_id, full_name, and pin are required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ success: true, activation_code: code, driver_id: driver.driver_id }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Must match exactly what the driver app's login screen requires (6
-    // digits) — a shorter PIN would let this account be created but never
-    // actually logged into.
-    if (pin.trim().length !== 6) {
+    // ──────────────────────────────────────────────────────────
+    // CREATE action (default) — no PIN. An activation code is issued
+    // and shown once so the driver can set their own PIN.
+    // ──────────────────────────────────────────────────────────
+    if (!driver_id || !full_name) {
       return new Response(
-        JSON.stringify({ error: "PIN must be exactly 6 digits" }),
+        JSON.stringify({ error: "driver_id and full_name are required" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -254,13 +272,15 @@ serve(async (req: Request) => {
     }
 
     // Synthetic email for Supabase Auth (internal use only) — namespaced by
-    // company slug so two companies can each have their own "DRV-001".
+    // company slug so two companies can each have their own "DRV-001". The
+    // auth account exists so the pin_hash column can be tied to it, but its
+    // password is a throwaway — the driver's real 6-digit PIN is set through
+    // driver-activate with the activation code below.
     const authEmail = `${cleanDriverId.toLowerCase()}@${orgSlug}.driver.internal`;
-
-    // Create Supabase Auth user
+    const throwaway = crypto.randomUUID();
     const { data: authUser, error: createAuthError } = await supabaseAdmin.auth.admin.createUser({
       email: authEmail,
-      password: pin.trim(),
+      password: throwaway,
       email_confirm: true,
       user_metadata: {
         full_name: full_name.trim(),
@@ -278,14 +298,15 @@ serve(async (req: Request) => {
 
     console.log("Auth user created:", authUser.user.id);
 
-    // Insert driver profile (PIN is stored as-is; DB trigger bcrypt-hashes it)
+    // pin_hash stays a placeholder until the driver activates. pin_status
+    // is 'pending' by default (migration 065).
     const { data: profile, error: profileError } = await supabaseAdmin
       .from("drivers")
       .insert({
         id: authUser.user.id,
         organization_id: callerOrgId,
         driver_id: cleanDriverId,
-        pin_hash: pin.trim(),
+        pin_hash: '',
         full_name: full_name.trim(),
         phone: phone ? phone.trim() : null,
         is_active: true,
@@ -297,16 +318,36 @@ serve(async (req: Request) => {
       console.error("Profile insert error:", profileError.message);
       // Roll back auth user to avoid orphaned accounts
       await supabaseAdmin.auth.admin.deleteUser(authUser.user.id);
+      // Plan employee limit (migration 067) — pass its message through as-is.
+      if (profileError.message.includes("Your plan allows")) {
+        return new Response(
+          JSON.stringify({ error: profileError.message }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
       return new Response(
         JSON.stringify({ error: `Profile creation failed: ${profileError.message}` }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
+    // Issue the driver's first activation code so the admin can pass it on.
+    const { data: activationCode, error: codeErr } = await userClient
+      .rpc("issue_driver_activation_code", { p_driver_id: authUser.user.id, p_reason: "created" });
+    if (codeErr) {
+      console.error("Activation code error:", codeErr.message);
+      // Not fatal — the admin can request another from the panel — but
+      // report it so they know why the modal shows no code.
+      return new Response(
+        JSON.stringify({ success: true, driver: profile, activation_code_error: codeErr.message }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     console.log("Driver created successfully:", profile.driver_id);
 
     return new Response(
-      JSON.stringify({ success: true, driver: profile }),
+      JSON.stringify({ success: true, driver: profile, activation_code: activationCode }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
 

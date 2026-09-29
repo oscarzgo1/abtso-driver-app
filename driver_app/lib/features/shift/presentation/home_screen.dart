@@ -1,3 +1,6 @@
+import '../../dispatch/assigned_load_banner.dart';
+import '../../dispatch/proof_capture.dart';
+import '../../dispatch/load_history_screen.dart';
 import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui';
@@ -7,17 +10,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:vector_map_tiles/vector_map_tiles.dart';
-import 'package:latlong2/latlong.dart' as latlong;
+import 'package:maplibre/maplibre.dart' as ml;
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import '../../../config/theme.dart';
 import '../../auth/presentation/auth_provider.dart';
 import 'shift_provider.dart';
 import 'walkaround_check_screen.dart';
+import 'walkaround_history_screen.dart';
+import 'asset_picker.dart';
+import '../../holidays/presentation/holiday_screen.dart';
 import '../../../core/network/supabase_service.dart';
-import '../../../core/services/biometric_service.dart';
+import '../../../core/utils/role_helper.dart';
+import '../../../core/network/entitlements_provider.dart';
 
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -27,32 +32,31 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-/// Desaturated grayscale basemap skin — applied only to the tile/vector
-/// layer, never to the marker/circle layers above it, so the depot
-/// geofences and driver puck stay in full, high-contrast colour against
-/// a muted map. Standard ITU-R BT.709 luma weights with no brightness
-/// offset — the closest Flutter ColorFilter equivalent of the spec's
-/// `grayscale(100%) contrast(100%)` (there's no direct 1:1 CSS-filter-
-/// to-ColorMatrix port; contrast(100%) is CSS's identity value, i.e.
-/// pure grayscale with no softening applied on top of it).
-const List<double> _grayscaleMapMatrix = <double>[
-  0.2126, 0.7152, 0.0722, 0, 0,
-  0.2126, 0.7152, 0.0722, 0, 0,
-  0.2126, 0.7152, 0.0722, 0, 0,
-  0, 0, 0, 1, 0,
-];
+/// OpenFreeMap "Liberty": a free, keyless vector style (commercial use
+/// allowed) with Google-Maps-like colours — coloured roads, parks, water,
+/// building footprints, road and place labels and POI icons. Rendered by
+/// MapLibre (maplibre-gl-js on web, the native SDKs on Android/iOS).
+const String _kMapStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
+
+/// A circle of [radiusM] metres around a point as a polygon ring, for the
+/// depot geofences (MapLibre circle layers are sized in pixels, not metres).
+List<ml.Geographic> _geofenceRing(double lat, double lon, double radiusM, {int steps = 48}) {
+  final dLat = radiusM / 111320.0;
+  final dLon = radiusM / (111320.0 * math.cos(lat * math.pi / 180));
+  return [
+    for (var i = 0; i <= steps; i++)
+      ml.Geographic(
+        lon: lon + dLon * math.cos(2 * math.pi * i / steps),
+        lat: lat + dLat * math.sin(2 * math.pi * i / steps),
+      ),
+  ];
+}
 
 class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStateMixin {
   Timer? _shiftDurationTimer;
   Duration _elapsedTime = Duration.zero;
-  final MapController _mapController = MapController();
+  ml.MapController? _mapController;
   late AnimationController _iconAnimationController;
-
-  /// OpenFreeMap Positron vector style — keyless, unmetered, commercial use permitted.
-  /// Fetched once per screen mount; the layer is built when it resolves.
-  late final Future<Style> _mapStyle = StyleReader(
-    uri: 'https://tiles.openfreemap.org/styles/positron',
-  ).read();
 
   RealtimeChannel? _driverProfileChannel;
   RealtimeChannel? _shiftsChannel;
@@ -232,7 +236,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   void dispose() {
     _cleanupRealtimeListeners();
     _shiftDurationTimer?.cancel();
-    _mapController.dispose();
     _iconAnimationController.dispose();
     super.dispose();
   }
@@ -385,11 +388,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
-  /// Searchable fleet-asset picker, shared by the fuel log, incident
-  /// report, and couple/decouple sheets. Returns the chosen vehicle map,
-  /// an empty map as the "Decouple / Clear" sentinel (only offered when
-  /// [allowClear] is true), or null if the sheet was dismissed with no
-  /// choice made.
+  /// The shift's coupled trailer as a picker-style map — a fleet vehicle
+  /// row, or a typed non-fleet trailer (migration 060) — or null.
+  Map<String, dynamic>? _shiftTrailer(dynamic shift, List<Map<String, dynamic>> vehicles) {
+    final String? trailerId = shift?.trailerId as String?;
+    if (trailerId != null) {
+      for (final v in vehicles) {
+        if (v['id'] == trailerId) return v;
+      }
+    }
+    final String? custom = shift?.customTrailerNumber as String?;
+    if (custom != null && custom.isNotEmpty) {
+      return {'id': null, 'vehicle_number': custom, 'vehicle_type': 'trailer', 'custom': true};
+    }
+    return null;
+  }
+
   Future<Map<String, dynamic>?> _showSearchableAssetPicker(
     BuildContext context, {
     required String title,
@@ -397,167 +411,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     required List<Map<String, dynamic>> vehicles,
     String? typeFilter,
     bool allowClear = false,
-  }) {
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final source = typeFilter != null
-        ? vehicles.where((v) => v['vehicle_type'] == typeFilter).toList()
-        : vehicles;
-    final searchController = TextEditingController();
-
-    return showModalBottomSheet<Map<String, dynamic>?>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (sheetContext, setSheetState) {
-            final query = searchController.text.trim().toLowerCase();
-            final results = query.isEmpty
-                ? source
-                : source.where((v) => (v['vehicle_number'] as String).toLowerCase().contains(query)).toList();
-
-            Widget buildVehicleTile(Map<String, dynamic> v) {
-              final isTruck = v['vehicle_type'] == 'truck';
-              return Material(
-                color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                borderRadius: BorderRadius.circular(12),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(12),
-                  onTap: () => Navigator.pop(sheetContext, v),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                    child: Row(
-                      children: [
-                        Icon(isTruck ? Icons.local_shipping_outlined : Icons.rv_hookup_outlined, size: 20, color: const Color(0xFFCC0000)),
-                        const SizedBox(width: 12),
-                        Text(
-                          (v['vehicle_number'] as String).toUpperCase(),
-                          style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w800, fontSize: 14, letterSpacing: 0.5),
-                        ),
-                        const Spacer(),
-                        Icon(Icons.chevron_right, size: 18, color: isDark ? Colors.white38 : Colors.black38),
-                      ],
-                    ),
-                  ),
-                ),
-              );
-            }
-
-            // With no typeFilter (the general "search fleet asset" picker
-            // used by Incident Report and fuel logging) results mix
-            // tractors and trailers together, which made it hard to scan
-            // for e.g. "is there a spare trailer free" at a glance. Group
-            // into TRACTORS / TRAILERS sections (each only shown if
-            // non-empty) instead of one flat list; a single-type picker
-            // (typeFilter set, used by the dedicated Tractor/Trailer
-            // coupling pickers) is already homogeneous so stays flat.
-            final listItems = <Widget>[];
-            if (typeFilter == null) {
-              final tractors = results.where((v) => v['vehicle_type'] == 'truck').toList();
-              final trailers = results.where((v) => v['vehicle_type'] != 'truck').toList();
-              void addGroup(String label, List<Map<String, dynamic>> group) {
-                if (group.isEmpty) return;
-                if (listItems.isNotEmpty) listItems.add(const SizedBox(height: 14));
-                listItems.add(Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Text(
-                    '$label (${group.length})',
-                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 11, letterSpacing: 0.6, color: isDark ? Colors.white38 : Colors.black38),
-                  ),
-                ));
-                for (var i = 0; i < group.length; i++) {
-                  if (i > 0) listItems.add(const SizedBox(height: 8));
-                  listItems.add(buildVehicleTile(group[i]));
-                }
-              }
-              addGroup('TRACTORS', tractors);
-              addGroup('TRAILERS', trailers);
-            } else {
-              for (var i = 0; i < results.length; i++) {
-                if (i > 0) listItems.add(const SizedBox(height: 8));
-                listItems.add(buildVehicleTile(results[i]));
-              }
-            }
-
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 20, right: 20, top: 20,
-                bottom: 20 + MediaQuery.of(sheetContext).viewInsets.bottom,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.local_shipping_outlined, color: Color(0xFFCC0000), size: 24),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Text(
-                          title,
-                          style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15, letterSpacing: 0.5, color: isDark ? Colors.white : Colors.black87),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(subtitle, style: TextStyle(fontSize: 12, color: isDark ? Colors.white60 : Colors.black54)),
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: searchController,
-                    onChanged: (_) => setSheetState(() {}),
-                    style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600),
-                    decoration: InputDecoration(
-                      hintText: 'Search registration…',
-                      hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38, fontWeight: FontWeight.w500),
-                      prefixIcon: const Icon(Icons.search, size: 18),
-                      isDense: true,
-                      filled: true,
-                      fillColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  if (allowClear)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: OutlinedButton.icon(
-                        onPressed: () => Navigator.pop(sheetContext, <String, dynamic>{}),
-                        icon: const Icon(Icons.link_off, size: 16),
-                        label: const Text('Decouple / Clear Selection', style: TextStyle(fontWeight: FontWeight.w700)),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: isDark ? Colors.white70 : Colors.black54,
-                          side: BorderSide(color: isDark ? Colors.white24 : Colors.black26, width: 1.5),
-                          minimumSize: const Size(double.infinity, 42),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                      ),
-                    ),
-                  Flexible(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 360),
-                      child: results.isEmpty
-                          ? Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 24),
-                              child: Text(
-                                source.isEmpty ? 'No vehicles are registered for your company yet.' : 'No matching vehicles.',
-                                style: TextStyle(fontSize: 13, color: isDark ? Colors.white60 : Colors.black54),
-                              ),
-                            )
-                          : ListView(shrinkWrap: true, children: listItems),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
+    String? signOffContext,
+  }) =>
+      showSearchableAssetPicker(
+        context,
+        title: title,
+        subtitle: subtitle,
+        vehicles: vehicles,
+        typeFilter: typeFilter,
+        allowClear: allowClear,
+        allowCustomTrailer: typeFilter == 'trailer',
+        signOffContext: signOffContext,
+        driverName: ref.read(authProvider).driver?['full_name'] as String?,
+        shiftId: ref.read(shiftProvider).activeShift?.id,
+      );
 
   /// Compact floating status pill — replaces the old tall, full-width
   /// banners. Frosted dark pill, optional tap action (the "no tractor"
@@ -610,9 +477,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   void _handleRecenter() {
     final pos = ref.read(shiftProvider).currentPosition;
     if (pos != null) {
-      _mapController.move(
-        latlong.LatLng(pos.latitude, pos.longitude),
-        15.0,
+      _mapController?.animateCamera(
+        center: ml.Geographic(lon: pos.longitude, lat: pos.latitude),
+        zoom: 15.5,
+        nativeDuration: const Duration(milliseconds: 700),
+        webSpeed: 1.6,
       );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -691,74 +560,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
-  /// Lets a driver turn Face ID/fingerprint unlock on or off on this
-  /// device at any time — the opt-in prompt on login_screen.dart only
-  /// ever asks once, so this is the only way back in after declining,
-  /// or to switch it off again later.
-  Future<void> _handleBiometricSettingsAction(BuildContext context) async {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final messenger = ScaffoldMessenger.of(context);
-    final currentlyEnabled = await BiometricService.isEnabled();
-    if (!context.mounted) return;
-
-    if (currentlyEnabled) {
-      final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-            side: BorderSide(color: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0), width: 1.5),
-          ),
-          title: const Row(
-            children: [
-              Icon(Icons.fingerprint, color: Color(0xFF333333), size: 26),
-              SizedBox(width: 12),
-              Text('TURN OFF FACE ID?', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.5, fontSize: 16)),
-            ],
-          ),
-          content: const Text(
-            "You'll need your Company Code, Driver ID, and PIN to unlock the app next time.",
-            style: TextStyle(fontSize: 14, height: 1.4),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: Text('CANCEL', style: TextStyle(color: isDark ? Colors.white60 : Colors.black54, fontWeight: FontWeight.bold)),
-            ),
-            ElevatedButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFCC0000),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              child: const Text('TURN OFF'),
-            ),
-          ],
-        ),
-      );
-      if (confirmed == true) {
-        await BiometricService.setEnabled(false);
-        if (context.mounted) messenger.showSnackBar(const SnackBar(content: Text('Face ID unlock turned off.')));
-      }
-      return;
-    }
-
-    final supported = await BiometricService.isDeviceSupported();
-    if (!context.mounted) return;
-    if (!supported) {
-      messenger.showSnackBar(const SnackBar(content: Text("This device doesn't support Face ID or fingerprint unlock.")));
-      return;
-    }
-    final confirmedEnable = await BiometricService.authenticate(reason: 'Confirm to enable Face ID unlock');
-    if (!context.mounted) return;
-    if (confirmedEnable) {
-      await BiometricService.setEnabled(true);
-      messenger.showSnackBar(const SnackBar(content: Text('Face ID unlock enabled.'), backgroundColor: Color(0xFF10B981)));
-    }
-  }
-
   /// Incident reporting: tap a category, then confirm which vehicle it
   /// concerns — the admin panel needs the asset, not just the category,
   /// to know which truck/trailer to act on. Tapping a vehicle fires the
@@ -780,6 +581,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     // XFile back later, so the bytes are captured up front and reused
     // for both the thumbnail preview and the upload itself.
     final selectedPhotoBytes = <Uint8List>[];
+    // Parallel to selectedPhotos/selectedPhotoBytes — each upload starts
+    // the moment that photo is picked (see pickPhoto below), so submit()
+    // just awaits whatever's still in flight instead of uploading every
+    // photo one after another only once the driver taps Submit.
+    final selectedUploads = <Future<String?>>[];
     final picker = ImagePicker();
     String? selectedCategory;
     String? selectedCategoryLabel;
@@ -815,6 +621,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 selectedPhotos.add(picked);
                 selectedPhotoBytes.add(bytes);
               });
+              final driverId = ref.read(authProvider).driver?['id'] as String?;
+              selectedUploads.add(
+                organizationId != null && driverId != null
+                    ? SupabaseService.uploadDefectPhoto(organizationId: organizationId, driverId: driverId, bytes: bytes, fileName: picked.name)
+                    : Future.value(null),
+              );
             }
 
             Future<void> submit(String category, {String? vehicleId, String? trailerId}) async {
@@ -845,13 +657,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 final photoPaths = <String>[];
                 String? lastPhotoError;
                 if (organizationId != null) {
-                  for (var i = 0; i < selectedPhotos.length; i++) {
-                    final path = await SupabaseService.uploadDefectPhoto(
-                      organizationId: organizationId,
-                      driverId: driverId,
-                      bytes: selectedPhotoBytes[i],
-                      fileName: selectedPhotos[i].name,
-                    );
+                  // Every upload was already started back in pickPhoto,
+                  // in parallel — awaited together here, not re-uploaded
+                  // one at a time.
+                  final resolved = await Future.wait(List.generate(
+                    selectedPhotos.length,
+                    (i) => i < selectedUploads.length
+                        ? selectedUploads[i]
+                        : SupabaseService.uploadDefectPhoto(organizationId: organizationId, driverId: driverId, bytes: selectedPhotoBytes[i], fileName: selectedPhotos[i].name),
+                  ));
+                  for (final path in resolved) {
                     if (path != null) {
                       photoPaths.add(path);
                     } else {
@@ -881,7 +696,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 messenger.showSnackBar(
                   SnackBar(
                     content: Text(message, style: const TextStyle(fontWeight: FontWeight.bold)),
-                    backgroundColor: success && failedPhotoCount == 0 ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                    backgroundColor: success && failedPhotoCount == 0 ? const Color(0xFF111111) : const Color(0xFFFF3333),
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
@@ -1005,6 +820,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                                 onTap: () => setSheetState(() {
                                   selectedPhotos.removeAt(i);
                                   selectedPhotoBytes.removeAt(i);
+                                  selectedUploads.removeAt(i);
                                 }),
                                 child: Container(
                                   padding: const EdgeInsets.all(2),
@@ -1149,7 +965,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         return null;
                       }
                       final coupledTractor = findById(activeShift?.vehicleId);
-                      final coupledTrailer = findById(activeShift?.trailerId);
+                      final coupledTrailer = _shiftTrailer(activeShift, vehicles);
 
                       return Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1315,6 +1131,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (sheetContext) {
+        String? openCategory = (ref.read(shiftProvider).activeShift != null &&
+                requiresFieldChecks(ref.read(authProvider).driver) &&
+                !ref.read(shiftProvider).completedWalkarounds.contains('start_of_shift'))
+            ? 'vehicle'
+            : null;
         Widget buildActionRow({
           required IconData icon,
           required String title,
@@ -1377,7 +1198,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
             }
 
             final tractor = findById(activeShift?.vehicleId);
-            final trailer = findById(activeShift?.trailerId);
+            final trailer = _shiftTrailer(activeShift, vehicles);
             final unitsSubtitle = !isClockedIn
                 ? 'Clock in to couple a vehicle'
                 : (tractor == null && trailer == null)
@@ -1386,6 +1207,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         if (tractor != null) (tractor['vehicle_number'] as String).toUpperCase(),
                         if (trailer != null) (trailer['vehicle_number'] as String).toUpperCase(),
                       ].join(' / ');
+
+            final isFieldRole = requiresFieldChecks(ref.read(authProvider).driver);
+            // Loads & proof of delivery is a plan feature (migration 067);
+            // when the plan doesn't include it those two actions aren't shown.
+            final hasLoads = hasFeature(ref.read(entitlementsProvider).valueOrNull, 'loads_pod');
+            final startCheckDone = state.completedWalkarounds.contains('start_of_shift');
+            final loadReference = state.loadReference;
+            final loadDeliveredAt = state.loadDeliveredAt;
+            final attachLoadSubtitle = !isClockedIn
+                ? 'Clock in to attach a load'
+                : loadReference == null
+                    ? "Tag what you're carrying on this shift"
+                    : loadDeliveredAt == null
+                        ? 'Carrying $loadReference · ${state.loadCount} load${state.loadCount == 1 ? '' : 's'} this shift — add another'
+                        : '${state.loadCount} load${state.loadCount == 1 ? '' : 's'} delivered — attach your next one';
+            final deliverySubtitle = !isClockedIn
+                ? 'Clock in first'
+                : loadReference == null
+                    ? 'Attach a load first'
+                    : loadDeliveredAt == null
+                        ? 'Load $loadReference — mark it as delivered'
+                        : 'Delivered at ${DateFormat('HH:mm').format(loadDeliveredAt.toLocal())}';
 
             final nightOutStatus = activeShift?.nightOutStatus;
             final canRequestNightOut = isClockedIn && (nightOutStatus == 'none' || nightOutStatus == null);
@@ -1398,26 +1241,65 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     _ => 'Away from home tonight',
                   };
 
-            return Padding(
-              padding: EdgeInsets.only(left: 12, right: 12, top: 16, bottom: 16 + MediaQuery.of(sheetContext).viewInsets.bottom),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Text(
-                      'QUICK ACTIONS',
-                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.6, color: isDark ? Colors.white : Colors.black87),
+            final vehicleRows = <Widget>[
+                  if (isFieldRole && isClockedIn && !startCheckDone)
+                    buildActionRow(
+                      icon: Icons.fact_check_outlined,
+                      title: 'Complete Walk-Around Check',
+                      subtitle: 'Not done for this shift yet — complete it now',
+                      onSelect: () => _startWalkAroundDuringShift(hubContext),
                     ),
-                  ),
-                  const SizedBox(height: 8),
+                  if (isFieldRole)
+                    buildActionRow(
+                      icon: Icons.history,
+                      title: 'Walk-Around History',
+                      subtitle: !isClockedIn
+                          ? 'View your completed checks'
+                          : startCheckDone
+                              ? 'Completed for this shift ✓ — view your checks'
+                              : 'Not done for this shift — view or complete',
+                      onSelect: () => _openWalkaroundHistory(hubContext),
+                    ),
+                  if (isFieldRole)
+                    buildActionRow(
+                      icon: Icons.local_shipping_outlined,
+                      title: 'Assigned Units',
+                      subtitle: unitsSubtitle,
+                      onSelect: isClockedIn ? () => _handleCoupleDecoupleAction(hubContext) : null,
+                    ),
                   buildActionRow(
-                    icon: Icons.local_shipping_outlined,
-                    title: 'Assigned Units',
-                    subtitle: unitsSubtitle,
-                    onSelect: isClockedIn ? () => _handleCoupleDecoupleAction(hubContext) : null,
+                    icon: Icons.warning_amber_rounded,
+                    title: 'Report Defect / Incident',
+                    subtitle: 'Damage, near miss, collision, mechanical fault',
+                    onSelect: () => _handleReportIncidentAction(hubContext),
                   ),
+            ];
+            final loadRows = <Widget>[
+                  if (isFieldRole && hasLoads) ...[
+                    buildActionRow(
+                      icon: Icons.inventory_2_outlined,
+                      title: 'Attach Load',
+                      subtitle: attachLoadSubtitle,
+                      onSelect: isClockedIn ? () => _handleAttachLoadAction(hubContext) : null,
+                    ),
+                    buildActionRow(
+                      icon: Icons.task_alt,
+                      title: 'Confirm Delivery',
+                      subtitle: deliverySubtitle,
+                      onSelect: isClockedIn && loadReference != null && loadDeliveredAt == null
+                          ? () => _handleConfirmDeliveryAction(hubContext)
+                          : null,
+                    ),
+                  ],
+                  if (isFieldRole && hasLoads)
+                    buildActionRow(
+                      icon: Icons.history,
+                      title: 'Load History',
+                      subtitle: 'Your completed loads',
+                      onSelect: () => Navigator.of(hubContext).push(MaterialPageRoute(builder: (_) => const LoadHistoryScreen())),
+                    ),
+            ];
+            final expenseRows = <Widget>[
                   buildActionRow(
                     icon: Icons.local_gas_station_outlined,
                     title: 'Log Fuel & AdBlue',
@@ -1425,22 +1307,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     onSelect: isClockedIn ? () => _handleFuelReceiptAction(hubContext) : null,
                   ),
                   buildActionRow(
-                    icon: Icons.local_shipping_outlined,
-                    title: 'Attach Load',
-                    subtitle: isClockedIn ? "Tag what you're carrying on this shift" : 'Clock in to attach a load',
-                    onSelect: isClockedIn ? () => _handleAttachLoadAction(hubContext) : null,
-                  ),
-                  buildActionRow(
-                    icon: Icons.warning_amber_rounded,
-                    title: 'Report Defect / Incident',
-                    subtitle: 'Damage, near miss, collision, mechanical fault',
-                    onSelect: () => _handleReportIncidentAction(hubContext),
-                  ),
-                  buildActionRow(
                     icon: Icons.local_parking_outlined,
                     title: 'Overnight Parking',
                     subtitle: 'Claim back a paid parking receipt',
                     onSelect: () => _handleParkingExpenseAction(hubContext),
+                  ),
+            ];
+            final timeRows = <Widget>[
+                  buildActionRow(
+                    icon: Icons.beach_access_outlined,
+                    title: 'Book Holiday',
+                    subtitle: 'Request time off and track approval',
+                    onSelect: () => Navigator.of(hubContext).push(MaterialPageRoute(builder: (_) => const HolidayScreen())),
                   ),
                   // Conditional on the org's own Settings -> Alerts toggle
                   // (migration 050) — completely absent from the hub, not
@@ -1459,16 +1337,112 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                                 messenger.showSnackBar(
                                   const SnackBar(
                                     content: Text('Night Out request submitted.'),
-                                    backgroundColor: Color(0xFFF59E0B),
+                                    backgroundColor: Color(0xFF333333),
                                   ),
                                 );
                               }
                             }
                           : null,
                     ),
+            ];
+
+            // Quick Actions grouped into categories (accordion, one open at
+            // a time) so the sheet isn't one long list. Every row inside is
+            // exactly the same button as before; only the grouping is new.
+            Widget buildCategory({
+              required String id,
+              required IconData icon,
+              required String title,
+              required String subtitle,
+              required List<Widget> rows,
+              required void Function(VoidCallback) rebuild,
+              bool attention = false,
+            }) {
+              if (rows.isEmpty) return const SizedBox.shrink();
+              final open = openCategory == id;
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF8F8F8),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: open ? const Color(0xFFCC0000).withValues(alpha: 0.5) : (isDark ? Colors.white12 : const Color(0xFFE5E5E5))),
+                  ),
+                  child: Column(
+                    children: [
+                      InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () => rebuild(() => openCategory = open ? null : id),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 40,
+                                height: 40,
+                                decoration: const BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle),
+                                alignment: Alignment.center,
+                                child: Icon(icon, size: 20, color: Colors.white),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(children: [
+                                      Text(title, style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14.5, color: isDark ? Colors.white : Colors.black87)),
+                                      if (attention) ...[
+                                        const SizedBox(width: 8),
+                                        Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFFCC0000), shape: BoxShape.circle)),
+                                      ],
+                                    ]),
+                                    const SizedBox(height: 2),
+                                    Text(subtitle, style: TextStyle(fontSize: 11.5, color: isDark ? Colors.white54 : Colors.black54)),
+                                  ],
+                                ),
+                              ),
+                              AnimatedRotation(
+                                turns: open ? 0.5 : 0,
+                                duration: const Duration(milliseconds: 180),
+                                child: Icon(Icons.expand_more, color: isDark ? Colors.white54 : Colors.black45),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      if (open) Padding(padding: const EdgeInsets.fromLTRB(4, 0, 4, 8), child: Column(children: rows)),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            // Scrolls once the list outgrows the screen — a dozen rows no
+            // longer fit on smaller phones.
+            return StatefulBuilder(builder: (hubCtx, setHubState) => ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: MediaQuery.of(sheetContext).size.height * 0.88),
+              child: SingleChildScrollView(
+              padding: EdgeInsets.only(left: 12, right: 12, top: 16, bottom: 16 + MediaQuery.of(sheetContext).viewInsets.bottom),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      'QUICK ACTIONS',
+                      style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13, letterSpacing: 0.6, color: isDark ? Colors.white : Colors.black87),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  buildCategory(id: 'vehicle', icon: Icons.fact_check_outlined, title: 'Vehicle & Checks', subtitle: 'Walk-around checks, assigned units, defects', rebuild: setHubState, rows: vehicleRows, attention: isFieldRole && isClockedIn && !startCheckDone),
+                  buildCategory(id: 'loads', icon: Icons.inventory_2_outlined, title: 'Loads', subtitle: 'Attach, deliver and review your loads', rebuild: setHubState, rows: loadRows),
+                  buildCategory(id: 'expenses', icon: Icons.receipt_long_outlined, title: 'Fuel & Expenses', subtitle: 'Fuel and AdBlue, overnight parking', rebuild: setHubState, rows: expenseRows),
+                  buildCategory(id: 'time', icon: Icons.event_available_outlined, title: 'Time Off & Shift', subtitle: 'Holiday and night out requests', rebuild: setHubState, rows: timeRows),
                 ],
               ),
-            );
+              ),
+            ));
           },
         );
       },
@@ -1500,11 +1474,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (sheetContext) {
+        // Declared outside StatefulBuilder's builder: anything declared
+        // inside it is recreated as null on every setSheetState, which
+        // wiped each pick the moment the sheet redrew.
+        Map<String, dynamic>? selectedTractor;
+        Map<String, dynamic>? selectedTrailer;
+
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
-            Map<String, dynamic>? selectedTractor;
-            Map<String, dynamic>? selectedTrailer;
-
             return FutureBuilder<List<Map<String, dynamic>>>(
               future: vehiclesFuture,
               builder: (context, snapshot) {
@@ -1553,6 +1530,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               subtitle: 'Search or select the tractor you\'re taking out.',
                               vehicles: vehicles,
                               typeFilter: 'truck',
+                              signOffContext: 'coupling',
                             );
                             if (picked != null && picked.isNotEmpty) {
                               setSheetState(() => selectedTractor = picked);
@@ -1573,6 +1551,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               subtitle: 'Search or select the trailer you\'re taking out.',
                               vehicles: vehicles,
                               typeFilter: 'trailer',
+                              signOffContext: 'coupling',
                             );
                             if (picked != null && picked.isNotEmpty) {
                               setSheetState(() => selectedTrailer = picked);
@@ -1581,9 +1560,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         ),
                         const SizedBox(height: 18),
                         ElevatedButton(
-                          // A tractor must be picked before the walk-around
-                          // check can run — you can't walk around a vehicle
-                          // nobody selected. Trailer stays optional; the
+                          // A tractor must be picked before clocking in —
+                          // you can't walk around a vehicle nobody
+                          // selected. Trailer stays optional; the
                           // walk-around screen itself is what states
                           // plainly whether one's coupled.
                           onPressed: selectedTractor == null
@@ -1597,18 +1576,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                                   );
                                 },
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF2E7D32),
+                            backgroundColor: const Color(0xFFCC0000),
                             disabledBackgroundColor: isDark ? Colors.white12 : Colors.black12,
                             foregroundColor: Colors.white,
                             minimumSize: const Size(double.infinity, 46),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
-                          child: const Text('CONTINUE TO WALK-AROUND CHECK', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3, fontSize: 12.5)),
+                          child: const Text('START WALK-AROUND CHECK', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3, fontSize: 12.5)),
+                        ),
+                        const SizedBox(height: 8),
+                        // Skipping is allowed for when something goes wrong
+                        // on the day — the check then shows as missing in
+                        // the admin panel and can still be done from Quick
+                        // Actions during the shift.
+                        OutlinedButton(
+                          onPressed: selectedTractor == null
+                              ? null
+                              : () {
+                                  Navigator.pop(sheetContext);
+                                  _clockInSkippingWalkAround(
+                                    context,
+                                    tractor: selectedTractor!,
+                                    trailer: selectedTrailer,
+                                  );
+                                },
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: isDark ? Colors.white70 : Colors.black87,
+                            side: BorderSide(color: isDark ? Colors.white24 : Colors.black26),
+                            minimumSize: const Size(double.infinity, 46),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: const Text('SKIP CHECK & CLOCK IN', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.3, fontSize: 12.5)),
                         ),
                         if (selectedTractor == null) ...[
                           const SizedBox(height: 8),
                           Text(
-                            'Select a tractor to continue — a walk-around check runs before every shift.',
+                            'Select a tractor to continue.',
                             textAlign: TextAlign.center,
                             style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: isDark ? Colors.white38 : Colors.black38),
                           ),
@@ -1625,44 +1628,190 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     );
   }
 
-  /// Pushes the start-of-shift Walk-Around Check screen, then clocks in
-  /// only once it's submitted — the check has to happen before the
-  /// shift starts, not after. Once clock-in creates the real shift row,
-  /// the just-submitted check (which had no shift_id yet) is linked to
-  /// it, so the admin panel's history can join the two.
-  void _startWalkAroundThenClockIn(
+  /// Starting the safety check IS clocking in: the shift begins the moment
+  /// the check opens (so the time spent on the check counts), and the
+  /// check is then done against that live shift. Backing out of the check
+  /// leaves the driver clocked in with the check still to do — the same
+  /// state as skipping it — and it shows as missing in the admin panel
+  /// until it's completed.
+  Future<void> _startWalkAroundThenClockIn(
     BuildContext context, {
     required Map<String, dynamic> tractor,
     Map<String, dynamic>? trailer,
-  }) {
+  }) async {
     final driverId = SupabaseService.currentDriverId;
     final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
     if (driverId == null || organizationId == null) return;
+    final notifier = ref.read(shiftProvider.notifier);
+    await notifier.clockIn(
+      vehicleId: tractor['id'] as String,
+      trailerId: trailer?['id'] as String?,
+      customTrailerNumber: isCustomTrailer(trailer) ? trailer!['vehicle_number'] as String? : null,
+    );
+    // Clock-in can fail (e.g. no GPS fix) — the provider already shows why.
+    if (ref.read(shiftProvider).activeShift == null || !context.mounted) return;
+    await _startWalkAroundDuringShift(context);
+  }
+
+  /// Clock-in with the chosen vehicle but without the start-of-shift
+  /// check — it stays open as a Quick Actions item for the shift and shows
+  /// as missing in the admin panel until it's done.
+  Future<void> _clockInSkippingWalkAround(
+    BuildContext context, {
+    required Map<String, dynamic> tractor,
+    Map<String, dynamic>? trailer,
+  }) async {
+    final messenger = ScaffoldMessenger.of(context);
+    await ref.read(shiftProvider.notifier).clockIn(
+          vehicleId: tractor['id'] as String,
+          trailerId: trailer?['id'] as String?,
+          customTrailerNumber: isCustomTrailer(trailer) ? trailer!['vehicle_number'] as String? : null,
+        );
+    if (ref.read(shiftProvider).activeShift == null) return;
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Clocked in. Your walk-around check is still to do — find it in Quick Actions.', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: Color(0xFF333333),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  /// A start-of-shift check the driver skipped at clock-in, done later
+  /// from Quick Actions. The shift already exists, so it's linked on
+  /// insert rather than backfilled.
+  Future<void> _startWalkAroundDuringShift(BuildContext context) async {
+    final driverId = SupabaseService.currentDriverId;
+    final activeShift = ref.read(shiftProvider).activeShift;
+    final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
+    if (driverId == null || activeShift == null || organizationId == null) return;
+
+    final vehicles = await SupabaseService.fetchOrgVehicles(organizationId);
+    Map<String, dynamic>? findById(String? id) {
+      if (id == null) return null;
+      for (final v in vehicles) {
+        if (v['id'] == id) return v;
+      }
+      return null;
+    }
+
+    var tractor = findById(activeShift.vehicleId);
+    final trailer = _shiftTrailer(activeShift, vehicles);
+    if (!context.mounted) return;
+    if (tractor == null) {
+      final picked = await _showSearchableAssetPicker(
+        context,
+        title: 'TRACTOR UNIT',
+        subtitle: 'No tractor is recorded for this shift — select the one you are checking.',
+        vehicles: vehicles,
+        typeFilter: 'truck',
+        signOffContext: 'coupling',
+      );
+      if (picked == null || picked.isEmpty) return;
+      tractor = picked;
+    }
+    if (!context.mounted) return;
+
+    final resolvedTractor = tractor;
+    final messenger = ScaffoldMessenger.of(context);
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => WalkAroundCheckScreen(
         driverId: driverId,
         organizationId: organizationId,
         checkType: 'start_of_shift',
-        vehicleId: tractor['id'] as String,
-        vehicleNumber: tractor['vehicle_number'] as String,
+        vehicleId: resolvedTractor['id'] as String,
+        vehicleNumber: resolvedTractor['vehicle_number'] as String,
         trailerId: trailer?['id'] as String?,
         trailerNumber: trailer?['vehicle_number'] as String?,
-        onComplete: (checkId) async {
-          await ref.read(shiftProvider.notifier).clockIn(
-                vehicleId: tractor['id'] as String,
-                trailerId: trailer?['id'] as String?,
-              );
-          final shiftId = ref.read(shiftProvider).activeShift?.id;
-          if (checkId != null && shiftId != null) {
-            await SupabaseService.linkWalkaroundCheckToShift(checkId: checkId, shiftId: shiftId);
-          }
+        shiftId: activeShift.id,
+        onComplete: (checkId, checkedTrailer) async {
+          final notifier = ref.read(shiftProvider.notifier);
+          notifier.markWalkaroundCompleted('start_of_shift');
+          await _syncShiftTrailer(checkedTrailer);
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text('Walk-around check submitted.', style: TextStyle(fontWeight: FontWeight.bold)),
+              backgroundColor: Color(0xFF111111),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
         },
       ),
     ));
   }
 
-  /// Pushes the end-of-shift Walk-Around Check screen, then clocks out
-  /// only once it's submitted. Falls back to asking for a tractor first
+  /// Couples the trailer confirmed on a mid-shift walk-around check to
+  /// the shift when it differs from what's recorded.
+  Future<void> _syncShiftTrailer(Map<String, dynamic>? trailer) async {
+    final shift = ref.read(shiftProvider).activeShift;
+    if (shift == null) return;
+    final notifier = ref.read(shiftProvider.notifier);
+    if (trailer == null) {
+      if (shift.trailerId != null || shift.customTrailerNumber != null) {
+        await notifier.updateCoupling(clearTrailer: true);
+      }
+      return;
+    }
+    if (isCustomTrailer(trailer)) {
+      final number = (trailer['vehicle_number'] as String).toUpperCase();
+      if (shift.trailerId != null || shift.customTrailerNumber != number) {
+        await notifier.updateCoupling(customTrailerNumber: number);
+      }
+    } else if (trailer['id'] != shift.trailerId) {
+      await notifier.updateCoupling(trailerId: trailer['id'] as String);
+    }
+  }
+
+  void _openWalkaroundHistory(BuildContext context) {
+    final state = ref.read(shiftProvider);
+    final isClockedIn = state.activeShift != null;
+    final startCheckDone = state.completedWalkarounds.contains('start_of_shift');
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => WalkaroundHistoryScreen(
+        isClockedIn: isClockedIn,
+        startCheckDone: startCheckDone,
+        onCompleteStartCheck: isClockedIn && !startCheckDone ? () => _startWalkAroundDuringShift(context) : null,
+      ),
+    ));
+  }
+
+  /// Clock-out entry point. Every employee chooses the end-of-shift
+  /// inspection or to skip it (the skipped check then shows as missing
+  /// in the admin panel).
+  Future<void> _handleClockOut(BuildContext context) async {
+    if (!requiresFieldChecks(ref.read(authProvider).driver) ||
+        ref.read(shiftProvider).completedWalkarounds.contains('end_of_shift')) {
+      await ref.read(shiftProvider.notifier).clockOut();
+      return;
+    }
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1E293B) : Colors.white,
+        title: const Text('End-of-shift inspection', style: TextStyle(fontWeight: FontWeight.w900)),
+        content: const Text('Complete the vehicle inspection before clocking out. You can skip it if something prevents you — it will be flagged for your manager.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(dialogContext, 'skip'), child: const Text('Skip & clock out')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, 'inspect'),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFCC0000), foregroundColor: Colors.white),
+            child: const Text('Start inspection', style: TextStyle(fontWeight: FontWeight.w800)),
+          ),
+        ],
+      ),
+    );
+    if (!context.mounted || choice == null) return;
+    if (choice == 'skip') {
+      await ref.read(shiftProvider.notifier).clockOut();
+    } else {
+      await _startWalkAroundThenClockOut(context);
+    }
+  }
+
+  /// Pushes the end-of-shift Walk-Around Check screen. Submitting it does
+  /// not clock out — the driver presses Clock Out afterwards. Falls back to asking for a tractor first
   /// if the active shift somehow has none recorded (the walk-around
   /// requires a real vehicle) — rare, since clock-in now requires one,
   /// but the best-effort vehicle_id write at clock-in can still fail
@@ -1683,7 +1832,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     }
 
     var tractor = findById(activeShift.vehicleId);
-    final trailer = findById(activeShift.trailerId);
+    final trailer = _shiftTrailer(activeShift, vehicles);
 
     if (!context.mounted) return;
 
@@ -1694,6 +1843,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         subtitle: 'No tractor is recorded for this shift — select the one you drove.',
         vehicles: vehicles,
         typeFilter: 'truck',
+        signOffContext: 'coupling',
       );
       if (picked == null || picked.isEmpty) return;
       tractor = picked;
@@ -1701,6 +1851,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
     if (!context.mounted) return;
     final resolvedTractor = tractor;
+    final messenger = ScaffoldMessenger.of(context);
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => WalkAroundCheckScreen(
         driverId: driverId,
@@ -1711,8 +1862,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         trailerId: trailer?['id'] as String?,
         trailerNumber: trailer?['vehicle_number'] as String?,
         shiftId: activeShift.id,
-        onComplete: (checkId) async {
-          await ref.read(shiftProvider.notifier).clockOut();
+        onComplete: (checkId, checkedTrailer) async {
+          // Finishing the inspection does NOT clock the driver out — they
+          // press Clock Out themselves. How long the inspection took is
+          // recorded on the check (duration_seconds) for the office.
+          await _syncShiftTrailer(checkedTrailer);
+          ref.read(shiftProvider.notifier).markWalkaroundCompleted('end_of_shift');
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text('Inspection complete. Tap Clock Out when you are ready to finish your shift.', style: TextStyle(fontWeight: FontWeight.bold)),
+              backgroundColor: Color(0xFF111111),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
         },
       ),
     ));
@@ -1751,7 +1913,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   return null;
                 }
                 final tractor = findById(activeShift?.vehicleId);
-                final trailer = findById(activeShift?.trailerId);
+                final trailer = _shiftTrailer(activeShift, vehicles);
 
                 return Padding(
                   padding: EdgeInsets.only(
@@ -1797,6 +1959,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               subtitle: 'Search or select a tractor, or decouple.',
                               vehicles: vehicles,
                               typeFilter: 'truck',
+                              signOffContext: 'coupling',
                               allowClear: tractor != null,
                             );
                             if (picked == null) return;
@@ -1822,12 +1985,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               subtitle: 'Search or select a trailer, or decouple.',
                               vehicles: vehicles,
                               typeFilter: 'trailer',
+                              signOffContext: 'coupling',
                               allowClear: trailer != null,
                             );
                             if (picked == null) return;
                             final isClear = picked.isEmpty;
+                            final custom = isCustomTrailer(picked);
                             final ok = await ref.read(shiftProvider.notifier).updateCoupling(
-                                  trailerId: isClear ? null : picked['id'] as String,
+                                  trailerId: isClear || custom ? null : picked['id'] as String,
+                                  customTrailerNumber: custom ? picked['vehicle_number'] as String : null,
                                   clearTrailer: isClear,
                                 );
                             if (ok) setSheetState(() {});
@@ -1873,9 +2039,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     Uint8List? selectedPhotoBytes;
     XFile? selectedDashboardPhoto;
     Uint8List? selectedDashboardPhotoBytes;
+    // Started the moment each photo is picked (see pickPhoto below), so
+    // submit() awaits two uploads already running in parallel instead of
+    // starting them fresh, one after the other.
+    Future<String?>? photoUpload;
+    Future<String?>? dashboardPhotoUpload;
     String fuelType = 'diesel';
     bool isSubmitting = false;
     String? formError;
+    // Fleet-wide rule (migration 070): trucks are always refuelled to
+    // the brim, so this defaults true. A driver who genuinely only part-
+    // filled (e.g. topping up to reach the next depot) can untick it —
+    // that row is then excluded from the MPG anomaly comparison
+    // entirely, since a partial fill would make the NEXT full-tank
+    // reading look artificially thirsty.
+    bool isFullTank = true;
 
     final organizationId = ref.read(authProvider).driver?['organization_id'] as String?;
     final activeShift = ref.read(shiftProvider).activeShift;
@@ -1886,6 +2064,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     final vehiclesFuture = organizationId != null
         ? SupabaseService.fetchOrgVehicles(organizationId)
         : Future.value(<Map<String, dynamic>>[]);
+    // The last logged odometer reading for whichever asset is selected —
+    // refetched every time the asset changes, so the submit-time check
+    // below is always comparing against the right vehicle's history.
+    int? lastOdometerForAsset;
+    String? lastOdometerAssetId;
 
     showModalBottomSheet(
       context: context,
@@ -1897,6 +2080,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
+            Future<void> loadLastOdometer(String? vehicleId) async {
+              if (vehicleId == null) {
+                lastOdometerForAsset = null;
+                lastOdometerAssetId = null;
+                return;
+              }
+              if (lastOdometerAssetId == vehicleId) return; // already fetched for this asset
+              lastOdometerAssetId = vehicleId;
+              final reading = await SupabaseService.fetchLastOdometerForVehicle(vehicleId);
+              // The driver may have switched assets again while this was
+              // in flight — only apply the result if it's still current.
+              if (lastOdometerAssetId == vehicleId) {
+                setSheetState(() => lastOdometerForAsset = reading);
+              }
+            }
+
             Future<void> pickPhoto(ImageSource source, {required bool dashboard}) async {
               final picked = await picker.pickImage(source: source, imageQuality: 80, maxWidth: 1600);
               if (picked == null) return;
@@ -1910,6 +2109,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   selectedPhotoBytes = bytes;
                 }
               });
+              final driverId = ref.read(authProvider).driver?['id'] as String?;
+              if (organizationId != null && driverId != null) {
+                final upload = SupabaseService.uploadFuelReceiptPhoto(
+                  organizationId: organizationId,
+                  driverId: driverId,
+                  bytes: bytes,
+                  fileName: picked.name,
+                );
+                if (dashboard) {
+                  dashboardPhotoUpload = upload;
+                } else {
+                  photoUpload = upload;
+                }
+              }
             }
 
             // Deliberately NOT gated on every field being filled in — submit()
@@ -1945,6 +2158,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 setSheetState(() => formError = 'Enter the current odometer reading in miles.');
                 return;
               }
+              if (lastOdometerForAsset != null && odometerValue <= lastOdometerForAsset!) {
+                setSheetState(() => formError =
+                    'Odometer must be higher than the last logged reading for this vehicle (${lastOdometerForAsset!.toStringAsFixed(0)} mi).');
+                return;
+              }
               final capacity = (selectedAsset?['fuel_tank_capacity_litres'] as num?)?.toInt();
               if (capacity != null && litersValue > capacity) {
                 setSheetState(() => formError = 'Logged litres ($litersValue L) exceed this vehicle\'s physical tank capacity ($capacity L).');
@@ -1970,22 +2188,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 String? photoPath;
                 String? dashboardPhotoPath;
                 if (organizationId != null) {
-                  if (selectedPhotoBytes != null) {
-                    photoPath = await SupabaseService.uploadFuelReceiptPhoto(
-                      organizationId: organizationId,
-                      driverId: driverId,
-                      bytes: selectedPhotoBytes!,
-                      fileName: photo.name,
-                    );
-                  }
-                  if (photoPath != null && selectedDashboardPhotoBytes != null) {
-                    dashboardPhotoPath = await SupabaseService.uploadFuelReceiptPhoto(
-                      organizationId: organizationId,
-                      driverId: driverId,
-                      bytes: selectedDashboardPhotoBytes!,
-                      fileName: dashboardPhoto.name,
-                    );
-                  }
+                  // Both uploads were kicked off as soon as each photo was
+                  // taken (pickPhoto above) — awaited here together, not
+                  // one after the other, and only started fresh now if
+                  // that never happened (e.g. picked before organizationId
+                  // was available).
+                  final results = await Future.wait([
+                    photoUpload ??
+                        (selectedPhotoBytes != null
+                            ? SupabaseService.uploadFuelReceiptPhoto(organizationId: organizationId, driverId: driverId, bytes: selectedPhotoBytes!, fileName: photo.name)
+                            : Future.value(null)),
+                    dashboardPhotoUpload ??
+                        (selectedDashboardPhotoBytes != null
+                            ? SupabaseService.uploadFuelReceiptPhoto(organizationId: organizationId, driverId: driverId, bytes: selectedDashboardPhotoBytes!, fileName: dashboardPhoto.name)
+                            : Future.value(null)),
+                  ]);
+                  photoPath = results[0];
+                  dashboardPhotoPath = results[1];
                 }
                 if (photoPath == null || dashboardPhotoPath == null) {
                   // SupabaseService.lastUploadError carries the real
@@ -2022,6 +2241,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   dashboardPhotoPath: dashboardPhotoPath,
                   gpsLat: pos?.latitude,
                   gpsLng: pos?.longitude,
+                  isFullTank: isFullTank,
                 );
                 if (sheetContext.mounted) Navigator.pop(sheetContext);
                 messenger.showSnackBar(
@@ -2030,7 +2250,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       success ? 'Fuel receipt sent for approval.' : 'Could not send the receipt — try again.',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                    backgroundColor: success ? const Color(0xFF111111) : const Color(0xFFFF3333),
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
@@ -2095,19 +2315,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         style: OutlinedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () => pickPhoto(ImageSource.gallery, dashboard: dashboard),
-                        icon: Icon(Icons.photo_library_outlined, size: 18, color: isDark ? Colors.white70 : Colors.black54),
-                        label: Text('Choose Photo', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54)),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          side: BorderSide(color: isDark ? Colors.white24 : Colors.black26, width: 1.5),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                       ),
@@ -2191,6 +2398,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     }
                   }
                 }
+                if (selectedAsset != null) {
+                  // Fire-and-forget — the builder itself must stay sync;
+                  // loadLastOdometer calls setSheetState once it resolves.
+                  loadLastOdometer(selectedAsset!['id'] as String?);
+                }
 
                 return Padding(
                   padding: EdgeInsets.only(
@@ -2242,8 +2454,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                             );
                             if (picked != null && picked.isNotEmpty) {
                               setSheetState(() => selectedAsset = picked);
+                              loadLastOdometer(picked['id'] as String?);
                             } else if (picked != null && picked.isEmpty) {
-                              setSheetState(() => selectedAsset = null);
+                              setSheetState(() {
+                                selectedAsset = null;
+                                lastOdometerForAsset = null;
+                                lastOdometerAssetId = null;
+                              });
                             }
                           },
                         ),
@@ -2291,6 +2508,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                           controller: odometerController,
                           keyboardType: TextInputType.number,
                           decoration: fieldDecoration('Current odometer (miles) *'),
+                        ),
+                        if (lastOdometerForAsset != null) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            'Last logged for this vehicle: ${lastOdometerForAsset!.toStringAsFixed(0)} mi',
+                            style: TextStyle(fontSize: 11, color: isDark ? Colors.white38 : Colors.black38),
+                          ),
+                        ],
+                        const SizedBox(height: 10),
+                        // Fleet-wide rule: fill to the brim every time. Left
+                        // on for a normal fill; a driver only turns it off
+                        // for a genuine partial top-up, which then sits out
+                        // of the MPG anomaly comparison entirely (migration
+                        // 070) rather than skewing it.
+                        GestureDetector(
+                          onTap: () => setSheetState(() => isFullTank = !isFullTank),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: isDark ? const Color(0xFF1E293B) : const Color(0xFFF1F5F9),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'Full Tank / Brim to Brim',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 13,
+                                      color: isDark ? Colors.white : Colors.black87,
+                                    ),
+                                  ),
+                                ),
+                                Switch(
+                                  value: isFullTank,
+                                  activeThumbColor: const Color(0xFFCC0000),
+                                  onChanged: (v) => setSheetState(() => isFullTank = v),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                         const SizedBox(height: 10),
                         TextField(
@@ -2341,6 +2600,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     final picker = ImagePicker();
     XFile? selectedPhoto;
     Uint8List? selectedPhotoBytes;
+    // Started the moment the photo is picked — see pickPhoto below.
+    Future<String?>? photoUpload;
     bool isSubmitting = false;
     String? formError;
 
@@ -2364,6 +2625,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 selectedPhoto = picked;
                 selectedPhotoBytes = bytes;
               });
+              final driverId = ref.read(authProvider).driver?['id'] as String?;
+              photoUpload = organizationId != null && driverId != null
+                  ? SupabaseService.uploadParkingReceiptPhoto(organizationId: organizationId, driverId: driverId, bytes: bytes, fileName: picked.name)
+                  : null;
             }
 
             final canSubmit = !isSubmitting;
@@ -2390,8 +2655,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
               });
 
               try {
-                String? photoPath;
-                if (organizationId != null && selectedPhotoBytes != null) {
+                String? photoPath = await photoUpload;
+                if (photoPath == null && organizationId != null && selectedPhotoBytes != null) {
                   photoPath = await SupabaseService.uploadParkingReceiptPhoto(
                     organizationId: organizationId,
                     driverId: driverId,
@@ -2424,7 +2689,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                       success ? 'Parking claim sent for approval.' : 'Could not send the claim — try again.',
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                    backgroundColor: success ? const Color(0xFF111111) : const Color(0xFFFF3333),
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
@@ -2485,19 +2750,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                               style: OutlinedButton.styleFrom(
                                 padding: const EdgeInsets.symmetric(vertical: 14),
                                 side: const BorderSide(color: Color(0xFFCC0000), width: 1.5),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: () => pickPhoto(ImageSource.gallery),
-                              icon: Icon(Icons.photo_library_outlined, size: 18, color: isDark ? Colors.white70 : Colors.black54),
-                              label: Text('Choose Photo', style: TextStyle(fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : Colors.black54)),
-                              style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(vertical: 14),
-                                side: BorderSide(color: isDark ? Colors.white24 : Colors.black26, width: 1.5),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                               ),
                             ),
@@ -2603,6 +2855,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   /// figure, which a driver was never shown and never will be (see
   /// SupabaseService.attachLoadReference's doc comment). An admin
   /// still rates the £ value afterward from the Shipments ledger.
+  /// Confirm Delivery (manually attached loads): the same proof flow as an
+  /// office-assigned load. Pick one or more proof types (solo departure /
+  /// empty trailer / paper POD), take a live photo for each, add optional
+  /// notes. At least one photo is required (migration 077).
+  Future<void> _handleConfirmDeliveryAction(BuildContext context) async {
+    final loadReference = ref.read(shiftProvider).loadReference;
+    if (loadReference == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final submission = await showProofCaptureSheet(
+      context,
+      ref,
+      title: 'CONFIRM DELIVERY',
+      subtitle: 'Load $loadReference',
+    );
+    if (submission == null) return;
+    final proofs = await uploadProofs(ref, submission);
+    if (proofs == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('Photo upload failed — check your signal and try again.')));
+      return;
+    }
+    final result = await ref.read(shiftProvider.notifier).confirmLoadDelivered(proofs: proofs, notes: submission.notes);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          result['success'] == true ? 'Load $loadReference marked as delivered.' : (result['error']?.toString() ?? 'Could not confirm delivery.'),
+          style: const TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: result['success'] == true ? const Color(0xFF111111) : const Color(0xFFCC0000),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   void _handleAttachLoadAction(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
@@ -2611,8 +2896,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     final activeShift = ref.read(shiftProvider).activeShift;
     if (activeShift == null) return;
 
+    // Departure and booked-delivery times let the office measure on-time
+    // performance without chasing every driver.
+    DateTime? bookedDeparture;
+    DateTime? bookedDelivery;
     bool isSubmitting = false;
     String? formError;
+    final cargo = CargoInput();
 
     showModalBottomSheet(
       context: context,
@@ -2625,8 +2915,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
             Future<void> submit() async {
               final messenger = ScaffoldMessenger.of(context);
               final loadRef = loadRefController.text.trim();
-              if (loadRef.isEmpty) {
-                setSheetState(() => formError = 'Enter the load reference.');
+              final carrier = carrierController.text.trim();
+              if (loadRef.isEmpty || carrier.isEmpty) {
+                setSheetState(() => formError = loadRef.isEmpty && carrier.isEmpty
+                    ? 'Enter the load reference and the customer / carrier.'
+                    : loadRef.isEmpty
+                        ? 'Enter the load reference.'
+                        : 'Enter the customer / carrier.');
                 return;
               }
               setSheetState(() {
@@ -2634,17 +2929,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 formError = null;
               });
               try {
-                final result = await SupabaseService.attachLoadReference(
-                  shiftId: activeShift.id,
-                  loadReference: loadRef,
-                  carrierName: carrierController.text,
-                );
+                final cargoPath = await uploadCargoPhoto(ref, cargo);
+                if (cargo.photo != null && !cargo.sealed && cargoPath == null) {
+                  setSheetState(() => formError = 'Could not upload the cargo photo. Try again, or tick Trailer sealed.');
+                  return;
+                }
+                final result = await ref.read(shiftProvider.notifier).attachLoad(
+                      loadRef,
+                      carrier,
+                      bookedDepartureAt: bookedDeparture,
+                      bookedDeliveryAt: bookedDelivery,
+                      cargoPhotoPath: cargoPath,
+                      trailerSealed: cargo.sealed,
+                    );
                 if (result['success'] == true) {
                   if (sheetContext.mounted) Navigator.pop(sheetContext);
                   messenger.showSnackBar(
                     const SnackBar(
                       content: Text('Load attached to this shift.', style: TextStyle(fontWeight: FontWeight.bold)),
-                      backgroundColor: Color(0xFF10B981),
+                      backgroundColor: Color(0xFF111111),
                       behavior: SnackBarBehavior.floating,
                     ),
                   );
@@ -2684,7 +2987,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                   const SizedBox(height: 16),
                   TextField(controller: loadRefController, decoration: fieldDecoration('Load reference *')),
                   const SizedBox(height: 10),
-                  TextField(controller: carrierController, decoration: fieldDecoration('Customer / carrier (optional)')),
+                  TextField(controller: carrierController, decoration: fieldDecoration('Customer / carrier *')),
+                  const SizedBox(height: 14),
+                  Text('BOOKED TIMES (OPTIONAL)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, letterSpacing: 0.6, color: isDark ? Colors.white54 : Colors.black45)),
+                  const SizedBox(height: 6),
+                  Row(children: [
+                    Expanded(
+                      child: _BookedTimeField(
+                        label: 'Departure',
+                        value: bookedDeparture,
+                        onChange: (v) => setSheetState(() => bookedDeparture = v),
+                        isDark: isDark,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: _BookedTimeField(
+                        label: 'Arrival',
+                        value: bookedDelivery,
+                        onChange: (v) => setSheetState(() => bookedDelivery = v),
+                        isDark: isDark,
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Fill these in so the office can measure on-time delivery.',
+                    style: TextStyle(fontSize: 11, color: isDark ? Colors.white54 : Colors.black45),
+                  ),
+                  const SizedBox(height: 14),
+                  CargoPhotoField(input: cargo, organizationId: ref.read(authProvider).driver?['organization_id']?.toString()),
                   if (formError != null) ...[
                     const SizedBox(height: 10),
                     Text(formError!, style: const TextStyle(color: Color(0xFFFF3333), fontSize: 12.5, fontWeight: FontWeight.w600)),
@@ -2769,7 +3101,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                           : (failureReason ?? 'FAILED TO BROADCAST SOS ALERT — TRY AGAIN').toUpperCase(),
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
-                    backgroundColor: success ? const Color(0xFF10B981) : const Color(0xFFFF3333),
+                    backgroundColor: success ? const Color(0xFF111111) : const Color(0xFFFF3333),
                     behavior: SnackBarBehavior.floating,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
@@ -2793,6 +3125,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(shiftProvider);
+    // Start loading the company's plan features as soon as the home screen
+    // shows, so the Quick Actions menu already knows what to offer.
+    ref.watch(entitlementsProvider);
     final authState = ref.watch(authProvider);
     final theme = Theme.of(context);
     final activeShift = state.activeShift;
@@ -2885,11 +3220,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
             onPressed: () => _handleActionHub(context),
           ),
           IconButton(
-            icon: const Icon(Icons.fingerprint, size: 20, color: Color(0xFF333333)),
-            tooltip: 'Face ID / Fingerprint unlock',
-            onPressed: () => _handleBiometricSettingsAction(context),
-          ),
-          IconButton(
             icon: const Icon(Icons.logout, size: 18, color: Color(0xFF333333)),
             onPressed: () => _handleLogoutAction(context),
           ),
@@ -2900,6 +3230,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            AssignedLoadBanner(onManualEntry: () => _handleAttachLoadAction(context)),
             // Driver Profile Header Card (Minimalist & Dynamic Rate Display)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
@@ -2923,7 +3254,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                             width: 8,
                             height: 8,
                             decoration: const BoxDecoration(
-                              color: Color(0xFF2E7D32), // Green online indicator
+                              color: Color(0xFFCC0000), // Green online indicator
                               shape: BoxShape.circle,
                             ),
                           ),
@@ -2952,8 +3283,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     decoration: BoxDecoration(
                       border: Border.all(
                         color: isClockedIn
-                            ? const Color(0xFF2E7D32)
-                            : (state.pendingAction?.type == 'clock_in' ? const Color(0xFFF59E0B) : const Color(0xFFBBBBBB)),
+                            ? const Color(0xFFCC0000)
+                            : (state.pendingAction?.type == 'clock_in' ? const Color(0xFF888888) : const Color(0xFFBBBBBB)),
                         width: 1.5,
                       ),
                       borderRadius: BorderRadius.circular(6),
@@ -2966,8 +3297,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         fontSize: 10,
                         fontWeight: FontWeight.w800,
                         color: isClockedIn
-                            ? const Color(0xFF2E7D32)
-                            : (state.pendingAction?.type == 'clock_in' ? const Color(0xFFF59E0B) : const Color(0xFF888888)),
+                            ? const Color(0xFFCC0000)
+                            : (state.pendingAction?.type == 'clock_in' ? const Color(0xFF888888) : const Color(0xFF888888)),
                       ),
                     ),
                   ),
@@ -2979,161 +3310,125 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
             Expanded(
               child: Stack(
                 children: [
-                  FlutterMap(
-                    mapController: _mapController,
-                    options: MapOptions(
-                      initialCenter: state.currentPosition != null
-                          ? latlong.LatLng(state.currentPosition!.latitude, state.currentPosition!.longitude)
-                          : const latlong.LatLng(53.5160, -1.0880),
-                      initialZoom: 14.0,
+                  ml.MapLibreMap(
+                    options: ml.MapOptions(
+                      initStyle: _kMapStyleUrl,
+                      initCenter: state.currentPosition != null
+                          ? ml.Geographic(lon: state.currentPosition!.longitude, lat: state.currentPosition!.latitude)
+                          : const ml.Geographic(lon: -1.0880, lat: 53.5160),
+                      initZoom: 14.0,
+                      maxZoom: 19,
+                      minPitch: 0,
+                      maxPitch: 0,
                     ),
+                    onMapCreated: (controller) => _mapController = controller,
+                    layers: [
+                      // Depot geofences (metre radius, drawn as polygons):
+                      // red, going green only while the driver is
+                      // inside the nearest one.
+                      ml.PolygonLayer(
+                        polygons: [
+                          for (final depot in state.depots)
+                            if (!(state.nearestDepot?.id == depot.id && state.isNearDepot))
+                              ml.Feature(geometry: ml.Polygon.from([_geofenceRing(depot.latitude, depot.longitude, depot.geofenceRadiusM.toDouble())])),
+                        ],
+                        color: const Color(0xFFCC0000).withValues(alpha: 0.10),
+                        outlineColor: const Color(0xFFCC0000),
+                      ),
+                      ml.PolygonLayer(
+                        polygons: [
+                          for (final depot in state.depots)
+                            if (state.nearestDepot?.id == depot.id && state.isNearDepot)
+                              ml.Feature(geometry: ml.Polygon.from([_geofenceRing(depot.latitude, depot.longitude, depot.geofenceRadiusM.toDouble())])),
+                        ],
+                        color: TachyoTheme.success.withValues(alpha: 0.18),
+                        outlineColor: TachyoTheme.success,
+                      ),
+                    ],
                     children: [
-                      // Desaturated grayscale basemap — Tachyo brand skin.
-                      // Two different tile implementations by platform, not
-                      // a cosmetic choice: vector_map_tiles (8.0.0) always
-                      // builds a disk-backed tile cache via path_provider's
-                      // getTemporaryDirectory() — which has no web
-                      // implementation and throws MissingPluginException —
-                      // and several of its own cache read/write paths
-                      // aren't wrapped in try/catch, so on web the map
-                      // never rendered a single tile (an uncaught exception
-                      // during Caches setup, confirmed via a debug build's
-                      // console). Native platforms (Android/iOS) have a
-                      // real getTemporaryDirectory, so they keep the nicer
-                      // vector rendering unaffected. ColorFiltered wraps
-                      // only this tile layer, not the CircleLayer/
-                      // MarkerLayer below it, so the depot geofences and
-                      // driver puck stay full-colour and high-contrast
-                      // against the muted map underneath them.
-                      ColorFiltered(
-                        colorFilter: const ColorFilter.matrix(_grayscaleMapMatrix),
-                        child: kIsWeb
-                            ? TileLayer(
-                                // CARTO's basemaps.cartocdn.com XYZ endpoint now
-                                // returns "API key required" placeholder tiles —
-                                // confirmed by actually loading this in a browser,
-                                // not assumed. OSM's own standard tile server is
-                                // genuinely keyless; a small fleet's worth of
-                                // drivers is trivial load for it, and
-                                // userAgentPackageName identifies the app per
-                                // their usage policy.
-                                urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-                                subdomains: const ['a', 'b', 'c'],
-                                userAgentPackageName: 'uk.co.tachyo.driver',
-                              )
-                            : FutureBuilder<Style>(
-                                future: _mapStyle,
-                                builder: (context, snapshot) {
-                                  final style = snapshot.data;
-                                  if (style == null) {
-                                    // Plain backdrop while the style loads, or if it fails —
-                                    // depot circles and markers below stay usable regardless.
-                                    return const SizedBox.shrink();
-                                  }
-                                  return VectorTileLayer(
-                                    theme: style.theme,
-                                    sprites: style.sprites,
-                                    tileProviders: style.providers,
-                                  );
-                                },
-                              ),
-                      ),
-
-                      // Circles Layer for Depots — subtle slate outlines,
-                      // full-colour against the grayscale basemap.
-                      CircleLayer(
-                        circles: state.depots.map((depot) {
-                          final isNearest = state.nearestDepot?.id == depot.id;
-                          return CircleMarker(
-                            point: latlong.LatLng(depot.latitude, depot.longitude),
-                            radius: depot.geofenceRadiusM.toDouble(),
-                            useRadiusInMeter: true,
-                            color: isNearest && state.isNearDepot
-                                ? TachyoTheme.success.withValues(alpha: 0.12)
-                                : const Color(0xFF475569).withValues(alpha: 0.06),
-                            borderColor: isNearest && state.isNearDepot
-                                ? TachyoTheme.success
-                                : const Color(0xFF475569),
-                            borderStrokeWidth: 2,
-                          );
-                        }).toList(),
-                      ),
-
-                      // Markers Layer for Driver position & depots
-                      MarkerLayer(
+                      ml.WidgetLayer(
                         markers: [
-                          // Depot Pins
+                          // Depot pins: a plain red dot with a white ring, inside its red radius circle.
                           ...state.depots.map((depot) {
-                            return Marker(
-                              point: latlong.LatLng(depot.latitude, depot.longitude),
-                              width: 32,
-                              height: 32,
-                              child: const Icon(
-                                Icons.location_pin,
-                                color: Color(0xFF475569),
-                                size: 18,
+                            return ml.Marker(
+                              point: ml.Geographic(lon: depot.longitude, lat: depot.latitude),
+                              size: const Size(30, 30),
+                              child: Center(
+                                child: Container(
+                                  width: 18,
+                                  height: 18,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFCC0000),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: Colors.white, width: 3),
+                                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 4, offset: const Offset(0, 1))],
+                                  ),
+                                ),
                               ),
                             );
                           }),
 
-                          // Current Driver Puck — classic monochrome
-                          // navigation-cursor arrow (not a coloured circle
-                          // with an icon inside it), dark slate with a
-                          // crisp white outline, rotated to the device's
-                          // GPS heading. The white "outline" is a larger
-                          // white copy of the same glyph directly behind
-                          // the dark-slate one — there's no native
-                          // stroke-outline API for a Material icon glyph,
-                          // and a uniformly-scaled copy behind a convex
-                          // kite/arrow shape like this reads as a clean
-                          // ~1.5px border at this marker size.
+                          // Driver puck: a brand-red heading arrow with a white
+                          // outline, inside a soft red halo.
                           if (state.currentPosition != null)
-                            Marker(
-                              point: latlong.LatLng(state.currentPosition!.latitude, state.currentPosition!.longitude),
-                              width: 30,
-                              height: 30,
+                            ml.Marker(
+                              point: ml.Geographic(lon: state.currentPosition!.longitude, lat: state.currentPosition!.latitude),
+                              size: const Size(56, 56),
                               child: Builder(
                                 builder: (context) {
                                   final rawHeading = state.currentPosition!.heading;
                                   final heading = rawHeading.isFinite && rawHeading >= 0 ? rawHeading : 0.0;
-                                  return Transform.rotate(
-                                    angle: heading * (math.pi / 180),
-                                    child: Stack(
-                                      alignment: Alignment.center,
-                                      children: [
-                                        Icon(
-                                          Icons.navigation_rounded,
-                                          size: 30,
-                                          color: Colors.white,
-                                          shadows: [
-                                            Shadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 3, offset: const Offset(0, 1)),
+                                  return Stack(
+                                    alignment: Alignment.center,
+                                    children: [
+                                      Container(
+                                        width: 56,
+                                        height: 56,
+                                        decoration: BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          color: const Color(0xFFCC0000).withValues(alpha: 0.14),
+                                          border: Border.all(color: const Color(0xFFCC0000).withValues(alpha: 0.35), width: 1.5),
+                                        ),
+                                      ),
+                                      Transform.rotate(
+                                        angle: heading * (math.pi / 180),
+                                        child: Stack(
+                                          alignment: Alignment.center,
+                                          children: [
+                                            Icon(
+                                              Icons.navigation_rounded,
+                                              size: 32,
+                                              color: Colors.white,
+                                              shadows: [Shadow(color: Colors.black.withValues(alpha: 0.35), blurRadius: 4, offset: const Offset(0, 1))],
+                                            ),
+                                            const Icon(Icons.navigation_rounded, size: 25, color: Color(0xFFCC0000)),
                                           ],
                                         ),
-                                        const Icon(Icons.navigation_rounded, size: 23, color: Color(0xFF0F172A)),
-                                      ],
-                                    ),
+                                      ),
+                                    ],
                                   );
                                 },
                               ),
                             ),
                         ],
                       ),
+                    ],
+                  ),
 
-                      // Required attribution — matches whichever tile
-                      // source is actually rendering above (kept minimal,
-                      // no flutter_map package branding, small).
-                      Align(
-                        alignment: Alignment.bottomRight,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                          color: const Color(0x99FFFFFF),
-                          child: const Text(
-                            kIsWeb ? '© OpenStreetMap contributors' : '© OpenFreeMap, OpenMapTiles, OpenStreetMap',
-                            style: TextStyle(fontSize: 7, color: Color(0xFF888888)),
-                          ),
+                  // Required attribution for OpenFreeMap / OpenMapTiles / OSM.
+                  const Positioned(
+                    left: 0,
+                    bottom: 0,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(color: Color(0xB3FFFFFF)),
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        child: Text(
+                          '© OpenFreeMap © OpenMapTiles Data from OpenStreetMap',
+                          style: TextStyle(fontSize: 8, color: Color(0xFF666666)),
                         ),
                       ),
-                    ],
+                    ),
                   ),
 
                   // Floating status pills — replaces what used to be
@@ -3299,12 +3594,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         decoration: BoxDecoration(
                           color: isDark ? const Color(0xFF451A03) : const Color(0xFFFEF3C7),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFFF59E0B), width: 1.5),
+                          border: Border.all(color: const Color(0xFF888888), width: 1.5),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.bedtime_rounded, color: Color(0xFFF59E0B), size: 18),
+                            const Icon(Icons.bedtime_rounded, color: Color(0xFF888888), size: 18),
                             const SizedBox(width: 8),
                             Text(
                               'NIGHT OUT REQUESTED (PENDING)',
@@ -3325,12 +3620,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                         decoration: BoxDecoration(
                           color: isDark ? const Color(0xFF064E3B) : const Color(0xFFD1FAE5),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFF10B981), width: 1.5),
+                          border: Border.all(color: const Color(0xFFCC0000), width: 1.5),
                         ),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.check_circle_rounded, color: Color(0xFF10B981), size: 18),
+                            const Icon(Icons.check_circle_rounded, color: Color(0xFFCC0000), size: 18),
                             const SizedBox(width: 8),
                             Text(
                               'NIGHT OUT APPROVED',
@@ -3381,7 +3676,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     ElevatedButton(
                       onPressed: (state.isLoading || !state.isNearDepot || state.pendingAction != null)
                           ? null
-                          : () => _startWalkAroundThenClockOut(context),
+                          : () => _handleClockOut(context),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: const Color(0xFFCC0000),
                         disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
@@ -3446,9 +3741,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     ElevatedButton(
                       onPressed: (state.isLoading || !state.isNearDepot || state.pendingAction != null)
                           ? null
-                          : () => _handleClockInVehicleSelection(context),
+                          : () => requiresFieldChecks(ref.read(authProvider).driver)
+                              ? _handleClockInVehicleSelection(context)
+                              : ref.read(shiftProvider.notifier).clockIn(),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF2E7D32),
+                        backgroundColor: const Color(0xFFCC0000),
                         disabledBackgroundColor: isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0),
                         disabledForegroundColor: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
                         foregroundColor: Colors.white,
@@ -3618,6 +3915,100 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Compact date-and-time button — tapped, it opens a date picker then a
+/// time picker. Used on the Attach Load sheet for booked departure/arrival.
+class _BookedTimeField extends StatelessWidget {
+  final String label;
+  final DateTime? value;
+  final ValueChanged<DateTime?> onChange;
+  final bool isDark;
+
+  const _BookedTimeField({
+    required this.label,
+    required this.value,
+    required this.onChange,
+    required this.isDark,
+  });
+
+  Future<void> _pick(BuildContext context) async {
+    final now = DateTime.now();
+    final base = value ?? now;
+    final date = await showDatePicker(
+      context: context,
+      initialDate: base,
+      firstDate: now.subtract(const Duration(days: 1)),
+      lastDate: now.add(const Duration(days: 60)),
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: isDark
+              ? const ColorScheme.dark(primary: Color(0xFFCC0000))
+              : const ColorScheme.light(primary: Color(0xFFCC0000)),
+        ),
+        child: child!,
+      ),
+    );
+    if (date == null) return;
+    if (!context.mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(base),
+      builder: (context, child) => Theme(
+        data: Theme.of(context).copyWith(
+          colorScheme: isDark
+              ? const ColorScheme.dark(primary: Color(0xFFCC0000))
+              : const ColorScheme.light(primary: Color(0xFFCC0000)),
+        ),
+        child: child!,
+      ),
+    );
+    if (time == null) return;
+    onChange(DateTime(date.year, date.month, date.day, time.hour, time.minute));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final display = value == null
+        ? 'Not set'
+        : DateFormat('EEE d MMM · HH:mm').format(value!);
+    final bg = isDark ? const Color(0xFF1A1A1A) : const Color(0xFFF5F5F5);
+    return Material(
+      color: bg,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => _pick(context),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(label, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, color: isDark ? Colors.white54 : Colors.black45)),
+              const SizedBox(height: 2),
+              Row(
+                children: [
+                  Icon(Icons.event_outlined, size: 15, color: value == null ? (isDark ? Colors.white38 : Colors.black38) : const Color(0xFFCC0000)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      display,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: value == null ? (isDark ? Colors.white54 : Colors.black45) : (isDark ? Colors.white : Colors.black87),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

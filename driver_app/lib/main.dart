@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/theme.dart';
 import 'config/router.dart';
+import 'core/services/entrance_gate.dart';
 import 'core/services/location_service.dart';
 
 Future<void> main() async {
@@ -19,6 +20,10 @@ Future<void> main() async {
   // 2. Then spin up the background process execution layer (Tracelet SDK)
   await LocationService.initializeService();
 
+  // 3. Snapshot when the app was last used, before this launch overwrites it —
+  //    decides whether the entrance cinematic plays (see EntranceGate).
+  await EntranceGate.captureLaunch();
+
   runApp(
     const ProviderScope(
       child: DriverApp(),
@@ -26,8 +31,36 @@ Future<void> main() async {
   );
 }
 
-class DriverApp extends StatelessWidget {
+class DriverApp extends StatefulWidget {
   const DriverApp({super.key});
+
+  @override
+  State<DriverApp> createState() => _DriverAppState();
+}
+
+class _DriverAppState extends State<DriverApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // Keeps the "last used" timestamp fresh so the 5-hour break is measured
+  // from when the driver actually left the app, not from when it launched.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.resumed) {
+      EntranceGate.markActive();
+    }
+  }
 
   ThemeMode get _currentThemeMode {
     final hour = DateTime.now().hour;

@@ -19,4 +19,4 @@ Tachyo's website and admin dashboard currently use **no advertising or third-par
 
 If this changes in future (for example, if we add analytics to better understand how the website is used), we will update this policy first and, where required by law, ask for your consent via a cookie banner before any non-essential cookie is set.
 
-Questions: **[INSERT contact email]**.
+Questions: **privacy@tachyo.co.uk**.

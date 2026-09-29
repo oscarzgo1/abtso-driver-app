@@ -2,13 +2,14 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipContentProps } from 'recharts';
 import {
   Users, Radio, Route, Hourglass, PackageCheck, PackageOpen, Truck, Phone, MapPinned,
-  Search, ChevronLeft, ChevronRight, BarChart3, PoundSterling, Gauge, UserRound, Activity, Clock, CircleCheck,
+  Search, ChevronLeft, ChevronRight, PoundSterling, Gauge, Activity, Clock,
 } from 'lucide-react';
 import { SemiGauge } from '@/components/ui/semi-gauge';
 import { TrackingTimeline, type TimelineStep } from '@/components/ui/tracking-timeline';
 import { FleetStatusDonutChart } from '@/components/ui/fleet-status-donut-chart';
 import { BadgeDelta } from '@/components/ui/badge-delta';
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty';
+import DeliveryPhotos from '@/components/DeliveryPhotos';
 
 interface DashboardLiveLocation {
   driver_id: string;
@@ -52,8 +53,20 @@ interface DashboardShift {
   trailer_number?: string | null;
   load_reference?: string | null;
   load_delivered_at?: string | null;
+  delivery_paperwork_path?: string | null;
+  delivery_evidence_path?: string | null;
   carrier_name?: string | null;
   revenue_amount?: number | null;
+}
+
+export interface DashboardDispatchLoad {
+  id: string;
+  driver_id: string;
+  vrid: string;
+  origin: string | null;
+  destination: string | null;
+  status: 'assigned' | 'in_progress';
+  trailer_number: string | null;
 }
 
 export type DashboardNavTarget = 'live' | 'alerts' | 'shipments' | 'analytics' | 'drivers';
@@ -64,7 +77,11 @@ interface DispatchDashboardProps {
   shifts: DashboardShift[];
   alerts: DashboardAlert[];
   idleThresholdMinutes: number;
+  /** Company-wide off switch (org_alert_settings.idle_detection_enabled). */
+  idleDetectionEnabled: boolean;
   fuelCostByShift: Record<string, number>;
+  /** Loads the office assigned that are still open (dispatch_loads). */
+  dispatchLoads: DashboardDispatchLoad[];
   showFinancials: boolean;
   onNavigate: (target: DashboardNavTarget) => void;
 }
@@ -77,17 +94,18 @@ interface IdleDriver {
   unit: string;
 }
 
-type ShipmentStatus = 'awaiting_load' | 'in_transit' | 'delivered' | 'awaiting_rate' | 'completed';
+type ShipmentStatus = 'awaiting_load' | 'load_assigned' | 'in_transit' | 'delivered' | 'awaiting_rate' | 'completed';
 
 const STATUS_META: Record<ShipmentStatus, { label: string; badge: string }> = {
   awaiting_load: { label: 'Awaiting load', badge: 'badge badge-danger' },
+  load_assigned: { label: 'Load assigned', badge: 'badge badge-warning' },
   in_transit: { label: 'In transit', badge: 'badge badge-accent' },
   delivered: { label: 'Delivered', badge: 'badge badge-success' },
   awaiting_rate: { label: 'Awaiting rate', badge: 'badge badge-warning' },
   completed: { label: 'Completed', badge: 'badge badge-dark' },
 };
 
-const isOpenStatus = (s: ShipmentStatus) => s === 'awaiting_load' || s === 'in_transit' || s === 'delivered';
+const isOpenStatus = (s: ShipmentStatus) => s === 'awaiting_load' || s === 'load_assigned' || s === 'in_transit' || s === 'delivered';
 
 // Same palette as Analytics: charcoal for volume, brand red for the
 // second series, #10B981 / brand red for profit vs loss.
@@ -112,12 +130,6 @@ const pounds = (v: number, dp = 0) => `£${v.toLocaleString('en-GB', { minimumFr
 const time = (iso: string) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 const shortDate = (iso: string) => new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
 const titleCase = (s: string) => s.toLowerCase().split(/\s+/).filter(Boolean).map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
-const initials = (name: string) => {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return '?';
-  return (words[0][0] + (words.length > 1 ? words[words.length - 1][0] : '')).toUpperCase();
-};
-
 function duration(fromIso: string, toIso?: string | null): string {
   const mins = Math.max(0, Math.floor(((toIso ? new Date(toIso).getTime() : Date.now()) - new Date(fromIso).getTime()) / 60000));
   const h = Math.floor(mins / 60);
@@ -176,7 +188,10 @@ function StatTile({ icon, value, label, footer, onClick }: { icon: ReactNode; va
 
 // ── the page ──────────────────────────────────────────────────
 
-export default function DispatchDashboard({ liveLocations, employees, shifts, alerts, idleThresholdMinutes, fuelCostByShift, showFinancials, onNavigate }: DispatchDashboardProps) {
+export default function DispatchDashboard({ liveLocations, employees, shifts, alerts, idleThresholdMinutes, idleDetectionEnabled, fuelCostByShift, dispatchLoads, showFinancials, onNavigate }: DispatchDashboardProps) {
+  // "Shipment Activities" panel toggle: numbers by default, chart when
+  // the operator opens it (item 2).
+  const [activitiesView, setActivitiesView] = useState<'numbers' | 'chart'>('numbers');
   const [chartMode, setChartMode] = useState<'daily' | 'weekly'>('daily');
   const [tableTab, setTableTab] = useState<'all' | ShipmentStatus>('all');
   const [search, setSearch] = useState('');
@@ -191,8 +206,15 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
   // Without financial access revenue isn't visible, so "awaiting rate"
   // would be meaningless — every finished shipment reads as completed.
   const shipments = useMemo(() => {
+    // An office-assigned load counts for an open shift that has no load
+    // the driver attached themselves: assigned = waiting on the driver to
+    // accept, accepted = on the road.
+    const dispatchFor = (s: DashboardShift) =>
+      (!s.end_time && s.status !== 'completed' && !s.load_reference) ? dispatchLoads.find(d => d.driver_id === s.driver_id) : undefined;
     const statusOf = (s: DashboardShift): ShipmentStatus => {
       if (!s.end_time && s.status !== 'completed') {
+        const d = dispatchFor(s);
+        if (!s.load_reference && d) return d.status === 'assigned' ? 'load_assigned' : 'in_transit';
         if (!s.load_reference) return 'awaiting_load';
         return s.load_delivered_at ? 'delivered' : 'in_transit';
       }
@@ -201,11 +223,20 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
     };
     return [...shifts]
       .sort((a, b) => b.start_time.localeCompare(a.start_time))
-      .map(s => ({ ...s, driver_name: s.driver_name ? titleCase(s.driver_name) : undefined, shipmentStatus: statusOf(s) }));
-  }, [shifts, showFinancials]);
+      .map(s => {
+        const d = dispatchFor(s);
+        return {
+          ...s,
+          load_reference: s.load_reference || d?.vrid,
+          carrier_name: s.carrier_name || (d ? `${d.origin ?? '—'} → ${d.destination ?? '—'}` : s.carrier_name),
+          driver_name: s.driver_name ? titleCase(s.driver_name) : undefined,
+          shipmentStatus: statusOf(s),
+        };
+      });
+  }, [shifts, showFinancials, dispatchLoads]);
 
   const counts = useMemo(() => {
-    const c: Record<ShipmentStatus, number> = { awaiting_load: 0, in_transit: 0, delivered: 0, awaiting_rate: 0, completed: 0 };
+    const c: Record<ShipmentStatus, number> = { awaiting_load: 0, load_assigned: 0, in_transit: 0, delivered: 0, awaiting_rate: 0, completed: 0 };
     for (const s of shipments) c[s.shipmentStatus] += 1;
     return c;
   }, [shipments]);
@@ -228,7 +259,10 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
   // Read-only summary: acknowledging stays in the Alert Panel. One row per
   // driver, from either an open idle alert (stationary past the threshold)
   // or a live position with no ping for that long — earliest start wins.
+  // Idle detection covers every employee, not just drivers. When the
+  // switch in Settings is off we don't compute or show any of it.
   const idleDrivers = useMemo(() => {
+    if (!idleDetectionEnabled) return [] as IdleDriver[];
     const unitFor = (driverId: string, fallback?: string | null) => {
       const shift = shifts.find(s => s.driver_id === driverId && !s.end_time && s.status !== 'completed');
       return [shift?.vehicle_number ?? fallback, shift?.trailer_number].filter(Boolean).join(' / ');
@@ -286,7 +320,7 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
   const liveShipments = shipments.filter(s => isOpenStatus(s.shipmentStatus));
   const vehiclesOnRoad = new Set(liveShipments.map(s => s.vehicle_number).filter(Boolean)).size;
   const trailersCoupled = new Set(liveShipments.map(s => s.trailer_number).filter(Boolean)).size;
-  const loadsAttached = counts.in_transit + counts.delivered;
+  const loadsAttached = counts.load_assigned + counts.in_transit + counts.delivered;
   const loadsAttachedPct = liveShipments.length > 0 ? (loadsAttached / liveShipments.length) * 100 : 0;
 
   // ── tracking ──
@@ -337,6 +371,7 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
   const tabOptions: { value: 'all' | ShipmentStatus; label: string; count: number }[] = [
     { value: 'all', label: 'All Shipments', count: shipments.length },
     { value: 'awaiting_load', label: 'Awaiting Load', count: counts.awaiting_load },
+    { value: 'load_assigned', label: 'Load Assigned', count: counts.load_assigned },
     { value: 'in_transit', label: 'In Transit', count: counts.in_transit },
     { value: 'delivered', label: 'Delivered', count: counts.delivered },
     ...(showFinancials ? [{ value: 'awaiting_rate' as const, label: 'Awaiting Rate', count: counts.awaiting_rate }] : []),
@@ -422,137 +457,81 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
       {/* ── Shipments & analytics ── */}
       <div>
         <p className="dash-section-label">Shipments &amp; Analytics</p>
-        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4" style={{ gap: '16px', alignItems: 'start' }}>
+        <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4" style={{ gap: '16px', alignItems: 'stretch' }}>
+          {/* Shipment Activities — compact numerical readout with a
+              switch to the daily/weekly bar chart. Absorbs the old
+              "Vehicles On The Road" panel so both fit into one cell
+              (item 2). */}
+          <div className="lg:col-span-2 flex flex-col" style={{ gap: '16px' }}>
           <Panel
-            className="lg:col-span-2"
-            icon={<BarChart3 size={14} />}
-            title="Shipments Statistics"
-            subtitle={`${chartTotal} shipment${chartTotal === 1 ? '' : 's'} started in the last ${chartMode === 'daily' ? '10 days' : '8 weeks'}`}
+            icon={<Activity size={14} />}
+            title="Shipment Activities"
+            subtitle={activitiesView === 'numbers'
+              ? `Live snapshot · ${chartTotal} started in the last ${chartMode === 'daily' ? '10 days' : '8 weeks'}`
+              : `${chartTotal} shipment${chartTotal === 1 ? '' : 's'} started in the last ${chartMode === 'daily' ? '10 days' : '8 weeks'}`}
             action={
               <div className="dash-segmented">
-                {(['daily', 'weekly'] as const).map(mode => (
-                  <button key={mode} type="button" className={chartMode === mode ? 'is-active' : ''} onClick={() => setChartMode(mode)}>
-                    {mode === 'daily' ? 'Daily' : 'Weekly'}
+                {(['numbers', 'chart'] as const).map(view => (
+                  <button key={view} type="button" className={activitiesView === view ? 'is-active' : ''} onClick={() => setActivitiesView(view)}>
+                    {view === 'numbers' ? 'Numbers' : 'Chart'}
                   </button>
                 ))}
               </div>
             }
           >
-            <div className="dash-legend">
-              <span><i style={{ background: CHARCOAL }} />Started</span>
-              <span><i style={{ background: BRAND_RED }} />Completed</span>
-            </div>
-            <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={chartData} margin={{ top: 8, right: 4, left: -18, bottom: 0 }}>
-                <CartesianGrid vertical={false} stroke="#E2E8F0" strokeDasharray="3 3" />
-                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#888888' }} tickMargin={8} interval="preserveStartEnd" />
-                <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#888888' }} />
-                <Tooltip content={ChartTooltip} cursor={{ fill: 'var(--card-bg-hover)' }} />
-                {/* Recharts' entry animation never resolves in this app — see fleet-status-donut-chart.tsx. */}
-                <Bar dataKey="started" fill={CHARCOAL} radius={[3, 3, 0, 0]} barSize={14} isAnimationActive={false} />
-                <Bar dataKey="completed" fill={BRAND_RED} radius={[3, 3, 0, 0]} barSize={14} isAnimationActive={false} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Panel>
-
-          <div className="flex flex-col" style={{ gap: '16px' }}>
-            {showFinancials ? (
-              <Panel
-                icon={<PoundSterling size={14} />}
-                title="Revenue This Week"
-                subtitle="Billed loads completed since Monday"
-                action={<button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '10px' }} onClick={() => onNavigate('analytics')}>Analytics</button>}
-              >
-                <SemiGauge value={marginPct} color={thisWeek.profit >= 0 ? PROFIT_GREEN : BRAND_RED} trackColor="#EEEEEE">
-                  <span className="dash-figure">{pounds(thisWeek.revenue, 2)}</span>
-                  <span className="dash-stat-footer" style={{ justifyContent: 'center' }}>
-                    <WeekChange current={thisWeek.revenue} previous={lastWeek.revenue} />
-                  </span>
-                </SemiGauge>
-                <dl className="dash-mini-stats">
-                  <div><dt>Driver cost</dt><dd style={{ color: BRAND_RED }}>{pounds(thisWeek.wages)}</dd></div>
-                  <div><dt>Fuel</dt><dd>{pounds(thisWeek.fuel)}</dd></div>
-                  <div>
-                    <dt>Margin</dt>
-                    <dd style={{ color: thisWeek.revenue === 0 ? undefined : thisWeek.profit >= 0 ? PROFIT_GREEN : BRAND_RED }}>
-                      {thisWeek.revenue > 0 ? `${marginPct.toFixed(1)}%` : '—'}
-                    </dd>
-                  </div>
-                </dl>
-              </Panel>
-            ) : (
-              <Panel icon={<Gauge size={14} />} title="Loads Attached" subtitle="Drivers on shift with a load reference">
-                <SemiGauge value={loadsAttachedPct} color={CHARCOAL} trackColor="#EEEEEE">
-                  <span className="dash-figure">{loadsAttached} of {liveShipments.length}</span>
-                  <span className="dash-stat-footer" style={{ justifyContent: 'center' }}>shifts carrying a load</span>
-                </SemiGauge>
-              </Panel>
-            )}
-
-            <Panel icon={<Truck size={14} />} title="Vehicles On The Road" subtitle="Units assigned to open shifts">
-              <div className="flex items-end justify-between" style={{ gap: '8px' }}>
-                <div>
-                  <span className="dash-figure" style={{ display: 'block' }}>{vehiclesOnRoad}</span>
-                  <span className="text-xs text-muted">{trailersCoupled} trailer{trailersCoupled === 1 ? '' : 's'} coupled</span>
-                  <span className="flex items-center text-xs font-bold" style={{ gap: '6px', marginTop: '10px', color: '#2E7D32' }}>
-                    <span className="dash-live-dot" /> {movingCount} on route
-                  </span>
-                </div>
-                <Truck size={60} strokeWidth={1.25} color="#DDDDDD" />
+            {activitiesView === 'numbers' ? (
+              <div className="dash-numeric-grid">
+                <button type="button" className="dash-numeric" onClick={() => onNavigate('shipments')}>
+                  <span className="dash-numeric-label">In transit</span>
+                  <span className="dash-numeric-value">{counts.in_transit}</span>
+                  <span className="dash-numeric-hint">{counts.delivered} delivered · {counts.load_assigned} assigned · {counts.awaiting_load} awaiting load</span>
+                </button>
+                <button type="button" className="dash-numeric" onClick={() => onNavigate('shipments')}>
+                  <span className="dash-numeric-label">Loads attached</span>
+                  <span className="dash-numeric-value">{loadsAttached}<span className="dash-numeric-fraction">/{liveShipments.length || 0}</span></span>
+                  <span className="dash-numeric-hint">{Math.round(loadsAttachedPct)}% of open shifts</span>
+                </button>
+                <button type="button" className="dash-numeric" onClick={() => onNavigate('live')}>
+                  <span className="dash-numeric-label">Vehicles on road</span>
+                  <span className="dash-numeric-value">{vehiclesOnRoad}</span>
+                  <span className="dash-numeric-hint">{trailersCoupled} trailer{trailersCoupled === 1 ? '' : 's'} coupled · {movingCount} moving</span>
+                </button>
+                <button type="button" className="dash-numeric" onClick={() => onNavigate('shipments')}>
+                  <span className="dash-numeric-label">Started this week</span>
+                  <span className="dash-numeric-value">{chartData.slice(-7).reduce((s, d) => s + d.started, 0)}</span>
+                  <span className="dash-numeric-hint">{completedThisWeek.length} completed · <WeekChange current={completedThisWeek.length} previous={completedLastWeek.length} /></span>
+                </button>
               </div>
-            </Panel>
-          </div>
-
-          <Panel
-            icon={<MapPinned size={14} />}
-            title="Tracking"
-            subtitle={trackedId ? 'Selected from Shipments Activity' : 'Most recent shipment on the road'}
-            action={<button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '10px' }} onClick={() => onNavigate('live')}>Live Map</button>}
-          >
-            {tracked ? (
-              <>
-                <div className="dash-tracking-ref">
-                  <div style={{ minWidth: 0 }}>
-                    <span className="input-label" style={{ display: 'block' }}>Load reference</span>
-                    <span className="font-mono font-bold text-primary" style={{ fontSize: '13px' }}>{tracked.load_reference || '—'}</span>
-                  </div>
-                  <span className={STATUS_META[tracked.shipmentStatus].badge}>{STATUS_META[tracked.shipmentStatus].label}</span>
-                </div>
-                <TrackingTimeline steps={trackingSteps} />
-                <div className="dash-driver-row">
-                  <div className="flex items-center" style={{ gap: '10px', minWidth: 0 }}>
-                    <span className="dash-avatar">{initials(trackedName)}</span>
-                    <div style={{ minWidth: 0 }}>
-                      <span className="input-label" style={{ display: 'block' }}>Driver</span>
-                      <span className="font-bold text-primary text-sm">{trackedName}</span>
-                    </div>
-                  </div>
-                  {trackedEmployee?.phone && (
-                    <a href={`tel:${trackedEmployee.phone}`} title={`Call ${trackedEmployee.phone}`} className="telemetry-filter-icon-btn" style={{ borderRadius: '50%', color: 'var(--brand-red)' }}>
-                      <Phone size={15} />
-                    </a>
-                  )}
-                </div>
-              </>
             ) : (
-              <Empty className="py-10">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon"><Truck /></EmptyMedia>
-                  <EmptyTitle>Nothing To Track</EmptyTitle>
-                  <EmptyDescription>Shipments appear here once a driver clocks in.</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
+              <>
+                <div className="flex items-center justify-between" style={{ gap: '10px', flexWrap: 'wrap' }}>
+                  <div className="dash-legend">
+                    <span><i style={{ background: CHARCOAL }} />Started</span>
+                    <span><i style={{ background: BRAND_RED }} />Completed</span>
+                  </div>
+                  <div className="dash-segmented">
+                    {(['daily', 'weekly'] as const).map(mode => (
+                      <button key={mode} type="button" className={chartMode === mode ? 'is-active' : ''} onClick={() => setChartMode(mode)}>
+                        {mode === 'daily' ? 'Daily' : 'Weekly'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <ResponsiveContainer width="100%" height={230}>
+                  <BarChart data={chartData} margin={{ top: 8, right: 4, left: -18, bottom: 0 }}>
+                    <CartesianGrid vertical={false} stroke="#E2E8F0" strokeDasharray="3 3" />
+                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#888888' }} tickMargin={8} interval="preserveStartEnd" />
+                    <YAxis allowDecimals={false} axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#888888' }} />
+                    <Tooltip content={ChartTooltip} cursor={{ fill: 'var(--card-bg-hover)' }} />
+                    <Bar dataKey="started" fill={CHARCOAL} radius={[3, 3, 0, 0]} barSize={14} isAnimationActive={false} />
+                    <Bar dataKey="completed" fill={BRAND_RED} radius={[3, 3, 0, 0]} barSize={14} isAnimationActive={false} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </>
             )}
           </Panel>
-        </div>
-      </div>
-
-      {/* ── Activity & workforce ── */}
-      <div>
-        <p className="dash-section-label">Activity &amp; Workforce</p>
-        <div className="grid grid-cols-1 xl:grid-cols-4" style={{ gap: '16px', alignItems: 'start' }}>
           <Panel
-            className="xl:col-span-3"
+            className="flex-1"
             icon={<Activity size={14} />}
             title="Shipments Activity"
             subtitle="Click a row to follow it in Tracking"
@@ -643,55 +622,133 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
               </table>
             </div>
           </Panel>
-
+          </div>
           <div className="flex flex-col" style={{ gap: '16px' }}>
-          <Panel
-            icon={<Clock size={14} />}
-            title="Idle Drivers"
-            subtitle={`On shift, not moving for over ${idleThresholdMinutes} mins`}
-            bodyClassName=""
-            action={<button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '10px' }} onClick={() => onNavigate('alerts')}>Alert Panel</button>}
-          >
-            {idleDrivers.length === 0 ? (
-              <Empty className="py-10">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon"><CircleCheck /></EmptyMedia>
-                  <EmptyTitle>No Idle Drivers</EmptyTitle>
-                  <EmptyDescription>Everyone on shift is moving or has reported recently.</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
+            {showFinancials ? (
+              <Panel
+                icon={<PoundSterling size={14} />}
+                title="Revenue This Week"
+                subtitle="Billed loads completed since Monday"
+                action={<button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '10px' }} onClick={() => onNavigate('analytics')}>Analytics</button>}
+              >
+                <SemiGauge value={marginPct} color={thisWeek.profit >= 0 ? PROFIT_GREEN : BRAND_RED} trackColor="#EEEEEE">
+                  <span className="dash-figure">{pounds(thisWeek.revenue, 2)}</span>
+                  <span className="dash-stat-footer" style={{ justifyContent: 'center' }}>
+                    <WeekChange current={thisWeek.revenue} previous={lastWeek.revenue} />
+                  </span>
+                </SemiGauge>
+                <dl className="dash-mini-stats">
+                  <div><dt>Driver cost</dt><dd style={{ color: BRAND_RED }}>{pounds(thisWeek.wages)}</dd></div>
+                  <div><dt>Fuel</dt><dd>{pounds(thisWeek.fuel)}</dd></div>
+                  <div>
+                    <dt>Margin</dt>
+                    <dd style={{ color: thisWeek.revenue === 0 ? undefined : thisWeek.profit >= 0 ? PROFIT_GREEN : BRAND_RED }}>
+                      {thisWeek.revenue > 0 ? `${marginPct.toFixed(1)}%` : '—'}
+                    </dd>
+                  </div>
+                </dl>
+              </Panel>
             ) : (
-              <ul className="m-0 list-none p-0" style={{ maxHeight: '320px', overflowY: 'auto' }}>
-                {idleDrivers.map(d => (
-                  <li key={d.driverId} className="flex items-center" style={{ gap: '10px', padding: '12px 20px', borderBottom: '1px solid var(--border-color)' }}>
-                    <span className="dash-avatar">{initials(d.name)}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <span className="font-bold text-primary text-sm" style={{ display: 'block' }}>{d.name}</span>
-                      <span className="text-xs text-muted" style={{ display: 'block' }}>
-                        {d.reason}{d.unit ? ` · ${d.unit}` : ''} · since {time(d.since)}
-                      </span>
-                    </div>
-                    <span className="badge badge-danger" style={{ fontVariantNumeric: 'tabular-nums' }}>{duration(d.since)}</span>
-                  </li>
-                ))}
-              </ul>
+              <Panel icon={<Gauge size={14} />} title="Loads Attached" subtitle="Drivers on shift with a load reference">
+                <SemiGauge value={loadsAttachedPct} color={CHARCOAL} trackColor="#EEEEEE">
+                  <span className="dash-figure">{loadsAttached} of {liveShipments.length}</span>
+                  <span className="dash-stat-footer" style={{ justifyContent: 'center' }}>shifts carrying a load</span>
+                </SemiGauge>
+              </Panel>
+            )}
+          <Panel
+            className="flex-1"
+            icon={<Clock size={14} />}
+            title="Idle Employees"
+            subtitle={idleDetectionEnabled
+              ? `Anyone on shift not moving for over ${idleThresholdMinutes} mins`
+              : "Idle detection is turned off"}
+            action={idleDetectionEnabled
+              ? <button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '10px' }} onClick={() => onNavigate('alerts')}>Alert Panel</button>
+              : undefined}
+          >
+            {!idleDetectionEnabled ? (
+              <div className="dash-numeric" style={{ cursor: 'default' }}>
+                <span className="dash-numeric-label">Idle detection</span>
+                <span className="dash-numeric-value">Off</span>
+                <span className="dash-numeric-hint">Turn it on again from Settings → Alerts.</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => idleDrivers.length > 0 ? onNavigate('alerts') : undefined}
+                className="dash-numeric"
+                style={{ cursor: idleDrivers.length > 0 ? 'pointer' : 'default' }}
+              >
+                <span className="dash-numeric-label">Idle right now</span>
+                <span className="dash-numeric-value" style={{ color: idleDrivers.length > 0 ? BRAND_RED : undefined }}>{idleDrivers.length}</span>
+                <span className="dash-numeric-hint">
+                  {idleDrivers.length === 0
+                    ? 'Everyone on shift is moving or has reported recently.'
+                    : idleDrivers.length === 1
+                      ? `${idleDrivers[0].name} · idle ${duration(idleDrivers[0].since)}`
+                      : `Longest: ${idleDrivers[0].name} — ${duration(idleDrivers[0].since)}`}
+                </span>
+              </button>
             )}
           </Panel>
-
-          <Panel icon={<UserRound size={14} />} title="Workforce" subtitle={`${employees.length} registered employee${employees.length === 1 ? '' : 's'}`}>
-            <FleetStatusDonutChart
-              data={[
-                { label: 'On shift', value: onShiftCount, color: BRAND_RED },
-                { label: 'Available', value: availableCount, color: CHARCOAL },
-                { label: 'Inactive', value: employees.length - activeEmployees.length, color: '#DDDDDD' },
-              ]}
-              centerLabel="Employees"
-              height={250}
-              emptyTitle="No Employees Yet"
-              emptyDescription="Add drivers in the Employee Database."
-            />
-          </Panel>
           </div>
+          <Panel
+            className="flex-1"
+            icon={<MapPinned size={14} />}
+            title="Tracking"
+            subtitle={trackedId ? 'Selected from Shipments Activity' : 'Most recent shipment on the road'}
+            action={<button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '10px' }} onClick={() => onNavigate('live')}>Live Map</button>}
+          >
+            <div style={{ marginBottom: '14px' }}>
+              <span className="input-label" style={{ display: 'block' }}>Workforce · {employees.length} registered employee{employees.length === 1 ? '' : 's'}</span>
+              <FleetStatusDonutChart
+                data={[
+                  { label: 'On shift', value: onShiftCount, color: BRAND_RED },
+                  { label: 'Available', value: availableCount, color: CHARCOAL },
+                  { label: 'Inactive', value: employees.length - activeEmployees.length, color: '#DDDDDD' },
+                ]}
+                centerLabel="Employees"
+                height={180}
+                emptyTitle="No Employees Yet"
+                emptyDescription="Add drivers in the Employee Database."
+              />
+            </div>
+            {tracked ? (
+              <>
+                <div className="dash-tracking-ref">
+                  <div style={{ minWidth: 0 }}>
+                    <span className="input-label" style={{ display: 'block' }}>Load reference</span>
+                    <span className="font-mono font-bold text-primary" style={{ fontSize: '13px' }}>{tracked.load_reference || '—'}</span>
+                  </div>
+                  <span className={STATUS_META[tracked.shipmentStatus].badge}>{STATUS_META[tracked.shipmentStatus].label}</span>
+                </div>
+                <TrackingTimeline steps={trackingSteps} />
+                <DeliveryPhotos paperworkPath={tracked.delivery_paperwork_path} evidencePath={tracked.delivery_evidence_path} />
+                <div className="dash-driver-row">
+                  <div className="flex items-center" style={{ gap: '10px', minWidth: 0 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <span className="input-label" style={{ display: 'block' }}>Driver</span>
+                      <span className="font-bold text-primary text-sm">{trackedName}</span>
+                    </div>
+                  </div>
+                  {trackedEmployee?.phone && (
+                    <a href={`tel:${trackedEmployee.phone}`} title={`Call ${trackedEmployee.phone}`} className="telemetry-filter-icon-btn" style={{ borderRadius: '50%', color: 'var(--brand-red)' }}>
+                      <Phone size={15} />
+                    </a>
+                  )}
+                </div>
+              </>
+            ) : (
+              <Empty className="py-10">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon"><Truck /></EmptyMedia>
+                  <EmptyTitle>Nothing To Track</EmptyTitle>
+                  <EmptyDescription>Shipments appear here once a driver clocks in.</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            )}
+          </Panel>
         </div>
       </div>
     </div>

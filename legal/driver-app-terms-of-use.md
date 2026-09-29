@@ -36,4 +36,4 @@ To the extent permitted by law, Tachyo is not liable for losses arising from you
 
 ## Changes and contact
 
-We may update these Terms of Use from time to time; continued use of the app after an update means you accept the change. Questions: **[INSERT contact email]**.
+We may update these Terms of Use from time to time; continued use of the app after an update means you accept the change. Questions: **support@tachyo.co.uk**.

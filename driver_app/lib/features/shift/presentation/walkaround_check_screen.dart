@@ -1,9 +1,10 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../../core/network/supabase_service.dart';
+import 'asset_picker.dart';
 
 // ============================================================
 // Walk-Around Check — start-of-shift ("Safety Check") and
@@ -28,9 +29,12 @@ class WalkaroundFieldDef {
   final String key;
   final String label;
   final WalkaroundFieldType type;
+  /// Required items must be filled before Submit is enabled; everything
+  /// else can be left blank.
   final bool required;
   final String? sectionTitle;
   final bool inferred;
+  final bool numeric;
   const WalkaroundFieldDef(
     this.key,
     this.label,
@@ -38,6 +42,7 @@ class WalkaroundFieldDef {
     this.required = false,
     this.sectionTitle,
     this.inferred = false,
+    this.numeric = false,
   });
 }
 
@@ -52,13 +57,19 @@ class WalkaroundFieldDef {
 /// trailer together — see kSafetyCheckDefectFields below and
 /// WalkAroundCheckScreen._fields.
 const List<WalkaroundFieldDef> kSafetyCheckTractorFields = [
-  WalkaroundFieldDef('lights_indicators_operation', 'Lights & indicators operation', WalkaroundFieldType.checkbox, inferred: true),
-  WalkaroundFieldDef('tyre_condition', 'Tyre condition / wear', WalkaroundFieldType.checkbox),
-  WalkaroundFieldDef('speedometer_operation', 'Speedometer operation', WalkaroundFieldType.checkbox),
-  WalkaroundFieldDef('wheels_condition', 'Wheels condition', WalkaroundFieldType.checkbox),
-  WalkaroundFieldDef('battery_condition', 'Battery condition', WalkaroundFieldType.checkbox),
+  WalkaroundFieldDef('odometer_reading', 'Odometer reading', WalkaroundFieldType.text, required: true, numeric: true),
+  WalkaroundFieldDef('lights_indicators_operation', 'Lights & indicators operation', WalkaroundFieldType.checkbox, inferred: true, required: true),
+  WalkaroundFieldDef('tyre_condition', 'Tyre condition / wear', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('speedometer_operation', 'Speedometer operation', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('wheels_condition', 'Wheels condition', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('battery_condition', 'Battery condition', WalkaroundFieldType.checkbox, required: true),
   WalkaroundFieldDef('oil_level_picture', 'Oil level picture', WalkaroundFieldType.photo, required: true),
-  WalkaroundFieldDef('fuel_card_last4', 'Fuel card - type last 4 digits', WalkaroundFieldType.text),
+  WalkaroundFieldDef('fuel_card_last4', 'Fuel card - type last 4 digits', WalkaroundFieldType.text, required: true),
+  // All four sides of the unit are compulsory on every check.
+  WalkaroundFieldDef('outside_right', 'Outside picture - right side', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('outside_front', 'Outside picture - front', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('outside_left', 'Outside picture - left side', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('outside_back', 'Outside picture - back', WalkaroundFieldType.photo, required: true),
 ];
 
 const List<WalkaroundFieldDef> kSafetyCheckDefectFields = [
@@ -71,22 +82,24 @@ const List<WalkaroundFieldDef> kSafetyCheckDefectFields = [
 /// top to bottom, de-duplicated where two screenshots overlapped
 /// the same scroll position.
 const List<WalkaroundFieldDef> kEndOfShiftFields = [
-  WalkaroundFieldDef('odometer_reading', 'Odometer reading', WalkaroundFieldType.text),
-  WalkaroundFieldDef('cab_clean_tidy', 'Is the cab clean and tidy?', WalkaroundFieldType.passFail),
-  WalkaroundFieldDef('no_litter_dirt', 'Are there no litter or dirt on the dashboard or floor?', WalkaroundFieldType.passFail),
-  WalkaroundFieldDef('floor_mats_clean', 'Are the floor mats clean?', WalkaroundFieldType.passFail),
-  WalkaroundFieldDef('cab_interior_photo_1', 'Upload photo(s) of cab interior', WalkaroundFieldType.photo),
-  WalkaroundFieldDef('cab_interior_photo_2', 'Upload photo(s) of cab interior', WalkaroundFieldType.photo),
-  WalkaroundFieldDef('door_pocket_photo_1', 'Door pocket picture', WalkaroundFieldType.photo),
-  WalkaroundFieldDef('door_pocket_photo_2', 'Door pocket picture', WalkaroundFieldType.photo),
-  WalkaroundFieldDef('adblue_level', 'Ad blue level', WalkaroundFieldType.photo),
-  WalkaroundFieldDef('registration_plate_in_cab', 'Is there a registration plate inside the cab? Take a picture', WalkaroundFieldType.checkbox),
-  WalkaroundFieldDef('fuel_card_photo', 'Photo of Fuel Card', WalkaroundFieldType.photo),
+  WalkaroundFieldDef('odometer_reading', 'Odometer reading', WalkaroundFieldType.text, required: true, numeric: true),
+  WalkaroundFieldDef('cab_clean_tidy', 'Is the cab clean and tidy?', WalkaroundFieldType.passFail, required: true),
+  WalkaroundFieldDef('no_litter_dirt', 'Are there no litter or dirt on the dashboard or floor?', WalkaroundFieldType.passFail, required: true),
+  WalkaroundFieldDef('floor_mats_clean', 'Are the floor mats clean?', WalkaroundFieldType.passFail, required: true),
+  // One cab-interior and one door-pocket photo are compulsory; the second
+  // of each is optional extra evidence.
+  WalkaroundFieldDef('cab_interior_photo_1', 'Upload photo of cab interior', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('cab_interior_photo_2', 'Additional cab interior photo', WalkaroundFieldType.photo),
+  WalkaroundFieldDef('door_pocket_photo_1', 'Door pocket picture', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('door_pocket_photo_2', 'Additional door pocket picture', WalkaroundFieldType.photo),
+  WalkaroundFieldDef('adblue_level', 'Ad blue level', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('registration_plate_in_cab', 'Is there a registration plate inside the cab? Take a picture', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('fuel_card_photo', 'Photo of Fuel Card', WalkaroundFieldType.photo, required: true),
   WalkaroundFieldDef('driver_comments', 'Driver comments', WalkaroundFieldType.text),
-  WalkaroundFieldDef('outside_right', 'Outside picture - right side', WalkaroundFieldType.photo),
-  WalkaroundFieldDef('outside_front', 'Outside picture - front', WalkaroundFieldType.photo),
-  WalkaroundFieldDef('outside_left', 'Outside picture - left side', WalkaroundFieldType.photo),
-  WalkaroundFieldDef('outside_back', 'Outside picture - back', WalkaroundFieldType.photo),
+  WalkaroundFieldDef('outside_right', 'Outside picture - right side', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('outside_front', 'Outside picture - front', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('outside_left', 'Outside picture - left side', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('outside_back', 'Outside picture - back', WalkaroundFieldType.photo, required: true),
 ];
 
 /// TRAILER CHECK — confirmed by the founder to be the same block
@@ -100,13 +113,23 @@ const List<WalkaroundFieldDef> kEndOfShiftFields = [
 /// the trailer" — standard trailer safety points, not confirmed from
 /// a screenshot.
 const List<WalkaroundFieldDef> kTrailerFields = [
-  WalkaroundFieldDef('trailer_lights_operation', 'Trailer lights & indicators operation', WalkaroundFieldType.checkbox, sectionTitle: 'Trailer check'),
-  WalkaroundFieldDef('trailer_wheels_condition', 'Trailer wheels condition', WalkaroundFieldType.checkbox),
-  WalkaroundFieldDef('trailer_side_walls', 'Side walls condition', WalkaroundFieldType.checkbox),
-  WalkaroundFieldDef('trailer_corners', 'Corners condition', WalkaroundFieldType.checkbox),
-  WalkaroundFieldDef('trailer_coupling_landing_legs', 'Coupling / landing legs secure', WalkaroundFieldType.checkbox),
-  WalkaroundFieldDef('trailer_doors_curtains', 'Doors / curtains condition', WalkaroundFieldType.checkbox),
+  WalkaroundFieldDef('trailer_lights_operation', 'Trailer lights & indicators operation', WalkaroundFieldType.checkbox, sectionTitle: 'Trailer check', required: true),
+  WalkaroundFieldDef('trailer_wheels_condition', 'Trailer wheels condition', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('trailer_side_walls', 'Side walls condition', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('trailer_corners', 'Corners condition', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('trailer_coupling_landing_legs', 'Coupling / landing legs secure', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('trailer_doors_curtains', 'Doors / curtains condition', WalkaroundFieldType.checkbox, required: true),
+  WalkaroundFieldDef('trailer_outside_right', 'Trailer picture - right side', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('trailer_outside_front', 'Trailer picture - front', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('trailer_outside_left', 'Trailer picture - left side', WalkaroundFieldType.photo, required: true),
+  WalkaroundFieldDef('trailer_outside_back', 'Trailer picture - back', WalkaroundFieldType.photo, required: true),
 ];
+
+// Brand palette — red, black, white and neutral greys only.
+const Color _kRed = Color(0xFFCC0000);
+const Color _kInk = Color(0xFF111111);
+const Color _kGrey = Color(0xFF6B6B6B);
+const Color _kGreyDone = Color(0xFF333333);
 
 class WalkAroundCheckScreen extends StatefulWidget {
   final String driverId;
@@ -114,10 +137,15 @@ class WalkAroundCheckScreen extends StatefulWidget {
   final String checkType; // 'start_of_shift' | 'end_of_shift'
   final String vehicleId;
   final String vehicleNumber;
+  /// Trailer already coupled to the shift (fleet id and/or number). A
+  /// non-fleet trailer has a number but no id.
   final String? trailerId;
   final String? trailerNumber;
   final String? shiftId;
-  final Future<void> Function(String? checkId) onComplete;
+  /// Called after submit with the saved check id and the trailer the
+  /// driver confirmed on the check (null when no trailer) — callers use
+  /// it to couple that trailer to the shift.
+  final Future<void> Function(String? checkId, Map<String, dynamic>? trailer) onComplete;
 
   const WalkAroundCheckScreen({
     super.key,
@@ -140,11 +168,18 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
   late final DateTime _startedAt;
   bool _hasTrailer = false;
   bool _askedTrailerQuestion = false;
+  /// The trailer on this check: `{'id': String?, 'vehicle_number': String, 'custom': bool?}`.
+  Map<String, dynamic>? _trailer;
+  Future<List<Map<String, dynamic>>>? _vehiclesFuture;
 
   final Map<String, dynamic> _values = {}; // bool | String | String path
   final Map<String, Uint8List> _pendingPhotoBytes = {};
   final Map<String, String> _pendingPhotoNames = {};
   final Map<String, TextEditingController> _textControllers = {};
+  // Started the moment a photo is taken, not at submit — by the time the
+  // driver finishes the rest of the check and taps Submit, every upload
+  // is already done or well underway instead of waiting to start.
+  final Map<String, Future<String?>> _pendingUploads = {};
 
   bool _isSubmitting = false;
   bool _isSavingDraft = false;
@@ -165,7 +200,15 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
   void initState() {
     super.initState();
     _startedAt = DateTime.now();
-    _hasTrailer = widget.trailerId != null;
+    if (widget.trailerNumber != null && widget.trailerNumber!.trim().isNotEmpty) {
+      _trailer = {
+        'id': widget.trailerId,
+        'vehicle_number': widget.trailerNumber!.trim(),
+        'vehicle_type': 'trailer',
+        if (widget.trailerId == null) 'custom': true,
+      };
+    }
+    _hasTrailer = _trailer != null;
     WidgetsBinding.instance.addPostFrameCallback((_) => _askTrailerQuestion());
   }
 
@@ -180,33 +223,155 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
   Future<void> _askTrailerQuestion() async {
     if (_askedTrailerQuestion || !mounted) return;
     _askedTrailerQuestion = true;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final coupled = _trailer?['vehicle_number'] as String?;
     final answer = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Does this asset have a trailer attached?', textAlign: TextAlign.center),
-        actionsAlignment: MainAxisAlignment.spaceEvenly,
+        backgroundColor: isDark ? const Color(0xFF1A1A1A) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        titlePadding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
+        contentPadding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+        title: Text(
+          'Does this asset have a trailer attached?',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w800, color: isDark ? Colors.white : _kInk),
+        ),
+        content: Text(
+          coupled != null ? 'Coupled at clock-in: ${coupled.toUpperCase()}' : "If yes, you'll enter the trailer number next.",
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12.5, color: isDark ? Colors.white60 : Colors.black54),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
         actions: [
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(true), child: const Text('Yes')),
-          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: const Text('No')),
+          OutlinedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: isDark ? Colors.white : _kInk,
+              side: BorderSide(color: isDark ? Colors.white38 : Colors.black38),
+              minimumSize: const Size(88, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('No', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _kRed,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              minimumSize: const Size(88, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 18),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            child: const Text('Yes', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
+          ),
         ],
       ),
     );
     if (!mounted) return;
-    setState(() => _hasTrailer = answer ?? _hasTrailer);
+    if (answer != true) {
+      setState(() {
+        _hasTrailer = false;
+        _trailer = null;
+      });
+      return;
+    }
+    if (_trailer != null) {
+      setState(() => _hasTrailer = true);
+      return;
+    }
+    // "Yes" needs the exact trailer number — backing out of the picker
+    // without one goes back to the question.
+    final picked = await _pickTrailer();
+    if (!mounted) return;
+    if (picked == null) {
+      _askedTrailerQuestion = false;
+      await _askTrailerQuestion();
+    }
+  }
+
+  /// Opens the trailer picker (fleet trailers plus a typed number for any
+  /// other trailer). Returns the chosen trailer, or null if dismissed.
+  Future<Map<String, dynamic>?> _pickTrailer() async {
+    _vehiclesFuture ??= SupabaseService.fetchOrgVehicles(widget.organizationId);
+    final vehicles = await _vehiclesFuture!;
+    if (!mounted) return null;
+    final picked = await showSearchableAssetPicker(
+      context,
+      title: 'TRAILER NUMBER',
+      subtitle: "Select the trailer, or type its number if it isn't one of ours (e.g. Amazon, Katem).",
+      vehicles: vehicles,
+      typeFilter: 'trailer',
+      allowCustomTrailer: true,
+      signOffContext: 'walkaround',
+      shiftId: widget.shiftId,
+    );
+    if (!mounted || picked == null || picked.isEmpty) return null;
+    setState(() {
+      _trailer = picked;
+      _hasTrailer = true;
+    });
+    return picked;
+  }
+
+  /// Status-bar "Change": re-ask the question, forgetting the current
+  /// trailer so "Yes" always opens the picker.
+  void _changeTrailer() {
+    setState(() {
+      _trailer = null;
+      _hasTrailer = false;
+    });
+    _askedTrailerQuestion = false;
+    _askTrailerQuestion();
   }
 
   bool _isAnswered(WalkaroundFieldDef field) {
     final v = _values[field.key];
     if (field.type == WalkaroundFieldType.text) return (v as String?)?.trim().isNotEmpty ?? false;
+    // A compulsory tick-box only counts once it's actually ticked.
+    if (field.type == WalkaroundFieldType.checkbox) return v == true;
     return v != null;
   }
 
-  bool get _allAnswered => _fields.every(_isAnswered);
+  List<WalkaroundFieldDef> get _requiredFields => _fields.where((f) => f.required).toList();
+
+  /// Only compulsory items gate Submit — optional ones can be left blank.
+  bool get _allAnswered => _requiredFields.every(_isAnswered);
 
   bool get _hasDefects {
     if (_values['defect_details'] is String && (_values['defect_details'] as String).trim().isNotEmpty) return true;
     return _values.values.any((v) => v == 'fail');
+  }
+
+  Future<void> _choosePhotoSource(String key) async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_outlined),
+              title: const Text('Take photo'),
+              onTap: () => Navigator.pop(sheetContext, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(sheetContext, ImageSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source != null) await _pickPhoto(key, source);
   }
 
   Future<void> _pickPhoto(String key, ImageSource source) async {
@@ -219,20 +384,23 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
       _pendingPhotoNames[key] = picked.name;
       _values[key] = 'pending'; // placeholder so _isAnswered() sees it as filled; replaced with the real path on submit
     });
+    // Fire the upload now, in parallel with whatever the driver does next
+    // (more photos, ticking boxes) — _buildItemsPayload just awaits this
+    // later instead of starting it cold at submit time.
+    _pendingUploads[key] = SupabaseService.uploadWalkaroundPhoto(
+      organizationId: widget.organizationId,
+      driverId: widget.driverId,
+      bytes: bytes,
+      fileName: picked.name,
+    );
   }
 
   Future<Map<String, dynamic>> _buildItemsPayload() async {
     final items = <Map<String, dynamic>>[];
     for (final field in _fields) {
       dynamic value = _values[field.key];
-      if (field.type == WalkaroundFieldType.photo && _pendingPhotoBytes.containsKey(field.key)) {
-        final path = await SupabaseService.uploadWalkaroundPhoto(
-          organizationId: widget.organizationId,
-          driverId: widget.driverId,
-          bytes: _pendingPhotoBytes[field.key]!,
-          fileName: _pendingPhotoNames[field.key]!,
-        );
-        value = path;
+      if (field.type == WalkaroundFieldType.photo && _pendingUploads.containsKey(field.key)) {
+        value = await _pendingUploads[field.key];
       }
       items.add({
         'key': field.key,
@@ -253,7 +421,8 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
       await SupabaseService.submitWalkaroundCheck(
         driverId: widget.driverId,
         vehicleId: widget.vehicleId,
-        trailerId: _hasTrailer ? widget.trailerId : null,
+        trailerId: _hasTrailer ? (_trailer?['id'] as String?) : null,
+        customTrailerNumber: _hasTrailer && isCustomTrailer(_trailer) ? (_trailer?['vehicle_number'] as String?) : null,
         shiftId: widget.shiftId,
         checkType: widget.checkType,
         startedAt: _startedAt,
@@ -263,7 +432,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Saved as draft. This does not count as a completed check — clock-in/out still needs the full check submitted.')),
+        const SnackBar(content: Text('Saved as draft. It still needs submitting to count as a completed check.')),
       );
       Navigator.of(context).pop();
     } finally {
@@ -283,7 +452,8 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
       final checkId = await SupabaseService.submitWalkaroundCheck(
         driverId: widget.driverId,
         vehicleId: widget.vehicleId,
-        trailerId: _hasTrailer ? widget.trailerId : null,
+        trailerId: _hasTrailer ? (_trailer?['id'] as String?) : null,
+        customTrailerNumber: _hasTrailer && isCustomTrailer(_trailer) ? (_trailer?['vehicle_number'] as String?) : null,
         shiftId: widget.shiftId,
         checkType: widget.checkType,
         startedAt: _startedAt,
@@ -295,7 +465,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
 
       if (!mounted) return;
       Navigator.of(context).pop();
-      await widget.onComplete(checkId);
+      await widget.onComplete(checkId, _hasTrailer ? _trailer : null);
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -306,12 +476,12 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
     final title = _isStart ? 'Safety check' : 'End of shift inspection';
-    final answeredCount = _fields.where(_isAnswered).length;
+    final answeredCount = _requiredFields.where(_isAnswered).length;
 
     return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFF8FAFC),
+      backgroundColor: isDark ? const Color(0xFF0D0D0D) : const Color(0xFFF7F7F7),
       appBar: AppBar(
-        backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
+        backgroundColor: isDark ? const Color(0xFF0D0D0D) : Colors.white,
         elevation: 0,
         automaticallyImplyLeading: false,
         title: Text.rich(
@@ -340,7 +510,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
                       padding: const EdgeInsets.only(top: 8, bottom: 8),
                       child: Text(
                         field.sectionTitle!,
-                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15, color: isDark ? Colors.white : const Color(0xFF0F172A)),
+                        style: TextStyle(fontWeight: FontWeight.w900, fontSize: 15, color: isDark ? Colors.white : _kInk),
                       ),
                     ),
                     widgetTile,
@@ -375,7 +545,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
                 child: ElevatedButton(
                   onPressed: _allAnswered && !_isSubmitting && !_isSavingDraft ? _submit : null,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2563EB),
+                    backgroundColor: _kRed,
                     disabledBackgroundColor: isDark ? Colors.white12 : Colors.black12,
                     foregroundColor: Colors.white,
                     minimumSize: const Size(double.infinity, 50),
@@ -383,7 +553,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
                   ),
                   child: _isSubmitting
                       ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
-                      : Text(_allAnswered ? 'Submit' : 'Submit ($answeredCount/${_fields.length})', style: const TextStyle(fontWeight: FontWeight.w800)),
+                      : Text(_allAnswered ? 'Submit' : 'Submit ($answeredCount/${_requiredFields.length} required)', style: const TextStyle(fontWeight: FontWeight.w800)),
                 ),
               ),
             ],
@@ -397,31 +567,40 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
-      color: isDark ? const Color(0xFF1E293B) : Colors.white,
+      color: isDark ? const Color(0xFF1A1A1A) : Colors.white,
       child: Row(
         children: [
           Icon(
             _hasTrailer ? Icons.rv_hookup : Icons.rv_hookup_outlined,
             size: 16,
-            color: _hasTrailer ? const Color(0xFFCC0000) : (isDark ? Colors.white38 : Colors.black38),
+            color: _hasTrailer ? _kRed : (isDark ? Colors.white38 : Colors.black38),
           ),
           const SizedBox(width: 6),
-          Text(
-            _hasTrailer ? 'Trailer attached${widget.trailerNumber != null ? ' — ${widget.trailerNumber!.toUpperCase()}' : ''}' : 'No trailer attached',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: isDark ? Colors.white70 : Colors.black54),
+          Flexible(
+            child: GestureDetector(
+              onTap: _changeTrailer,
+              child: Text.rich(
+                TextSpan(children: [
+                  TextSpan(text: _hasTrailer ? 'Trailer ${((_trailer?['vehicle_number'] as String?) ?? '').toUpperCase()}' : 'No trailer'),
+                  const TextSpan(text: '  Change', style: TextStyle(color: _kRed, fontWeight: FontWeight.w800)),
+                ]),
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: isDark ? Colors.white70 : Colors.black54),
+              ),
+            ),
           ),
-          const Spacer(),
+          const SizedBox(width: 8),
           _ElapsedTimer(startedAt: _startedAt, isDark: isDark),
           const SizedBox(width: 12),
-          Text('$answeredCount/${_fields.length}', style: TextStyle(fontFamily: 'monospace', fontSize: 12, fontWeight: FontWeight.w700, color: isDark ? Colors.white54 : Colors.black45)),
+          Text('$answeredCount/${_requiredFields.length} required', style: TextStyle(fontFamily: 'monospace', fontSize: 12, fontWeight: FontWeight.w700, color: isDark ? Colors.white54 : Colors.black45)),
         ],
       ),
     );
   }
 
   Widget _buildFieldTile(WalkaroundFieldDef field, bool isDark) {
-    final cardColor = isDark ? const Color(0xFF1E293B) : Colors.white;
-    final borderColor = isDark ? const Color(0xFF334155) : const Color(0xFFE2E8F0);
+    final cardColor = isDark ? const Color(0xFF1A1A1A) : Colors.white;
+    final borderColor = isDark ? const Color(0xFF333333) : const Color(0xFFE0E0E0);
 
     Widget control;
     switch (field.type) {
@@ -431,7 +610,8 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
       case WalkaroundFieldType.checkbox:
         control = Checkbox(
           value: _values[field.key] == true,
-          activeColor: const Color(0xFF2563EB),
+          activeColor: _kRed,
+          checkColor: Colors.white,
           onChanged: (v) => setState(() => _values[field.key] = v),
         );
         break;
@@ -449,7 +629,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
           Expanded(
             child: Text.rich(
               TextSpan(children: [
-                TextSpan(text: field.label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: isDark ? Colors.white : const Color(0xFF0F172A))),
+                TextSpan(text: field.label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: isDark ? Colors.white : _kInk)),
                 if (field.required) const TextSpan(text: ' *', style: TextStyle(color: Color(0xFFCC0000), fontWeight: FontWeight.w800)),
               ]),
             ),
@@ -475,7 +655,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
               Icon(
                 selected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
                 size: 18,
-                color: selected ? const Color(0xFF2563EB) : (isDark ? Colors.white38 : Colors.black38),
+                color: selected ? (v == 'fail' ? _kRed : (isDark ? Colors.white : _kInk)) : (isDark ? Colors.white38 : Colors.black38),
               ),
               const SizedBox(width: 6),
               Text(label, style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.w700 : FontWeight.w500, color: isDark ? Colors.white70 : Colors.black54)),
@@ -491,7 +671,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(field.label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: isDark ? Colors.white : const Color(0xFF0F172A))),
+          Text(field.label, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: isDark ? Colors.white : _kInk)),
           Row(children: [radio('Pass', 'pass'), const SizedBox(width: 6), radio('Fail', 'fail')]),
         ],
       ),
@@ -506,9 +686,11 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
       child: TextField(
         controller: _textControllers[field.key],
         onChanged: (v) => setState(() => _values[field.key] = v),
-        style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: isDark ? Colors.white : const Color(0xFF0F172A)),
+        keyboardType: field.numeric ? TextInputType.number : TextInputType.text,
+        inputFormatters: field.numeric ? [FilteringTextInputFormatter.digitsOnly] : null,
+        style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: isDark ? Colors.white : _kInk),
         decoration: InputDecoration(
-          hintText: field.label,
+          hintText: field.required ? '${field.label} *' : field.label,
           hintStyle: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: isDark ? Colors.white54 : Colors.black45),
           border: InputBorder.none,
           isDense: true,
@@ -520,13 +702,16 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
 
   Widget _buildPhotoControl(WalkaroundFieldDef field, bool isDark) {
     final hasPhoto = _pendingPhotoBytes.containsKey(field.key);
+    // The photo gallery is allowed on the safety check and end-of-shift
+    // inspection (and vehicle defect reports) — everywhere else in the app
+    // photos must be taken live with the camera.
     return GestureDetector(
-      onTap: () => _showPhotoSourceSheet(field.key),
+      onTap: () => _choosePhotoSource(field.key),
       child: Container(
         width: 40,
         height: 34,
         decoration: BoxDecoration(
-          color: hasPhoto ? const Color(0xFF2E7D32) : const Color(0xFF2196F3),
+          color: hasPhoto ? _kGreyDone : _kGrey,
           borderRadius: BorderRadius.circular(8),
         ),
         alignment: Alignment.center,
@@ -537,33 +722,6 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
     );
   }
 
-  void _showPhotoSourceSheet(String key) {
-    showModalBottomSheet(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Wrap(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt_outlined),
-              title: const Text('Take Photo'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _pickPhoto(key, ImageSource.camera);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('Choose Photo'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _pickPhoto(key, ImageSource.gallery);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 class _ElapsedTimer extends StatefulWidget {

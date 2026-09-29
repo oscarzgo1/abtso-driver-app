@@ -335,12 +335,12 @@ serve(async (req: Request) => {
       const complianceAlertLeadDays = Number(body.complianceAlertLeadDays);
       // Alert Monitors consolidation (migration 056) — walk-around check
       // duration target already existed (052) but had no save path
-      // anywhere; fuel anomaly thresholds were hardcoded in the admin
-      // dashboard with no admin control at all. Both now live in the
-      // same per-org settings row/form as everything else above.
+      // anywhere. The per-org fuel-anomaly floor/rolling-drop thresholds
+      // that used to live here were retired in migration 070: fuel theft
+      // detection is now a single fixed fleet-wide rule (7.0 MPG / 40
+      // L/100km on brim-to-brim fills), computed and stored server-side
+      // by a trigger, not a value this action accepts any more.
       const walkaroundCheckTargetMinutes = Number(body.walkaroundCheckTargetMinutes);
-      const fuelAnomalyMinMpg = Number(body.fuelAnomalyMinMpg);
-      const fuelAnomalyRollingDropPercent = Number(body.fuelAnomalyRollingDropPercent);
       const loadReminderMinutes = Number(body.loadReminderMinutes);
 
       if (!Number.isFinite(longShiftFlagHours) || longShiftFlagHours <= 0) {
@@ -364,12 +364,6 @@ serve(async (req: Request) => {
       if (!Number.isInteger(loadReminderMinutes) || loadReminderMinutes < 5 || loadReminderMinutes > 600) {
         return json({ error: "Load reminder must be a whole number of minutes between 5 and 600." }, 400);
       }
-      if (!Number.isFinite(fuelAnomalyMinMpg) || fuelAnomalyMinMpg <= 0) {
-        return json({ error: "Fuel anomaly MPG floor must be a positive number." }, 400);
-      }
-      if (!Number.isInteger(fuelAnomalyRollingDropPercent) || fuelAnomalyRollingDropPercent <= 0 || fuelAnomalyRollingDropPercent >= 100) {
-        return json({ error: "Fuel anomaly rolling-average drop must be a whole percentage between 1 and 99." }, 400);
-      }
 
       // allow_driver_night_out_requests (migration 050) is optional in
       // the body — only included in the update when the caller actually
@@ -382,12 +376,15 @@ serve(async (req: Request) => {
         night_out_max_gap_hours: nightOutMaxGapHours,
         compliance_alert_lead_days: complianceAlertLeadDays,
         walkaround_check_target_minutes: walkaroundCheckTargetMinutes,
-        fuel_anomaly_min_mpg: fuelAnomalyMinMpg,
-        fuel_anomaly_rolling_drop_percent: fuelAnomalyRollingDropPercent,
         load_reminder_minutes: loadReminderMinutes,
       };
       if (typeof body.allowDriverNightOutRequests === "boolean") {
         updatePayload.allow_driver_night_out_requests = body.allowDriverNightOutRequests;
+      }
+      // Optional so a plain Save Thresholds click doesn't accidentally
+      // toggle idle detection back on.
+      if (typeof body.idleDetectionEnabled === "boolean") {
+        updatePayload.idle_detection_enabled = body.idleDetectionEnabled;
       }
 
       const { error: updateError } = await supabaseAdmin
@@ -404,7 +401,7 @@ serve(async (req: Request) => {
         success: true,
         settings: {
           longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays,
-          walkaroundCheckTargetMinutes, fuelAnomalyMinMpg, fuelAnomalyRollingDropPercent, loadReminderMinutes,
+          walkaroundCheckTargetMinutes, loadReminderMinutes,
         },
       });
     }

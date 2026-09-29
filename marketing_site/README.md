@@ -16,18 +16,21 @@ npm run dev
 - `/features` — full module-by-module breakdown
 - `/pricing` — plan tiers, no invented numbers (see below)
 - `/about` — mission and principles
-- `/contact` — demo-request form
+- `/contact` — Request Access form (interest buyers → admin Accounts page)
 - `/legal/privacy`, `/legal/terms` — placeholders, see below
 
 ## Before this goes live — real things this needs from you
 
-1. **Contact form delivery.** `app/api/contact/route.ts` is wired for
-   [Resend](https://resend.com) but has no API key. Set `RESEND_API_KEY`
-   and `CONTACT_TO_EMAIL` as environment variables (in Vercel project
-   settings, not committed to the repo) once you have a Resend account
-   and a real inbox to receive submissions. Until then, submissions are
-   only written to the server logs and the form tells the visitor so
-   honestly rather than pretending to succeed.
+1. **Request Access form.** There is no self-service sign-up. The
+   `/contact` form posts to `app/api/contact/route.ts`, which stores each
+   visitor as an "interest buyer" through the Supabase `request-access`
+   Edge Function — they appear on the admin panel's **Accounts** page
+   (platform owner only) and in its Alert Panel. It needs
+   `SUPABASE_ANON_KEY` (the project's public anon key, same value as the
+   admin panel's `VITE_SUPABASE_ANON_KEY`) set in the Vercel project's
+   environment variables; `.env.local` has it for local dev. Optionally
+   also set `RESEND_API_KEY` + `CONTACT_TO_EMAIL` to get an email per
+   request.
 
 2. **Real contact email.** The Contact page shows `hello@tachyo.co.uk` as
    a placeholder — confirm that's a real, monitored inbox (or change it)

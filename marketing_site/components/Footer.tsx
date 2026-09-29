@@ -1,7 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { Container } from "./Container";
-import { APP_URL, SITE_TAGLINE } from "@/lib/config";
+import { APP_URL, REQUEST_ACCESS_PATH, SITE_TAGLINE } from "@/lib/config";
 
 const COLUMNS = [
   {
@@ -9,6 +9,7 @@ const COLUMNS = [
     links: [
       { href: "/features", label: "Features" },
       { href: "/pricing", label: "Pricing" },
+      { href: REQUEST_ACCESS_PATH, label: "Request Access" },
       { href: APP_URL, label: "Client Login", external: true },
     ],
   },

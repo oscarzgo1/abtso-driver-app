@@ -22,6 +22,9 @@ class DriverShift {
   /// (migration 049). A driver can couple a tractor without a trailer,
   /// a trailer without a tractor, both, or neither.
   final String? trailerId;
+  /// Typed trailer number for a trailer outside the org's fleet (e.g. a
+  /// customer's) — set instead of trailerId (migration 060).
+  final String? customTrailerNumber;
 
   DriverShift({
     required this.id,
@@ -42,6 +45,7 @@ class DriverShift {
     this.nightOutAmount = 0.0,
     this.vehicleId,
     this.trailerId,
+    this.customTrailerNumber,
   });
 
   factory DriverShift.fromJson(Map<String, dynamic> json) {
@@ -66,6 +70,7 @@ class DriverShift {
       nightOutAmount: (json['night_out_amount'] as num?)?.toDouble() ?? 0.0,
       vehicleId: json['vehicle_id'] as String?,
       trailerId: json['trailer_id'] as String?,
+      customTrailerNumber: json['custom_trailer_number'] as String?,
     );
   }
 
@@ -80,6 +85,7 @@ class DriverShift {
     Object? overrideRate = _unset,
     Object? vehicleId = _unset,
     Object? trailerId = _unset,
+    Object? customTrailerNumber = _unset,
   }) {
     return DriverShift(
       id: id,
@@ -100,6 +106,7 @@ class DriverShift {
       nightOutAmount: nightOutAmount ?? this.nightOutAmount,
       vehicleId: identical(vehicleId, _unset) ? this.vehicleId : vehicleId as String?,
       trailerId: identical(trailerId, _unset) ? this.trailerId : trailerId as String?,
+      customTrailerNumber: identical(customTrailerNumber, _unset) ? this.customTrailerNumber : customTrailerNumber as String?,
     );
   }
 
@@ -123,6 +130,7 @@ class DriverShift {
       'night_out_amount': nightOutAmount,
       'vehicle_id': vehicleId,
       'trailer_id': trailerId,
+      'custom_trailer_number': customTrailerNumber,
     };
   }
 }

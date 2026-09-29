@@ -67,6 +67,11 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
   // admin may not know it yet; left null (not a guessed default like 450
   // or 700) skips that specific check until it's actually set.
   const [fuelTankCapacity, setFuelTankCapacity] = useState('');
+  // Road-legal dates (migration 063) — the driver app warns, and asks for
+  // a signed acceptance, when any of these has passed.
+  const [motDue, setMotDue] = useState('');
+  const [taxDue, setTaxDue] = useState('');
+  const [insuranceExpiry, setInsuranceExpiry] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
@@ -96,6 +101,9 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
         inspection_type: resolveComboValue(inspectionTypeLabel, INSPECTION_TYPE_OPTIONS),
         inspection_due_date: dueDate ? dueDate.toISOString().slice(0, 10) : null,
         fuel_tank_capacity_litres: fuelTankCapacity.trim() ? parseInt(fuelTankCapacity, 10) : null,
+        mot_due_date: motDue || null,
+        tax_due_date: taxDue || null,
+        insurance_expiry_date: insuranceExpiry || null,
       });
       if (insertError) throw insertError;
       onSaved();
@@ -195,6 +203,18 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
                     value={fuelTankCapacity}
                     onChange={(e) => setFuelTankCapacity(e.target.value)}
                   />
+                </div>
+                <div className="input-group">
+                  <span className="input-label">MOT DUE</span>
+                  <input type="date" className="input-field" value={motDue} onChange={(e) => setMotDue(e.target.value)} />
+                </div>
+                <div className="input-group">
+                  <span className="input-label">ROAD TAX DUE</span>
+                  <input type="date" className="input-field" value={taxDue} onChange={(e) => setTaxDue(e.target.value)} />
+                </div>
+                <div className="input-group">
+                  <span className="input-label">INSURANCE EXPIRES</span>
+                  <input type="date" className="input-field" value={insuranceExpiry} onChange={(e) => setInsuranceExpiry(e.target.value)} />
                 </div>
               </div>
               <button type="submit" className="btn btn-primary" disabled={isSaving}>

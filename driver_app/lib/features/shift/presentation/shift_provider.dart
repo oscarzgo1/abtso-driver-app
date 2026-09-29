@@ -7,11 +7,14 @@ import 'package:latlong2/latlong.dart' as latlong;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/network/supabase_service.dart';
 import '../../../core/services/location_service.dart';
+import '../../../core/services/notification_service.dart';
+import '../../../core/utils/role_helper.dart';
 import 'package:tracelet/tracelet.dart' as tl;
 import '../../../core/utils/geofence_helper.dart';
 import '../data/depot_model.dart';
 import '../data/shift_model.dart';
 import '../../auth/presentation/auth_provider.dart';
+import '../../../core/network/entitlements_provider.dart';
 
 /// A clock-in/clock-out tap made while offline, held locally until it can be
 /// sent to the server. Carries only what was actually captured on-device at
@@ -50,6 +53,8 @@ class PendingShiftAction {
       );
 }
 
+const Object _unset = Object();
+
 class ShiftState {
   final List<Depot> depots;
   final bool isLoading;
@@ -63,6 +68,19 @@ class ShiftState {
   final bool isPlaybackRunning;
   final PendingShiftAction? pendingAction;
 
+  /// The active shift's attached load (migration 035/059) — read through
+  /// the attach-load Edge Function, never shift_revenue directly.
+  final String? loadReference;
+  final DateTime? loadDeliveredAt;
+  /// The load awaiting delivery (migration 063: a shift can carry several).
+  final String? currentLoadId;
+  /// Loads attached to this shift so far.
+  final int loadCount;
+  /// Org setting: stationary minutes before the load reminder fires.
+  final int loadReminderMinutes;
+  /// Walk-around check types fully submitted for the active shift.
+  final Set<String> completedWalkarounds;
+
   const ShiftState({
     this.depots = const [],
     this.isLoading = false,
@@ -75,6 +93,12 @@ class ShiftState {
     this.errorMessage,
     this.isPlaybackRunning = false,
     this.pendingAction,
+    this.loadReference,
+    this.loadDeliveredAt,
+    this.currentLoadId,
+    this.loadCount = 0,
+    this.loadReminderMinutes = 30,
+    this.completedWalkarounds = const {},
   });
 
   ShiftState copyWith({
@@ -93,7 +117,15 @@ class ShiftState {
     bool? isPlaybackRunning,
     PendingShiftAction? pendingAction,
     bool clearPendingAction = false,
+    Object? loadReference = _unset,
+    Object? loadDeliveredAt = _unset,
+    Object? currentLoadId = _unset,
+    int? loadCount,
+    int? loadReminderMinutes,
+    Set<String>? completedWalkarounds,
   }) {
+    // A shift's load and checklist never outlive the shift itself.
+    final resetShiftExtras = clearActiveShift;
     return ShiftState(
       depots: depots ?? this.depots,
       isLoading: isLoading ?? this.isLoading,
@@ -106,6 +138,12 @@ class ShiftState {
       errorMessage: clearErrorMessage ? null : (errorMessage ?? this.errorMessage),
       isPlaybackRunning: isPlaybackRunning ?? this.isPlaybackRunning,
       pendingAction: clearPendingAction ? null : (pendingAction ?? this.pendingAction),
+      loadReference: resetShiftExtras ? null : (identical(loadReference, _unset) ? this.loadReference : loadReference as String?),
+      loadDeliveredAt: resetShiftExtras ? null : (identical(loadDeliveredAt, _unset) ? this.loadDeliveredAt : loadDeliveredAt as DateTime?),
+      currentLoadId: resetShiftExtras ? null : (identical(currentLoadId, _unset) ? this.currentLoadId : currentLoadId as String?),
+      loadCount: resetShiftExtras ? 0 : (loadCount ?? this.loadCount),
+      loadReminderMinutes: loadReminderMinutes ?? this.loadReminderMinutes,
+      completedWalkarounds: resetShiftExtras ? const {} : (completedWalkarounds ?? this.completedWalkarounds),
     );
   }
 }
@@ -154,6 +192,13 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   List<Map<String, dynamic>> _offlineQueue = [];
   Timer? _pendingActionRetryTimer;
   bool _isFlushingPendingAction = false;
+
+  // Stationary load reminder — one reminder per stop; moving resets it.
+  static const double _stationaryRadiusM = 150;
+  static const double _movingSpeedMps = 2.5; // ~5.6 mph
+  Position? _stopAnchor;
+  DateTime? _stoppedSince;
+  bool _remindedThisStop = false;
 
   // Simulation Route Playback attributes
   Timer? _playbackTimer;
@@ -383,6 +428,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
     // If clocked in, check if we need to upload the ping to Supabase (limit to every 2 minutes)
     if (state.activeShift != null) {
+      _checkLoadReminder(position);
       _maybeUploadPing(position, forceUpload: forceUpload);
     }
   }
@@ -675,6 +721,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       if (response != null && response['status'] != 'completed' && response['end_time'] == null) {
         final activeShift = DriverShift.fromJson(response);
         state = state.copyWith(activeShift: activeShift);
+        unawaited(refreshShiftChecklist());
         await _startBackgroundTrackingService(driverId, activeShift.id);
         _startGpsPingTimer();
 
@@ -698,7 +745,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   }
 
   /// Start a new shift (clock-in)
-  Future<void> clockIn({String? vehicleId, String? trailerId}) async {
+  Future<void> clockIn({String? vehicleId, String? trailerId, String? customTrailerNumber}) async {
     state = state.copyWith(isLoading: true, clearErrorMessage: true);
 
     final pos = state.currentPosition;
@@ -755,6 +802,10 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
       if (result['success'] == true) {
         _lastCompletedShiftId = null;
+        _stopAnchor = null;
+        _stoppedSince = null;
+        _remindedThisStop = false;
+        if (_requiresFieldChecks) unawaited(NotificationService.requestPermission());
         await loadActiveShift();
 
         // Capture IDs immediately after loadActiveShift — do NOT rely on state later
@@ -787,12 +838,25 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
             // "Assigned Unit" reads vehicle_id as its initial value; an
             // admin can still correct either later (migration 045/049
             // keep that override).
-            if (vehicleId != null || trailerId != null) {
+            final customTrailer = trailerId == null ? customTrailerNumber?.trim().toUpperCase() : null;
+            final hasCustomTrailer = customTrailer != null && customTrailer.isNotEmpty;
+            if (vehicleId != null || trailerId != null || hasCustomTrailer) {
               try {
                 await SupabaseService.client.from('shifts').update({
                   if (vehicleId != null) 'vehicle_id': vehicleId,
                   if (trailerId != null) 'trailer_id': trailerId,
+                  if (hasCustomTrailer) 'custom_trailer_number': customTrailer,
                 }).eq('id', shiftId);
+                final current = state.activeShift;
+                if (current != null && current.id == shiftId) {
+                  state = state.copyWith(
+                    activeShift: current.copyWith(
+                      vehicleId: vehicleId ?? current.vehicleId,
+                      trailerId: trailerId ?? current.trailerId,
+                      customTrailerNumber: hasCustomTrailer ? customTrailer : current.customTrailerNumber,
+                    ),
+                  );
+                }
               } catch (vehicleErr) {
                 debugPrint('⚠️ Clock-in vehicle/trailer assignment failed: $vehicleErr');
               }
@@ -827,6 +891,124 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     }
   }
 
+  bool get _requiresFieldChecks => requiresFieldChecks(_ref.read(authProvider).driver);
+
+  /// Reloads the active shift's load/delivery state, the org's reminder
+  /// threshold, and which walk-around checks are already submitted.
+  Future<void> refreshShiftChecklist() async {
+    final shift = state.activeShift;
+    if (shift == null || !_requiresFieldChecks) return;
+    final results = await Future.wait<Object?>([
+      SupabaseService.fetchLoadStatus(shift.id),
+      SupabaseService.fetchCompletedWalkaroundTypes(shift.id),
+    ]);
+    if (state.activeShift?.id != shift.id) return;
+    final load = results[0] as Map<String, dynamic>?;
+    final walkarounds = results[1] as Set<String>;
+    state = state.copyWith(
+      completedWalkarounds: walkarounds,
+      loadReference: load != null ? load['load_reference'] as String? : state.loadReference,
+      loadDeliveredAt: load != null ? DateTime.tryParse(load['delivered_at']?.toString() ?? '') : state.loadDeliveredAt,
+      currentLoadId: load != null ? load['current_load_id'] as String? : state.currentLoadId,
+      loadCount: load != null ? ((load['loads'] as List?)?.length ?? (load['load_reference'] != null ? 1 : 0)) : state.loadCount,
+      loadReminderMinutes: (load?['reminder_minutes'] as num?)?.toInt(),
+    );
+  }
+
+  Future<Map<String, dynamic>> attachLoad(
+    String loadReference,
+    String? carrierName, {
+    DateTime? bookedDepartureAt,
+    DateTime? bookedDeliveryAt,
+    String? cargoPhotoPath,
+    bool trailerSealed = false,
+  }) async {
+    final shift = state.activeShift;
+    if (shift == null) return {'success': false, 'error': 'Clock in first.'};
+    final result = await SupabaseService.attachLoadReference(
+      shiftId: shift.id,
+      loadReference: loadReference,
+      carrierName: carrierName,
+      bookedDepartureAt: bookedDepartureAt,
+      bookedDeliveryAt: bookedDeliveryAt,
+      cargoPhotoPath: cargoPhotoPath,
+      trailerSealed: trailerSealed,
+    );
+    if (result['success'] == true && state.activeShift?.id == shift.id) {
+      state = state.copyWith(
+        loadReference: loadReference,
+        loadDeliveredAt: null,
+        currentLoadId: result['load_id'] as String?,
+        loadCount: state.loadCount + 1,
+      );
+      _remindedThisStop = false;
+    }
+    return result;
+  }
+
+  Future<Map<String, dynamic>> confirmLoadDelivered({
+    required List<Map<String, dynamic>> proofs,
+    String? notes,
+  }) async {
+    final shift = state.activeShift;
+    if (shift == null) return {'success': false, 'error': 'Clock in first.'};
+    final result = await SupabaseService.confirmLoadDelivered(
+      shift.id,
+      loadId: state.currentLoadId,
+      proofs: proofs,
+      notes: notes,
+    );
+    if (result['success'] == true && state.activeShift?.id == shift.id) {
+      state = state.copyWith(
+        loadDeliveredAt: DateTime.tryParse(result['delivered_at']?.toString() ?? '') ?? DateTime.now(),
+        currentLoadId: null,
+      );
+    }
+    return result;
+  }
+
+  void markWalkaroundCompleted(String checkType) {
+    state = state.copyWith(completedWalkarounds: {...state.completedWalkarounds, checkType});
+  }
+
+  /// Fires one on-device reminder when the vehicle has sat within
+  /// [_stationaryRadiusM] for the org's load_reminder_minutes while the
+  /// shift has no load attached, or its load isn't confirmed delivered.
+  void _checkLoadReminder(Position position) {
+    if (!_requiresFieldChecks) return;
+    // No point nagging about loads when the plan doesn't include them.
+    if (!hasFeature(_ref.read(entitlementsProvider).valueOrNull, 'loads_pod')) return;
+    final now = DateTime.now();
+    final anchor = _stopAnchor;
+    final moved = anchor == null ||
+        position.speed > _movingSpeedMps ||
+        GeofenceHelper.calculateDistance(anchor.latitude, anchor.longitude, position.latitude, position.longitude) > _stationaryRadiusM;
+    if (moved) {
+      _stopAnchor = position;
+      _stoppedSince = now;
+      _remindedThisStop = false;
+      return;
+    }
+    if (_remindedThisStop || _stoppedSince == null) return;
+    if (now.difference(_stoppedSince!).inMinutes < state.loadReminderMinutes) return;
+
+    final loadReference = state.loadReference;
+    if (loadReference == null) {
+      NotificationService.showLoadReminder(
+        title: 'Attach your load',
+        body: "You've been stopped for a while with no load on this shift. Open Tachyo › Quick Actions › Attach Load.",
+      );
+    } else if (state.loadDeliveredAt == null) {
+      NotificationService.showLoadReminder(
+        title: 'Has load $loadReference been delivered?',
+        body: 'If it has, confirm it in Tachyo › Quick Actions › Confirm Delivery.',
+      );
+    } else {
+      return;
+    }
+    _remindedThisStop = true;
+  }
+
   /// Couples/decouples the tractor and/or trailer on the already-active
   /// shift — called from the header toolbar's Couple/Decouple modal and
   /// from the dashboard's "No Tractor Assigned" sticky reminder. Updates
@@ -836,6 +1018,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     String? vehicleId,
     bool clearVehicle = false,
     String? trailerId,
+    String? customTrailerNumber,
     bool clearTrailer = false,
   }) async {
     final activeShift = state.activeShift;
@@ -846,13 +1029,18 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       vehicleId: vehicleId,
       clearVehicle: clearVehicle,
       trailerId: trailerId,
+      customTrailerNumber: customTrailerNumber,
       clearTrailer: clearTrailer,
     );
     if (success) {
+      final custom = customTrailerNumber?.trim().toUpperCase();
+      final hasCustom = trailerId == null && custom != null && custom.isNotEmpty;
+      final trailerChanged = clearTrailer || trailerId != null || hasCustom;
       state = state.copyWith(
         activeShift: activeShift.copyWith(
           vehicleId: clearVehicle ? null : (vehicleId ?? activeShift.vehicleId),
-          trailerId: clearTrailer ? null : (trailerId ?? activeShift.trailerId),
+          trailerId: trailerChanged ? trailerId : activeShift.trailerId,
+          customTrailerNumber: trailerChanged ? (hasCustom ? custom : null) : activeShift.customTrailerNumber,
         ),
       );
     }
@@ -1247,6 +1435,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _pendingActionRetryTimer = null;
     _lastCompletedShiftId = null;
     _lastUploadTime = null;
+    _stopAnchor = null;
+    _stoppedSince = null;
+    _remindedThisStop = false;
     state = const ShiftState();
     debugPrint('ShiftNotifier state reset completed on logout.');
   }

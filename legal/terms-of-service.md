@@ -112,4 +112,4 @@ These Terms are governed by the law of England and Wales, and the courts of Engl
 
 ## 14. Contact
 
-Questions about these Terms: **[INSERT: legal@tachyo.co.uk or equivalent real, monitored inbox]**.
+Questions about these Terms: **legal@tachyo.co.uk**.

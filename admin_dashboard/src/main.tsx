@@ -17,9 +17,13 @@ import '@fontsource/plus-jakarta-sans/700.css'
 import '@fontsource/plus-jakarta-sans/800.css'
 import './index.css'
 import App from './App.tsx'
+import SharedReport from './pages/SharedReport.tsx'
+
+// ?share=<token> — a partner's read-only analytics report, no login.
+const shareToken = new URLSearchParams(window.location.search).get('share')
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    {shareToken ? <SharedReport token={shareToken} /> : <App />}
   </StrictMode>,
 )

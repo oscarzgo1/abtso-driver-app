@@ -5,9 +5,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'auth_provider.dart';
+import 'activation_screen.dart';
+import 'widgets/pin_boxes.dart';
+import 'widgets/tachyo_brand.dart';
 import '../../legal/presentation/legal_review_screen.dart';
-import '../../../core/services/biometric_service.dart';
+import '../../../config/theme.dart';
+import '../../../core/network/supabase_service.dart';
+import '../../../core/services/entrance_gate.dart';
 
 class ShakeCurve extends Curve {
   final double count;
@@ -27,28 +33,34 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderStateMixin {
+  // Survives logout (unlike the session_* keys) — the company code is not a
+  // secret and rarely changes, so drivers only retype their ID and PIN.
+  static const _rememberedCompanyKey = 'remembered_company_code';
+
   final _companyCodeController = TextEditingController();
   final _driverIdController = TextEditingController();
   final _pinController = TextEditingController();
   final _formKey = GlobalKey<FormState>();
+  final _buttonKey = GlobalKey();
   bool _acceptedTerms = false;
+  bool _obscurePin = true;
+  String? _pinError;
 
-  // Biometric unlock gate — only ever engaged for a session restored on
-  // launch (see initState below), never for a fresh interactive login,
-  // which already requires the real PIN. _biometricFailed shows a retry
-  // affordance instead of silently looping the OS prompt.
-  bool _showBiometricLock = false;
-  bool _biometricBusy = false;
-  bool _biometricFailed = false;
+  /// True once the driver pressed Log in here. Separates a real sign-in
+  /// (form stays up, button morphs) from the silent session restore on cold
+  /// start (branded splash, then home or the entrance cinematic).
+  bool _submitted = false;
+  bool _succeeded = false;
+  bool _navigating = false;
+  bool _introStarted = false;
+  bool _revealing = false;
+  Offset _revealOrigin = Offset.zero;
 
-  late AnimationController _shakeController;
-  late Animation<double> _shakeAnimation;
-
-  // Two independently-timed controllers drive the soft background blobs —
-  // different durations keep the pair drifting out of sync with each other
-  // instead of breathing in lockstep, which reads as more organic.
-  late final AnimationController _blobController1;
-  late final AnimationController _blobController2;
+  late final AnimationController _shakeController;
+  late final Animation<double> _shakeAnimation;
+  late final AnimationController _introController; // header + sheet entrance
+  late final AnimationController _roadController; // header lane markings
+  late final AnimationController _revealController; // ink circle after success
 
   @override
   void initState() {
@@ -57,7 +69,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
       duration: const Duration(milliseconds: 400),
       vsync: this,
     );
-    _shakeAnimation = Tween<double>(begin: 0.0, end: 12.0)
+    _shakeAnimation = Tween<double>(begin: 0.0, end: 10.0)
         .animate(CurvedAnimation(
           parent: _shakeController,
           curve: const ShakeCurve(),
@@ -68,98 +80,47 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
         }
       });
 
-    _blobController1 = AnimationController(
-      duration: const Duration(seconds: 14),
+    _introController = AnimationController(
+      duration: const Duration(milliseconds: 900),
       vsync: this,
-    )..repeat(reverse: true);
-    _blobController2 = AnimationController(
-      duration: const Duration(seconds: 19),
+    );
+    _roadController = AnimationController(
+      duration: const Duration(milliseconds: 2400),
       vsync: this,
-    )..repeat(reverse: true);
+    );
+    _revealController = AnimationController(
+      duration: const Duration(milliseconds: 460),
+      vsync: this,
+    );
+
+    _loadRememberedCompanyCode();
 
     // Handle immediate redirect if already authenticated on launch.
     // The user stays logged in until they explicitly sign out — see
     // AuthNotifier.checkSession, which restores this session indefinitely
     // and never bounces the driver back here over a transient network issue.
-    // If this device has Face ID/fingerprint unlock turned on, a restored
-    // session is gated behind that instead of going straight to /home —
-    // see _showBiometricLock.
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = ref.read(authProvider);
-      if (!mounted || auth.status != AuthStatus.authenticated) return;
-      final biometricEnabled = await BiometricService.isEnabled();
-      if (!mounted) return;
-      if (!biometricEnabled) {
+      if (mounted && auth.status == AuthStatus.authenticated && !_navigating) {
+        _navigating = true;
         context.goNamed('home');
-        return;
       }
-      setState(() => _showBiometricLock = true);
-      _attemptBiometricUnlock();
     });
   }
 
-  Future<void> _attemptBiometricUnlock() async {
-    if (!mounted) return;
-    setState(() {
-      _biometricBusy = true;
-      _biometricFailed = false;
-    });
-    final unlocked = await BiometricService.authenticate(reason: 'Unlock Tachyo to continue');
-    if (!mounted) return;
-    if (unlocked) {
-      context.goNamed('home');
-    } else {
-      setState(() {
-        _biometricBusy = false;
-        _biometricFailed = true;
-      });
-    }
-  }
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    if (reduceMotion) _introController.value = 1;
 
-  /// One-time prompt right after a fresh, real (PIN-verified) login —
-  /// never on a restored session. hasBeenAsked() means this only ever
-  /// interrupts the flow once per device, regardless of the answer.
-  Future<void> _maybeOfferBiometricEnrollment() async {
-    if (!mounted) return;
-    final alreadyAsked = await BiometricService.hasBeenAsked();
-    if (alreadyAsked || !mounted) return;
-    final supported = await BiometricService.isDeviceSupported();
-    if (!supported || !mounted) return;
-
-    final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
-    final wantsIt = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF0F172A) : Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Enable Face ID Unlock?', style: TextStyle(fontWeight: FontWeight.w900, letterSpacing: 0.3, fontSize: 17)),
-        content: const Text(
-          'Use Face ID or fingerprint to unlock Tachyo instantly next time, instead of typing your PIN.',
-          style: TextStyle(fontSize: 13.5, height: 1.4),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: Text('Not Now', style: TextStyle(color: isDark ? Colors.white60 : Colors.black54, fontWeight: FontWeight.bold)),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFCC0000),
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            child: const Text('Enable'),
-          ),
-        ],
-      ),
-    );
-    await BiometricService.markAsked();
-    if (wantsIt == true) {
-      final confirmed = await BiometricService.authenticate(reason: 'Confirm to enable Face ID unlock');
-      if (confirmed) await BiometricService.setEnabled(true);
+    // Lane markings only move while the header is fully visible — they stop
+    // as soon as the keyboard opens (header collapses) to save battery.
+    final runRoad = !reduceMotion && MediaQuery.viewInsetsOf(context).bottom == 0;
+    if (runRoad && !_roadController.isAnimating) {
+      _roadController.repeat();
+    } else if (!runRoad && _roadController.isAnimating) {
+      _roadController.stop();
     }
   }
 
@@ -169,49 +130,26 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
     _driverIdController.dispose();
     _pinController.dispose();
     _shakeController.dispose();
-    _blobController1.dispose();
-    _blobController2.dispose();
+    _introController.dispose();
+    _roadController.dispose();
+    _revealController.dispose();
     super.dispose();
   }
 
-  // A soft, blurred-looking circle (radial gradient fading to transparent —
-  // cheaper than an actual blur filter) that drifts gently within
-  // [driftRange] as [animation] runs. Positioned via whichever of
-  // left/top/right/bottom is supplied, so it can anchor to any corner.
-  Widget _buildBlob({
-    required Animation<double> animation,
-    required double size,
-    required Color color,
-    double? left,
-    double? top,
-    double? right,
-    double? bottom,
-    required Offset driftRange,
-  }) {
-    return AnimatedBuilder(
-      animation: animation,
-      builder: (context, child) {
-        final dx = driftRange.dx * animation.value;
-        final dy = driftRange.dy * animation.value;
-        return Positioned(
-          left: left != null ? left + dx : null,
-          top: top != null ? top + dy : null,
-          right: right != null ? right - dx : null,
-          bottom: bottom != null ? bottom - dy : null,
-          child: child!,
-        );
-      },
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          gradient: RadialGradient(
-            colors: [color, color.withValues(alpha: 0)],
-          ),
-        ),
-      ),
-    );
+  Future<void> _loadRememberedCompanyCode() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final code = prefs.getString(_rememberedCompanyKey);
+      if (!mounted || code == null || _companyCodeController.text.isNotEmpty) return;
+      _companyCodeController.text = code;
+    } catch (_) {}
+  }
+
+  Future<void> _rememberCompanyCode() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_rememberedCompanyKey, _companyCodeController.text.trim());
+    } catch (_) {}
   }
 
   /// Opens the consolidated legal document review. Tapping its header
@@ -227,25 +165,89 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
     }
   }
 
+  String? _validatePin(String value) {
+    final pin = value.trim();
+    if (pin.isEmpty) return 'Enter your 6-digit PIN';
+    if (pin.length != 6) return 'Your PIN is 6 digits';
+    return null;
+  }
+
   void _handleLogin() {
     if (!_acceptedTerms) return; // Button is disabled in this state; guarded here too.
-    if (_formKey.currentState!.validate()) {
-      FocusScope.of(context).unfocus();
-      ref.read(authProvider.notifier).login(
-            _companyCodeController.text,
-            _driverIdController.text,
-            _pinController.text,
-          );
+    final formOk = _formKey.currentState!.validate();
+    final pinError = _validatePin(_pinController.text);
+    setState(() => _pinError = pinError);
+    if (!formOk || pinError != null) {
+      HapticFeedback.lightImpact();
+      return;
     }
+    FocusScope.of(context).unfocus();
+    _submitted = true;
+    ref.read(authProvider.notifier).login(
+          _companyCodeController.text,
+          _driverIdController.text,
+          _pinController.text,
+        );
+  }
+
+  void _clearAuthError() {
+    if (ref.read(authProvider).status == AuthStatus.error) {
+      ref.read(authProvider.notifier).clearError();
+    }
+  }
+
+  /// Cold start with a stored session — no form was shown to the driver.
+  void _onSessionRestored() {
+    if (_navigating) return;
+    _navigating = true;
+    context.goNamed(EntranceGate.playOnColdStart ? 'greeting' : 'home');
+  }
+
+  /// The driver just signed in here: ✓ on the button, the button's circle
+  /// floods the screen in brand ink, and the cinematic picks up from there.
+  Future<void> _onSignedIn() async {
+    if (_navigating) return;
+    _navigating = true;
+    _rememberCompanyCode();
+    HapticFeedback.lightImpact();
+    setState(() => _succeeded = true);
+
+    final play = await EntranceGate.playAfterLogin();
+    await Future.delayed(const Duration(milliseconds: 360));
+    if (!mounted) return;
+
+    if (!play) {
+      context.goNamed('home');
+      return;
+    }
+    if (MediaQuery.disableAnimationsOf(context)) {
+      context.goNamed('greeting');
+      return;
+    }
+
+    final box = _buttonKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box != null && box.hasSize) {
+      _revealOrigin = box.localToGlobal(box.size.center(Offset.zero));
+    } else {
+      _revealOrigin = MediaQuery.sizeOf(context).center(Offset.zero);
+    }
+    setState(() => _revealing = true);
+    await _revealController.forward();
+    if (mounted) context.goNamed('greeting');
+  }
+
+  void _onLoginFailed() {
+    HapticFeedback.mediumImpact();
+    _pinController.clear();
+    _shakeController.forward(from: 0);
   }
 
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authProvider);
-    final theme = Theme.of(context);
 
     // Listen for authentication success or failure
-    ref.listen<AuthState>(authProvider, (prev, next) async {
+    ref.listen<AuthState>(authProvider, (prev, next) {
       if (next.status == AuthStatus.authenticated && prev?.status != AuthStatus.authenticated) {
         // Terms were accepted via the checkbox on this screen, which is the
         // only way to reach a successful login — record it against the
@@ -253,324 +255,292 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
         // gated on this write succeeding: a slow/offline acceptance sync
         // should never block a driver from starting a shift.
         ref.read(authProvider.notifier).acceptTerms();
-        // A fresh, PIN-verified login — the one moment it's safe to offer
-        // Face ID as a shortcut for next time (never offered on a session
-        // restored from disk, only right after typing the real PIN).
-        await _maybeOfferBiometricEnrollment();
-        // mounted is genuinely checked immediately before this use; the
-        // lint doesn't trace State.mounted through a ref.listen closure
-        // reliably, hence the explicit ignore below.
-        if (mounted) context.goNamed('greeting'); // ignore: use_build_context_synchronously
-      } else if (next.status == AuthStatus.error) {
-        _shakeController.forward();
+        if (_submitted) {
+          _onSignedIn();
+        } else {
+          _onSessionRestored();
+        }
+      } else if (next.status == AuthStatus.error && prev?.status != AuthStatus.error && _submitted) {
+        _onLoginFailed();
       }
     });
 
-    if (_showBiometricLock) {
-      return _buildBiometricLockScreen(theme);
+    // Restoring a stored session (cold start) — show the brand splash, never
+    // the form, so a signed-in driver doesn't see the login flash past.
+    if (!_submitted &&
+        (authState.status == AuthStatus.loading || authState.status == AuthStatus.authenticated)) {
+      return const _BrandSplash();
     }
 
-    if (authState.status == AuthStatus.loading) {
-      return Scaffold(
-        backgroundColor: Colors.white,
-        body: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Image.asset('assets/images/tachyo_logo.png', height: 40, fit: BoxFit.contain),
-              const SizedBox(height: 24),
-              const SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.5,
-                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFCC0000)),
+    if (!_introStarted) {
+      _introStarted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _introController.forward();
+      });
+    }
+
+    final media = MediaQuery.of(context);
+    final keyboardOpen = media.viewInsets.bottom > 0;
+    final headerHeight = keyboardOpen
+        ? media.padding.top + 96
+        : (media.size.height * 0.34).clamp(230.0, 330.0);
+
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
+        backgroundColor: TachyoTheme.ink,
+        body: Stack(
+          children: [
+            Column(
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 320),
+                  curve: Curves.easeOutCubic,
+                  height: headerHeight,
+                  width: double.infinity,
+                  child: _LoginHeader(
+                    road: _roadController,
+                    intro: _introController,
+                    compact: keyboardOpen,
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFFAFAFA),
-      body: Stack(
-        children: [
-          // Soft drifting colour blobs behind everything — background stays
-          // white/near-white, this just gives it some depth instead of
-          // being completely flat.
-          Positioned.fill(
-            child: IgnorePointer(
-              child: ClipRect(
-                child: Stack(
-                  children: [
-                    _buildBlob(
-                      animation: _blobController1,
-                      size: 260,
-                      color: const Color(0xFFCC0000).withValues(alpha: 0.07),
-                      left: -80,
-                      top: -60,
-                      driftRange: const Offset(30, 25),
+                Expanded(child: _buildSheet(authState)),
+              ],
+            ),
+            Positioned.fill(
+              child: IgnorePointer(
+                ignoring: !_revealing,
+                child: AnimatedBuilder(
+                  animation: _revealController,
+                  builder: (context, _) => CustomPaint(
+                    painter: _RevealPainter(
+                      origin: _revealOrigin,
+                      progress: _revealController.value,
                     ),
-                    _buildBlob(
-                      animation: _blobController2,
-                      size: 220,
-                      color: const Color(0xFF333333).withValues(alpha: 0.05),
-                      right: -60,
-                      bottom: -40,
-                      driftRange: const Offset(25, 20),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
-          ),
-          SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
-            child: AnimatedBuilder(
-              animation: _shakeAnimation,
-              builder: (context, child) {
-                return Transform.translate(
-                  offset: Offset(_shakeAnimation.value, 0),
-                  child: child,
-                );
-              },
-              // Capped, not full-bleed — on a wide (desktop/tablet) viewport
-              // the card used to stretch edge to edge while every font/icon
-              // inside stayed at its small fixed size, which is exactly why
-              // it read as "too small": tiny content in a huge box. A real
-              // max-width keeps the card a sensibly-sized, well-proportioned
-              // block centered on the grey background at any viewport size.
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 460),
-                child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(32, 40, 32, 32),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(24),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.06),
-                      blurRadius: 24,
-                      offset: const Offset(0, 8),
-                    ),
-                  ],
-                ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSheet(AuthState authState) {
+    final slide = CurvedAnimation(
+      parent: _introController,
+      curve: const Interval(0.25, 1, curve: Curves.easeOutCubic),
+    );
+    final hasAuthError = authState.status == AuthStatus.error && authState.errorMessage != null;
+
+    return AnimatedBuilder(
+      animation: slide,
+      builder: (context, child) => Transform.translate(
+        offset: Offset(0, 56 * (1 - slide.value)),
+        child: Opacity(opacity: slide.value, child: child),
+      ),
+      // Capped width: on a tablet/desktop viewport the sheet stays a
+      // well-proportioned column instead of stretching edge to edge.
+      child: Align(
+        alignment: Alignment.topCenter,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 480),
+          child: Container(
+            constraints: const BoxConstraints.expand(),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            child: SafeArea(
+              top: false,
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(24, 28, 24, 16),
                 child: Form(
                   key: _formKey,
                   child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Brand mark
-                    Center(
-                      child: Image.asset('assets/images/tachyo_logo.png', height: 58, fit: BoxFit.contain),
-                    ),
-
-                    const SizedBox(height: 12),
-
-                    Text(
-                      'LOGISTICS & TRANSPORT',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        fontSize: 12,
-                        letterSpacing: 1.5,
-                        fontWeight: FontWeight.w800,
-                        color: const Color(0xFF555555),
-                      ),
-                    ),
-
-                    const SizedBox(height: 32),
-
-                    // Company Code Input — namespaces every driver ID by
-                    // employer, since driver IDs are only unique within a
-                    // single company.
-                    TextFormField(
-                      controller: _companyCodeController,
-                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 16),
-                      decoration: InputDecoration(
-                        hintText: 'COMPANY CODE',
-                        hintStyle: GoogleFonts.outfit(fontSize: 14, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
-                        counterText: '',
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                        prefixIcon: const Icon(Icons.apartment_outlined, color: Color(0xFF888888), size: 22),
-                        prefixIconConstraints: const BoxConstraints(minWidth: 42, minHeight: 22),
-                        filled: true,
-                        fillColor: const Color(0xFFF5F5F5),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: const BorderSide(color: Color(0xFFBBBBBB), width: 1.5),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: const BorderSide(color: Color(0xFF333333), width: 2),
-                        ),
-                      ),
-                      textCapitalization: TextCapitalization.none,
-                      autocorrect: false,
-                      maxLength: 40,
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'COMPANY CODE REQUIRED';
-                        }
-                        return null;
-                      },
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    // Driver ID / Username Input
-                    TextFormField(
-                      controller: _driverIdController,
-                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 16),
-                      decoration: InputDecoration(
-                        hintText: 'USERNAME OR ID (e.g. john.smith)',
-                        hintStyle: GoogleFonts.outfit(fontSize: 14, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
-                        counterText: '',
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                        prefixIcon: const Icon(Icons.person_outline, color: Color(0xFF888888), size: 22),
-                        prefixIconConstraints: const BoxConstraints(minWidth: 42, minHeight: 22),
-                        filled: true,
-                        fillColor: const Color(0xFFF5F5F5),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: const BorderSide(color: Color(0xFFBBBBBB), width: 1.5),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: const BorderSide(color: Color(0xFF333333), width: 2),
-                        ),
-                      ),
-                      textCapitalization: TextCapitalization.none,
-                      autocorrect: false,
-                      maxLength: 40,
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'USERNAME OR EMPLOYEE ID REQUIRED';
-                        }
-                        return null;
-                      },
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    // PIN Input
-                    TextFormField(
-                      controller: _pinController,
-                      style: GoogleFonts.outfit(color: const Color(0xFF333333), fontWeight: FontWeight.w600, fontSize: 16),
-                      decoration: InputDecoration(
-                        hintText: 'SECURITY PIN (6 DIGITS)',
-                        hintStyle: GoogleFonts.outfit(fontSize: 14, color: const Color(0xFF999999), fontWeight: FontWeight.w500),
-                        counterText: '',
-                        isDense: true,
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
-                        prefixIcon: const Icon(Icons.lock_outline, color: Color(0xFF888888), size: 22),
-                        prefixIconConstraints: const BoxConstraints(minWidth: 42, minHeight: 22),
-                        filled: true,
-                        fillColor: const Color(0xFFF5F5F5),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: const BorderSide(color: Color(0xFFBBBBBB), width: 1.5),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(14),
-                          borderSide: const BorderSide(color: Color(0xFF333333), width: 2),
-                        ),
-                      ),
-                      obscureText: true,
-                      keyboardType: TextInputType.number,
-                      maxLength: 6,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                      validator: (value) {
-                        if (value == null || value.trim().isEmpty) {
-                          return 'PIN REQUIRED';
-                        }
-                        if (value.trim().length != 6) {
-                          return 'PIN MUST BE 6 DIGITS';
-                        }
-                        return null;
-                      },
-                    ),
-
-                    const SizedBox(height: 24),
-
-                    // Error Message
-                    if (authState.status == AuthStatus.error) ...[
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
                       Text(
-                        authState.errorMessage?.toUpperCase() ?? 'LOGIN FAILED',
+                        'Sign in',
                         style: GoogleFonts.outfit(
-                          color: const Color(0xFFCC0000),
-                          fontWeight: FontWeight.w700,
-                          fontSize: 13,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w800,
+                          color: TachyoTheme.charcoal,
+                          letterSpacing: -0.6,
                         ),
-                        textAlign: TextAlign.center,
                       ),
-                      const SizedBox(height: 18),
-                    ],
+                      const SizedBox(height: 4),
+                      Text(
+                        'Use the details your manager gave you.',
+                        style: GoogleFonts.outfit(
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w500,
+                          color: TachyoTheme.charcoalMid,
+                        ),
+                      ),
 
-                    // Terms & Conditions consent — required before login is
-                    // possible; replaces the old post-login acceptance screen.
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        SizedBox(
-                          width: 26,
-                          height: 26,
-                          child: Checkbox(
-                            value: _acceptedTerms,
-                            onChanged: (value) => setState(() => _acceptedTerms = value ?? false),
-                            activeColor: const Color(0xFFCC0000),
-                            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            visualDensity: VisualDensity.compact,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+                      const SizedBox(height: 24),
+
+                      // Company Code — namespaces every driver ID by
+                      // employer, since driver IDs are only unique within a
+                      // single company.
+                      const _FieldLabel('Company code'),
+                      TextFormField(
+                        controller: _companyCodeController,
+                        style: _fieldTextStyle,
+                        decoration: _inputDecoration(icon: Icons.apartment_outlined, hint: 'Your company code'),
+                        textCapitalization: TextCapitalization.none,
+                        textInputAction: TextInputAction.next,
+                        autocorrect: false,
+                        maxLength: 40,
+                        onChanged: (_) => _clearAuthError(),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Enter your company code';
+                          }
+                          return null;
+                        },
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // Driver ID / Username
+                      const _FieldLabel('Username or driver ID'),
+                      TextFormField(
+                        controller: _driverIdController,
+                        style: _fieldTextStyle,
+                        decoration: _inputDecoration(icon: Icons.person_outline, hint: 'e.g. john.smith'),
+                        textCapitalization: TextCapitalization.none,
+                        textInputAction: TextInputAction.next,
+                        autocorrect: false,
+                        maxLength: 40,
+                        onChanged: (_) => _clearAuthError(),
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Enter your username or employee ID';
+                          }
+                          return null;
+                        },
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // PIN — six segmented cells over the system number pad
+                      Row(
+                        children: [
+                          const Expanded(child: _FieldLabel('PIN')),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(8),
+                            onTap: () => setState(() => _obscurePin = !_obscurePin),
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(8, 4, 4, 12),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    _obscurePin ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                                    size: 18,
+                                    color: TachyoTheme.charcoalMid,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    _obscurePin ? 'Show' : 'Hide',
+                                    style: GoogleFonts.outfit(
+                                      fontSize: 13.5,
+                                      fontWeight: FontWeight.w700,
+                                      color: TachyoTheme.charcoalMid,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      AnimatedBuilder(
+                        animation: _shakeAnimation,
+                        builder: (context, child) => Transform.translate(
+                          offset: Offset(_shakeAnimation.value, 0),
+                          child: child,
+                        ),
+                        child: PinBoxes(
+                          controller: _pinController,
+                          obscure: _obscurePin,
+                          hasError: _pinError != null || hasAuthError,
+                          onChanged: (_) {
+                            if (_pinError != null) setState(() => _pinError = null);
+                            _clearAuthError();
+                          },
+                        ),
+                      ),
+                      if (_pinError != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8, left: 4),
+                          child: Text(
+                            _pinError!,
+                            style: GoogleFonts.outfit(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: TachyoTheme.brandRed,
+                            ),
                           ),
                         ),
-                        const SizedBox(width: 12),
-                        // Deliberately not wrapped in its own tap-to-toggle
-                        // GestureDetector: doing so would put a second
-                        // TapGestureRecognizer in the same gesture arena as
-                        // the "Terms & Conditions" link below, making it
-                        // unreliable which one wins on tap. The checkbox
-                        // above is the sole toggle; this text carries only
-                        // the link's own recognizer.
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.only(top: 3),
+
+                      // Server-side error (wrong PIN, lock-out, PIN not set up)
+                      AnimatedSize(
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeOutCubic,
+                        alignment: Alignment.topCenter,
+                        child: hasAuthError
+                            ? Padding(
+                                padding: const EdgeInsets.only(top: 16),
+                                child: _ErrorBanner(message: authState.errorMessage!),
+                              )
+                            : const SizedBox(width: double.infinity),
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // Terms & Conditions consent — required before login is
+                      // possible; replaces the old post-login acceptance screen.
+                      Row(
+                        children: [
+                          Checkbox(
+                            value: _acceptedTerms,
+                            onChanged: (value) => setState(() => _acceptedTerms = value ?? false),
+                            activeColor: TachyoTheme.brandRed,
+                            side: const BorderSide(color: Color(0xFFBDBDBD), width: 1.5),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+                          ),
+                          const SizedBox(width: 4),
+                          // Deliberately not wrapped in its own tap-to-toggle
+                          // GestureDetector: doing so would put a second
+                          // TapGestureRecognizer in the same gesture arena as
+                          // the "Terms & Conditions" link below, making it
+                          // unreliable which one wins on tap. The checkbox
+                          // is the sole toggle; this text carries only the
+                          // links' own recognizers.
+                          Expanded(
                             child: RichText(
                               text: TextSpan(
                                 style: GoogleFonts.outfit(
-                                  fontSize: 13.5,
+                                  fontSize: 14,
                                   height: 1.4,
-                                  color: const Color(0xFF555555),
-                                  fontWeight: FontWeight.w600,
+                                  color: TachyoTheme.charcoalMid,
+                                  fontWeight: FontWeight.w500,
                                 ),
                                 children: [
                                   const TextSpan(text: 'I accept the '),
                                   TextSpan(
                                     text: 'Terms & Conditions',
-                                    style: GoogleFonts.outfit(
-                                      color: const Color(0xFFCC0000),
-                                      fontWeight: FontWeight.w800,
-                                      decoration: TextDecoration.underline,
-                                      decorationColor: const Color(0xFFCC0000),
-                                    ),
+                                    style: _linkStyle,
                                     recognizer: TapGestureRecognizer()..onTap = () => _openLegalReview(),
                                   ),
                                   const TextSpan(text: ' and '),
                                   TextSpan(
                                     text: 'Privacy Policy',
-                                    style: GoogleFonts.outfit(
-                                      color: const Color(0xFFCC0000),
-                                      fontWeight: FontWeight.w800,
-                                      decoration: TextDecoration.underline,
-                                      decorationColor: const Color(0xFFCC0000),
-                                    ),
+                                    style: _linkStyle,
                                     // Both discrete links open the same
                                     // consolidated document feed — there's
                                     // one real modal covering every policy,
@@ -581,137 +551,365 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                               ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 24),
-
-                    // Login Button (Sleek, brand red primary action)
-                    ElevatedButton(
-                      onPressed: (authState.status == AuthStatus.loading || !_acceptedTerms)
-                          ? null
-                          : _handleLogin,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFFCC0000),
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor: const Color(0xFFE0A0A0),
-                        disabledForegroundColor: Colors.white.withValues(alpha: 0.85),
-                        minimumSize: const Size(double.infinity, 54),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 2,
-                        shadowColor: const Color(0xFFCC0000).withValues(alpha: 0.4),
+                        ],
                       ),
-                      child: authState.status == AuthStatus.loading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2.5,
-                                color: Colors.white,
-                              ),
-                            )
-                          : Text(
-                              'Log in',
-                              style: GoogleFonts.outfit(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 0.3,
-                              ),
+
+                      const SizedBox(height: 16),
+
+                      _buildLoginButton(authState),
+
+                      const SizedBox(height: 8),
+
+                      // Activation + forgot PIN links (migration 065).
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Flexible(
+                            child: TextButton(
+                              onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+                                builder: (_) => ActivationScreen(
+                                  initialCompanyCode: _companyCodeController.text,
+                                  initialDriverId: _driverIdController.text,
+                                ),
+                              )),
+                              style: _linkButtonStyle(TachyoTheme.brandRed),
+                              child: const Text('I have an activation code', overflow: TextOverflow.ellipsis),
                             ),
-                    ),
-
-                    const SizedBox(height: 32),
-
-                    // Clean typography footer
-                    const Text(
-                      'PRIVATE SYSTEM ACCESS\nAUTHORISED EMPLOYEES ONLY',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 11,
-                        letterSpacing: 0.8,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF888888),
+                          ),
+                          TextButton(
+                            onPressed: () async {
+                              final id = _driverIdController.text.trim();
+                              if (id.isEmpty) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                                  content: Text('Enter your Driver ID first, then tap Forgot PIN.'),
+                                  backgroundColor: Color(0xFF111111), behavior: SnackBarBehavior.floating,
+                                ));
+                                return;
+                              }
+                              final messenger = ScaffoldMessenger.of(context);
+                              final result = await SupabaseService.requestPinReset(driverId: id);
+                              messenger.showSnackBar(SnackBar(
+                                content: Text(result['success'] == true
+                                    ? 'Your manager will send you a new activation code shortly.'
+                                    : (result['error']?.toString() ?? 'Could not send the reset request.')),
+                                backgroundColor: result['success'] == true ? const Color(0xFF111111) : const Color(0xFFCC0000),
+                                behavior: SnackBarBehavior.floating,
+                              ));
+                            },
+                            style: _linkButtonStyle(TachyoTheme.charcoalMid),
+                            child: const Text('Forgot PIN'),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
+
+                      const SizedBox(height: 12),
+
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.lock_outline_rounded, size: 14, color: TachyoTheme.charcoalLight),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Private system · Authorised employees only',
+                            style: GoogleFonts.outfit(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: TachyoTheme.charcoalLight,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
-              ),
               ),
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  /// Full-width red button that shrinks to a 56dp circle while signing in
+  /// (spinner), shows ✓ on success, and is the origin of the ink reveal.
+  /// Until the terms are ticked it reads as a neutral hint, not a broken
+  /// pale-red button.
+  Widget _buildLoginButton(AuthState authState) {
+    final busy = _submitted && authState.status == AuthStatus.loading;
+    final done = _succeeded;
+    final compact = busy || done;
+    final enabled = _acceptedTerms && !compact;
+    final radius = BorderRadius.circular(compact ? 28 : 14);
+
+    return LayoutBuilder(
+      builder: (context, constraints) => Center(
+        child: AnimatedContainer(
+          key: _buttonKey,
+          duration: const Duration(milliseconds: 340),
+          curve: Curves.easeInOutCubic,
+          width: compact ? 56 : constraints.maxWidth,
+          height: 56,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            color: (_acceptedTerms || compact) ? TachyoTheme.brandRed : const Color(0xFFEDEDED),
+            borderRadius: radius,
+            boxShadow: (_acceptedTerms || compact)
+                ? [
+                    BoxShadow(
+                      color: TachyoTheme.brandRed.withValues(alpha: 0.28),
+                      blurRadius: 18,
+                      offset: const Offset(0, 8),
+                    ),
+                  ]
+                : const [],
+          ),
+          child: Material(
+            type: MaterialType.transparency,
+            child: InkWell(
+              borderRadius: radius,
+              onTap: enabled ? _handleLogin : null,
+              child: Center(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: ScaleTransition(scale: animation, child: child),
+                  ),
+                  child: done
+                      ? const Icon(Icons.check_rounded, key: ValueKey('done'), color: Colors.white, size: 30)
+                      : busy
+                          ? const SizedBox(
+                              key: ValueKey('busy'),
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
+                            )
+                          : Text(
+                              _acceptedTerms ? 'Log in' : 'Accept the terms to log in',
+                              key: ValueKey(_acceptedTerms),
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.clip,
+                              style: GoogleFonts.outfit(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.2,
+                                color: _acceptedTerms ? Colors.white : TachyoTheme.charcoalLight,
+                              ),
+                            ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  TextStyle get _fieldTextStyle => GoogleFonts.outfit(
+        color: TachyoTheme.charcoal,
+        fontWeight: FontWeight.w600,
+        fontSize: 16,
+      );
+
+  TextStyle get _linkStyle => GoogleFonts.outfit(
+        color: TachyoTheme.brandRed,
+        fontWeight: FontWeight.w700,
+        decoration: TextDecoration.underline,
+        decorationColor: TachyoTheme.brandRed,
+      );
+
+  ButtonStyle _linkButtonStyle(Color color) => TextButton.styleFrom(
+        foregroundColor: color,
+        minimumSize: const Size(48, 48),
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        textStyle: GoogleFonts.outfit(fontSize: 14, fontWeight: FontWeight.w700),
+      );
+
+  // Fill, borders and radii come from TachyoTheme.inputDecorationTheme.
+  InputDecoration _inputDecoration({required IconData icon, required String hint}) => InputDecoration(
+        hintText: hint,
+        hintStyle: GoogleFonts.outfit(fontSize: 15, color: const Color(0xFFAAAAAA), fontWeight: FontWeight.w500),
+        counterText: '',
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
+        prefixIcon: Icon(icon, color: TachyoTheme.charcoalLight, size: 22),
+        errorStyle: GoogleFonts.outfit(fontSize: 12.5, fontWeight: FontWeight.w600, color: TachyoTheme.brandRed),
+      );
+}
+
+class _FieldLabel extends StatelessWidget {
+  final String text;
+  const _FieldLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 2, bottom: 8),
+      child: Text(
+        text,
+        style: GoogleFonts.outfit(
+          fontSize: 13.5,
+          fontWeight: FontWeight.w700,
+          color: TachyoTheme.charcoal,
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorBanner extends StatelessWidget {
+  final String message;
+  const _ErrorBanner({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: TachyoTheme.brandRed.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: TachyoTheme.brandRed.withValues(alpha: 0.25)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline_rounded, color: TachyoTheme.brandRed, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: GoogleFonts.outfit(
+                fontSize: 13.5,
+                height: 1.35,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFF8A0000),
+              ),
+            ),
           ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildBiometricLockScreen(ThemeData theme) {
-    final isDark = theme.brightness == Brightness.dark;
-    return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF0F172A) : const Color(0xFFFAFAFA),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Image.asset('assets/images/tachyo_logo.png', height: 48, fit: BoxFit.contain),
-                const SizedBox(height: 40),
-                Container(
-                  width: 84,
-                  height: 84,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFCC0000).withValues(alpha: 0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  alignment: Alignment.center,
-                  child: const Icon(Icons.face_retouching_natural, size: 40, color: Color(0xFFCC0000)),
+/// Dark brand band: lockup centred over slowly moving lane markings.
+/// Collapses to a single-row lockup while the keyboard is open.
+class _LoginHeader extends StatelessWidget {
+  final Animation<double> road;
+  final Animation<double> intro;
+  final bool compact;
+
+  const _LoginHeader({required this.road, required this.intro, required this.compact});
+
+  @override
+  Widget build(BuildContext context) {
+    final fade = CurvedAnimation(parent: intro, curve: const Interval(0, 0.6, curve: Curves.easeOut));
+    return Stack(
+      children: [
+        const Positioned.fill(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: Alignment(0, -0.1),
+                radius: 1.1,
+                colors: [Color(0xFF2A2A2A), TachyoTheme.ink],
+              ),
+            ),
+          ),
+        ),
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 320),
+          curve: Curves.easeOutCubic,
+          left: 0,
+          right: 0,
+          bottom: compact ? 4 : 32,
+          height: 24,
+          child: FadeTransition(
+            opacity: fade,
+            child: AnimatedBuilder(
+              animation: road,
+              builder: (context, _) => CustomPaint(painter: RoadPainter(phase: road.value)),
+            ),
+          ),
+        ),
+        SafeArea(
+          bottom: false,
+          child: Padding(
+            padding: EdgeInsets.only(bottom: compact ? 14 : 72),
+            child: Center(
+              child: FadeTransition(
+                opacity: fade,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: TachyoLockup(compact: compact),
                 ),
-                const SizedBox(height: 24),
-                Text(
-                  'Welcome back',
-                  style: GoogleFonts.outfit(fontSize: 18, fontWeight: FontWeight.w800, color: isDark ? Colors.white : const Color(0xFF333333)),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  _biometricFailed ? "Couldn't verify — try again" : 'Unlock with Face ID or fingerprint to continue',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.outfit(fontSize: 13.5, color: _biometricFailed ? const Color(0xFFCC0000) : (isDark ? Colors.white60 : const Color(0xFF888888))),
-                ),
-                const SizedBox(height: 32),
-                ElevatedButton.icon(
-                  onPressed: _biometricBusy ? null : _attemptBiometricUnlock,
-                  icon: _biometricBusy
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white))
-                      : const Icon(Icons.fingerprint, size: 20),
-                  label: Text(_biometricBusy ? 'Verifying…' : 'Unlock'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFCC0000),
-                    foregroundColor: Colors.white,
-                    minimumSize: const Size(220, 52),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                TextButton(
-                  onPressed: () => setState(() => _showBiometricLock = false),
-                  child: Text(
-                    'Use PIN instead',
-                    style: GoogleFonts.outfit(fontWeight: FontWeight.w700, color: isDark ? Colors.white70 : const Color(0xFF555555)),
-                  ),
-                ),
-              ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Cold-start splash while a stored session is restored. A thin red line at
+/// the vertical centre — exactly where the cinematic then draws its road —
+/// so a returning driver sees one continuous motion.
+class _BrandSplash extends StatelessWidget {
+  const _BrandSplash();
+
+  @override
+  Widget build(BuildContext context) {
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
+        backgroundColor: TachyoTheme.ink,
+        body: Center(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: const SizedBox(
+              width: 120,
+              child: LinearProgressIndicator(
+                minHeight: 3,
+                backgroundColor: TachyoTheme.inkLine,
+                valueColor: AlwaysStoppedAnimation<Color>(TachyoTheme.brandRed),
+              ),
             ),
           ),
         ),
       ),
     );
   }
+}
+
+/// Circle growing from the login button until it covers the screen, shifting
+/// from brand red (the button) to ink (the cinematic's first frame).
+class _RevealPainter extends CustomPainter {
+  final Offset origin;
+  final double progress;
+
+  const _RevealPainter({required this.origin, required this.progress});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0) return;
+    final corners = [
+      Offset.zero,
+      Offset(size.width, 0),
+      Offset(0, size.height),
+      Offset(size.width, size.height),
+    ];
+    final maxRadius = corners.map((c) => (c - origin).distance).reduce(math.max);
+    final eased = Curves.easeInOutCubic.transform(progress);
+    final radius = 28 + (maxRadius - 28) * eased;
+    final color = Color.lerp(
+      TachyoTheme.brandRed,
+      TachyoTheme.ink,
+      Curves.easeOut.transform((progress * 2).clamp(0.0, 1.0)),
+    )!;
+    canvas.drawCircle(origin, radius, Paint()..color = color);
+  }
+
+  @override
+  bool shouldRepaint(_RevealPainter old) => old.progress != progress || old.origin != origin;
 }

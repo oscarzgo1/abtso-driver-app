@@ -1,0 +1,9 @@
+Load ID,Ship From,Ship To,Trailer #,Scheduled Arrival,Load Status,Customer
+114K7XQ2M,Doncaster DN4 (DNE1),Leeds LS10 (LBA2),H5540,28/09/2026 18:30,Delivered,Amazon
+114K7XV9J,Bradford BD4 (BRD1),Wakefield WF3 (WKF1),H5801,30/09/2026 07:00,Tendered,Amazon
+114K7XW2K,Doncaster DN4 (DNE1),Hull HU7 (HUL1),H5802,30/09/2026 10:30,In transit,Amazon
+114K7XX5L,Immingham DN40 (IMM1),Grimsby DN31 (GRM1),,01/10/2026 04:30,Waiting for delivery,Amazon
+114K7XY8M,Goole DN14 (GOL1),York YO30 (YRK1),H5803,01/10/2026 12:15,Waiting for delivery,Amazon
+113J2AF6N,Leeds LS10 (LBA2),Doncaster DN4 (DNE1),H5540,27/09/2026 19:00,Completed,Amazon
+113J2AG7P,Manchester M17 (MAN1),Liverpool L24 (LIV1),H5541,27/09/2026 22:10,Completed,Amazon
+,Nowhere,Nothing,,,Waiting for delivery,Amazon

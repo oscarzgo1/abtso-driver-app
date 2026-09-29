@@ -8,13 +8,6 @@ import '@maplibre/maplibre-gl-leaflet';
 import { FlowButton } from './components/ui/flow-button';
 import { ImageLightbox } from './components/ui/image-lightbox';
 import { Sidebar, SidebarBody, SidebarLink } from './components/ui/sidebar';
-import { Switch as BillingCycleSwitch } from './components/ui/switch';
-import { InteractivePricingCard } from './components/ui/interactive-pricing-card';
-import { CreditCardForm, type CardState, type CardValidity } from './components/ui/credit-card-form';
-import { Badge as PricingBadge } from './components/ui/badge';
-import { Card as PricingCard, CardContent as PricingCardContent, CardDescription as PricingCardDescription, CardFooter as PricingCardFooter, CardHeader as PricingCardHeader, CardTitle as PricingCardTitle } from './components/ui/card';
-import { Button as PricingButton } from './components/ui/button';
-import confetti from 'canvas-confetti';
 import {
   Users,
   FileSpreadsheet, 
@@ -33,9 +26,7 @@ import {
   MapPinned,
   FileText,
   User,
-  PoundSterling,
   ChevronUp,
-  ChevronLeft,
   Activity,
   Search,
   X,
@@ -81,20 +72,21 @@ import {
   Pencil,
   MoreVertical,
   Receipt,
-  ParkingCircle
+  ParkingCircle,
+  CalendarDays,
+  Inbox
 } from 'lucide-react';
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { BrandLogo } from './components/ui/brand-logo';
-import { AnalyticsGroupedBarChart } from './components/ui/analytics-grouped-bar-chart';
-import { BadgeDelta, type BadgeDeltaDirection, type BadgeDeltaTone } from './components/ui/badge-delta';
+import type { BadgeDeltaDirection, BadgeDeltaTone } from './components/ui/badge-delta';
 import TableFilter, { type TableFilterGroup } from './components/ui/table-filter';
-import { MarginTrendChart } from './components/ui/margin-trend-chart';
+import { MetricLineChart, type MetricTile } from './components/ui/metric-line-chart';
+import { ProgressMetricCard, type MetricPoint, type MetricSummary } from './components/ui/progress-metric-card';
+import { ActivityList } from './components/ui/activity-list';
 import { EarningsDateRangePicker } from './components/ui/earnings-date-range-picker';
 import { NotificationIcon, EyeToggleIcon, VolumeIcon, SaveIcon, DownloadIcon } from './components/ui/animated-state-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { RevealOnMount } from './components/ui/reveal-on-mount';
-import { TextRevealHeader } from './components/ui/text-reveal-header';
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './components/ui/empty';
 import { Switch } from './components/ui/switch-button';
 import { ThemeToggle } from './components/ui/theme-toggle';
@@ -103,8 +95,22 @@ import Compliance from './pages/Compliance';
 import ComplianceDefects from './pages/ComplianceDefects';
 import FleetRoadworthiness from './pages/FleetRoadworthiness';
 import DriverHours from './pages/DriverHours';
+import { type ShiftLoad } from './components/ShiftLoadsEditor';
 import WalkAroundHistory from './pages/WalkAroundHistory';
 import EmployeeHolidays from './pages/EmployeeHolidays';
+import PlatformAccounts from './pages/PlatformAccounts';
+import SecuritySettings from './components/SecuritySettings';
+import PlanSettings from './components/PlanSettings';
+import FuelBonusSettings from './components/FuelBonusSettings';
+import DispatchLoadsModal from './components/DispatchLoadsModal';
+import ShipmentsTracking from './components/ShipmentsTracking';
+import DeliveryHistory from './components/DeliveryHistory';
+import LockedFeature from './components/LockedFeature';
+import { TAB_FEATURE, FEATURE_LABEL, type Entitlements, type FeatureKey } from './lib/entitlements';
+import TrueProfitSection from './components/analytics/TrueProfitSection';
+import CostLedgerModal from './components/analytics/CostLedgerModal';
+import AnalyticsBreakdowns from './components/analytics/AnalyticsBreakdowns';
+import { computeTrueCost, DEFAULT_ANALYTICS_SETTINGS, type AnalyticsSettings, type OrgCost, type VatMode } from './lib/true-cost';
 import DispatchDashboard from './pages/DispatchDashboard';
 import { computeShiftCompliance, walkaroundIssues, formatCheckDuration, type ComplianceCheck } from './lib/walkaround-compliance';
 import CarrierSettlementImportModal from './pages/CarrierSettlementImportModal';
@@ -114,81 +120,6 @@ import PayrollDrawer, { type PayrollShiftContext, type PayrollDrawerSaveValues }
 // "Remember Me" stores only the administrator's email address for prefill —
 // never the password. Session persistence itself is handled by Supabase.
 const REMEMBERED_EMAIL_KEY = 'admin_remembered_email';
-
-// Billing plan display data. Prices and feature sets match what has_feature()
-// enforces server-side (migration 032) — this is presentation only, not the
-// source of truth for what a plan actually unlocks. View-only for now: there
-// is no self-serve checkout/upgrade flow yet, that comes with the website.
-const PLAN_LABELS: Record<'free' | 'standard' | 'premium', string> = {
-  free: 'Free',
-  standard: 'Standard',
-  premium: 'Premium',
-};
-
-const BILLING_PLANS: Array<{
-  id: 'free' | 'standard' | 'premium';
-  label: string;
-  // Free is a flat monthly price, not per-driver — monthlyPrice/annualPrice
-  // are null for it and it ignores the monthly/annual toggle entirely.
-  monthlyPrice: number | null;
-  annualPrice: number | null;
-  freeNote?: string;
-  badge?: string;
-  features: string[];
-}> = [
-  {
-    id: 'free',
-    label: 'Free',
-    monthlyPrice: null,
-    annualPrice: null,
-    freeNote: 'Up to 5 drivers.',
-    features: [
-      'Clock in / clock out',
-      'Live GPS tracking',
-      'Driver profiles',
-      'Live dispatch board',
-      'Earnings',
-    ],
-  },
-  {
-    id: 'standard',
-    label: 'Standard',
-    monthlyPrice: 6.99,
-    annualPrice: 69,
-    badge: 'Most Popular',
-    features: [
-      'Everything in Free',
-      'SOS alerts',
-      'Idle detection',
-      'Alert monitors',
-      'Stuck-shift detection',
-      'Multiple admin accounts (logistics + payroll roles)',
-    ],
-  },
-  {
-    id: 'premium',
-    label: 'Premium',
-    monthlyPrice: 12.99,
-    annualPrice: 129,
-    features: [
-      'Everything in Standard',
-      'Night-out allowance',
-      'Fixed-rate payroll',
-      'Agency grouping',
-      'Excel template export',
-      'Multi-depot support',
-      'Self-service company sign-up',
-    ],
-  },
-];
-
-// Derived once from the real plan data above, for the Billing modal's
-// "Annual billing (Save X%)" headline — the popular plan's own saving,
-// not a fabricated round number.
-const billingHeadlinePlan = BILLING_PLANS.find(p => p.badge);
-const BILLING_HEADLINE_SAVINGS_PERCENT = (billingHeadlinePlan?.monthlyPrice && billingHeadlinePlan?.annualPrice)
-  ? Math.round((1 - billingHeadlinePlan.annualPrice / (billingHeadlinePlan.monthlyPrice * 12)) * 100)
-  : null;
 
 // [Company Name] legal documents — same text as the driver app's Legal &
 // Compliance screen (driver_app/lib/features/legal/presentation/
@@ -411,25 +342,27 @@ export interface OrgAlertSettings {
   allowDriverNightOutRequests: boolean;
   // Alert Monitors consolidation (migration 056) — walkaroundCheckTargetMinutes
   // existed on organizations since 052 but had no save path anywhere until
-  // now; the two fuel anomaly fields replace what used to be hardcoded
-  // constants in the fuel-theft detection logic with no admin control.
+  // now. The per-org configurable fuel-anomaly floor/rolling-drop settings
+  // that used to live here were retired in migration 070: fuel theft
+  // detection is now a single fixed fleet-wide rule (7.0 MPG / 40 L/100km
+  // on brim-to-brim fills), computed and stored server-side, not a tunable
+  // per-org setting.
   walkaroundCheckTargetMinutes: number;
-  fuelAnomalyMinMpg: number;
-  fuelAnomalyRollingDropPercent: number;
   // Migration 059 — minutes a driver's vehicle is stationary before the
   // app reminds them to attach a load or confirm its delivery.
   loadReminderMinutes: number;
+  /** Company-wide off switch for idle detection (dashboard + Alert Panel). */
+  idleDetectionEnabled: boolean;
 }
 export const DEFAULT_ORG_ALERT_SETTINGS: OrgAlertSettings = {
   longShiftFlagHours: 18,
   idleAlertMinutes: 50,
+  idleDetectionEnabled: true,
   nightOutMinGapHours: 8,
   nightOutMaxGapHours: 15,
   complianceAlertLeadDays: 30,
   allowDriverNightOutRequests: false,
   walkaroundCheckTargetMinutes: 15,
-  fuelAnomalyMinMpg: 6.5,
-  fuelAnomalyRollingDropPercent: 30,
   loadReminderMinutes: 30,
 };
 
@@ -565,6 +498,9 @@ interface Shift {
   load_reference?: string | null;
   /** When the driver confirmed delivery in the app (migration 059). */
   load_delivered_at?: string | null;
+  /** delivery-photos storage paths taken at Confirm Delivery (migration 060). */
+  delivery_paperwork_path?: string | null;
+  delivery_evidence_path?: string | null;
   /** Real (migration 045) — nullable until an admin assigns a vehicle to
    * this shift from the Profitability ledger or a settlement import
    * matches one by registration. */
@@ -578,6 +514,8 @@ interface Shift {
   /** Real (migration 045) — set by the carrier settlement importer or
    * manually alongside load_reference; null for shifts never imported. */
   carrier_name?: string | null;
+  /** Every load on the shift (migration 063), oldest first. */
+  loads?: ShiftLoad[];
   /** Rate snapshot (migration 048) — the rate actually applied when this
    * shift was completed, locked at that moment and never re-derived from
    * the driver's live profile afterwards. Null until the shift has
@@ -622,20 +560,18 @@ interface FuelReceipt {
   gps_lat: number | null;
   gps_lng: number | null;
   fuel_tank_capacity_litres?: number | null;
-}
-
-// Litres → UK gallons — see fuelAnomalyByReceiptId. The MPG floor and
-// rolling-average-drop threshold themselves are per-org settings now
-// (orgAlertSettings.fuelAnomalyMinMpg/fuelAnomalyRollingDropPercent,
-// migration 056), not hardcoded here.
-const LITRES_TO_UK_GALLONS = 0.219969;
-
-interface FuelAnomaly {
-  deltaMiles: number | null;
-  calculatedMpg: number | null;
-  rollingAverageMpg: number | null;
-  isAnomaly: boolean;
-  anomalyReason: string | null;
+  // Simplified, fixed fuel theft engine (migration 070/071) — every
+  // truck is always refuelled to the brim, so is_full_tank marks a valid
+  // MPG comparison anchor, and delta_miles/calculated_mpg/theft_flag/
+  // theft_reason are computed and stored server-side by
+  // trg_calc_fuel_theft_flag, not recomputed here. calculated_mpg below
+  // 7.0 UK MPG (>40 L/100km) on a full-tank-to-full-tank stretch means
+  // fuel left the truck outside the engine.
+  is_full_tank: boolean;
+  delta_miles: number | null;
+  calculated_mpg: number | null;
+  theft_flag: boolean;
+  theft_reason: string | null;
 }
 
 interface ParkingExpense {
@@ -717,24 +653,19 @@ function formatHoursMinutes(totalHours: number): string {
   return `${h}h ${m}m`;
 }
 
-/** Display-only capitalisation — some real driver_name values are stored
- * all-lowercase; this never touches the underlying data, just how a name
- * renders in the Profitability ledger. */
+/** "john o'brien-smith" -> "John O'Brien-Smith" — capitalises after a
+ * space, hyphen or apostrophe so double-barrelled and Irish/Scottish
+ * names come out right, not just "First Word". Used both as display-only
+ * formatting (e.g. the Profitability ledger) and to normalise a name
+ * before it's saved, so every section of the dashboard and the driver
+ * app — which just reads the same drivers.full_name — shows it the same
+ * capitalised way. */
 function toTitleCase(name: string): string {
   return name
-    .split(' ')
-    .filter(Boolean)
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(' ');
-}
-
-/** Up to 2 initials for an avatar badge — first + last word of the name,
- * not every word, so a three-part name doesn't overflow the circle. */
-function getInitials(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return '?';
-  if (words.length === 1) return words[0].charAt(0).toUpperCase();
-  return (words[0].charAt(0) + words[words.length - 1].charAt(0)).toUpperCase();
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase()
+    .replace(/(^|[\s\-'])([a-z])/g, (_m, sep: string, ch: string) => sep + ch.toUpperCase());
 }
 
 /** Some timestamps from Postgres arrive without a timezone suffix — treat
@@ -777,31 +708,17 @@ export default function App() {
 
   // Department sign-up
 
-  // Company (organization) sign-up — registers a brand-new tenant plus its
-  // first payroll admin. Distinct from department sign-up above, which joins
-  // an *existing* company using a code it already issued.
-  const [companySignupMode, setCompanySignupMode] = useState(false);
-  const [companyName, setCompanyName] = useState('');
-  const [companySignupEmail, setCompanySignupEmail] = useState('');
-  const [companySignupPassword, setCompanySignupPassword] = useState('');
-  const [companySignupConfirm, setCompanySignupConfirm] = useState('');
-  const [showCompanySignupPassword, setShowCompanySignupPassword] = useState(false);
-  const [isRegisteringCompany, setIsRegisteringCompany] = useState(false);
-  const [companySignupError, setCompanySignupError] = useState('');
-  // First depot — optional at signup; can also be added later from Team &
-  // Access, so none of these block submission if left blank.
-  const [signupDepotName, setSignupDepotName] = useState('');
-  const [signupDepotAddress, setSignupDepotAddress] = useState('');
-  const [signupDepotLat, setSignupDepotLat] = useState('');
-  const [signupDepotLng, setSignupDepotLng] = useState('');
-  const [isLocatingSignupDepot, setIsLocatingSignupDepot] = useState(false);
-  // Set once on success — the codes are only ever shown this one time.
-  const [companyCodesResult, setCompanyCodesResult] = useState<{
-    companySlug: string;
-    logisticsCode: string;
-    payrollCode: string;
-    depotCreated: boolean;
-  } | null>(null);
+  // Request access — replaces free self-service company sign-up. A new
+  // visitor becomes an "interest buyer" (request-access Edge Function,
+  // migration 061): no login is created until the Tachyo team sets the
+  // company up from the Accounts page. Department sign-up for staff of an
+  // existing company is unchanged (it needs that company's code).
+  const EMPTY_ACCESS_REQUEST = { companyName: '', contactName: '', email: '', phone: '', fleetSize: '', message: '', website: '' };
+  const [requestAccessMode, setRequestAccessMode] = useState(false);
+  const [requestAccessForm, setRequestAccessForm] = useState(EMPTY_ACCESS_REQUEST);
+  const [isSubmittingAccessRequest, setIsSubmittingAccessRequest] = useState(false);
+  const [requestAccessError, setRequestAccessError] = useState('');
+  const [requestAccessDone, setRequestAccessDone] = useState(false);
 
   // Password reset / recovery
   const [resetNotice, setResetNotice] = useState<{ tone: 'info' | 'error' | 'success'; text: string } | null>(null);
@@ -812,7 +729,32 @@ export default function App() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [isSavingPassword, setIsSavingPassword] = useState(false);
   const [recoveryError, setRecoveryError] = useState('');
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects' | 'walkaround-history'>('dashboard');
+  // Two-step sign-in (migration 065). After signing in with the
+  // password, Supabase's assurance level may still be AAL1 — we ask for
+  // the 6-digit code from the admin's authenticator before treating
+  // them as signed in.
+  const [mfaChallenge, setMfaChallenge] = useState<null | { factorId: string; code: string; verifying: boolean; error: string }>(null);
+  const finishAdminLogin = async () => {
+    const { role, blocked, companyName, organizationId } = await resolveUserRole();
+    if (blocked) {
+      await supabase!.auth.signOut();
+      setIsAuthenticated(false);
+      localStorage.removeItem('admin_session');
+      setLoginError(`Access for ${companyName ?? 'this company'} is suspended. Contact Tachyo support to reactivate it.`);
+      return;
+    }
+    setIsAuthenticated(true);
+    localStorage.setItem('admin_session', 'true');
+    persistRememberedEmail(loginEmail);
+    setUserRole(role);
+    localStorage.setItem('admin_role', role);
+    if (organizationId) {
+      setCurrentOrgId(organizationId);
+      loadOrgAlertSettings(organizationId);
+    }
+    if (role === 'logistics') setActiveTab('dashboard');
+  };
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects' | 'walkaround-history' | 'accounts'>('dashboard');
   // Sidebar expand/collapse — controlled here (not left to the component's
   // own internal state) so the brand header can also switch between the
   // full wordmark and the icon-only mark based on the same flag.
@@ -828,13 +770,13 @@ export default function App() {
   // or team-management tabs — these control money and who can join the
   // company at all. Billing is a modal, not a tab, and gated separately.
   useEffect(() => {
-    if (userRole === 'logistics' && (activeTab === 'rates' || activeTab === 'analytics' || activeTab === 'shipments')) {
+    if (userRole === 'logistics' && (activeTab === 'rates' || activeTab === 'shipments')) {
       setActiveTab('dashboard');
     }
   }, [userRole, activeTab]);
 
   // Team & Access tab: the org's own driver company code + registration codes.
-  const [teamOrgInfo, setTeamOrgInfo] = useState<{ id: string; name: string; slug: string; plan: 'free' | 'standard' | 'premium'; support_phone_1?: string | null; support_phone_2?: string | null } | null>(null);
+  const [teamOrgInfo, setTeamOrgInfo] = useState<{ id: string; name: string; slug: string; plan: string; support_phone_1?: string | null; support_phone_2?: string | null } | null>(null);
   // Settings → Company: the driver app's own support-contact numbers,
   // scoped to this org (migration 039) — replaces what used to be two
   // hardcoded personal mobile numbers shared by every company's drivers.
@@ -859,8 +801,6 @@ export default function App() {
     nightOutMaxGapHours: String(DEFAULT_ORG_ALERT_SETTINGS.nightOutMaxGapHours),
     complianceAlertLeadDays: String(DEFAULT_ORG_ALERT_SETTINGS.complianceAlertLeadDays),
     walkaroundCheckTargetMinutes: String(DEFAULT_ORG_ALERT_SETTINGS.walkaroundCheckTargetMinutes),
-    fuelAnomalyMinMpg: String(DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyMinMpg),
-    fuelAnomalyRollingDropPercent: String(DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyRollingDropPercent),
     loadReminderMinutes: String(DEFAULT_ORG_ALERT_SETTINGS.loadReminderMinutes),
   });
   const [isSavingAlertSettings, setIsSavingAlertSettings] = useState(false);
@@ -899,25 +839,10 @@ export default function App() {
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
   const [createAccountError, setCreateAccountError] = useState('');
   const [createAccountSuccess, setCreateAccountSuccess] = useState('');
-  // No live payment gateway wired up yet — a paid plan's CTA opens the
-  // card-details step below (checkoutPlan) instead of charging anything;
-  // submitting it just confirms interest the same way Free's always has.
-  const [buyNowPlan, setBuyNowPlan] = useState<'free' | 'standard' | 'premium' | null>(null);
-  const [checkoutPlan, setCheckoutPlan] = useState<'standard' | 'premium' | null>(null);
-  // Billing lives in a popup off the "Billing" button, not a nav tab — one
-  // Monthly/Annual switch governs every paid plan's card at once.
-  const [billingModalOpen, setBillingModalOpen] = useState(false);
   // Same popup pattern for Settings — off the "Settings" sidebar button,
   // not a nav tab.
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
-  const [activeSettingsSection, setActiveSettingsSection] = useState<'company' | 'access-codes' | 'depots' | 'alerts' | 'appearance' | 'legal'>('company');
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
-  const billingSwitchRef = useRef<HTMLButtonElement>(null);
-  // Driver-count sliders on the Standard/Premium pricing cards — each plan
-  // remembers its own count independently. Defaulting both to 5 anchors
-  // them just past the Free plan's real stated cap ("Up to 5 drivers"),
-  // rather than an arbitrary made-up starting point.
-  const [pricingUnitsByPlan, setPricingUnitsByPlan] = useState<Record<'standard' | 'premium', number>>({ standard: 5, premium: 5 });
+  const [activeSettingsSection, setActiveSettingsSection] = useState<'company' | 'access-codes' | 'depots' | 'alerts' | 'fuel-bonus' | 'appearance' | 'security' | 'plan' | 'legal'>('company');
 
   /// Resolves the signed-in user's department from public.user_roles.
   /// Matched on email: the deployed table is keyed by email and has no
@@ -968,7 +893,7 @@ export default function App() {
     try {
       const { data, error } = await supabase
         .from('organizations')
-        .select('long_shift_flag_hours, idle_alert_minutes, night_out_min_gap_hours, night_out_max_gap_hours, compliance_alert_lead_days, allow_driver_night_out_requests, walkaround_check_target_minutes, fuel_anomaly_min_mpg, fuel_anomaly_rolling_drop_percent, load_reminder_minutes')
+        .select('long_shift_flag_hours, idle_alert_minutes, idle_detection_enabled, night_out_min_gap_hours, night_out_max_gap_hours, compliance_alert_lead_days, allow_driver_night_out_requests, walkaround_check_target_minutes, load_reminder_minutes')
         .eq('id', orgId)
         .maybeSingle();
       if (error || !data) return;
@@ -980,9 +905,8 @@ export default function App() {
         complianceAlertLeadDays: Number(data.compliance_alert_lead_days) || DEFAULT_ORG_ALERT_SETTINGS.complianceAlertLeadDays,
         allowDriverNightOutRequests: data.allow_driver_night_out_requests === true,
         walkaroundCheckTargetMinutes: Number(data.walkaround_check_target_minutes) || DEFAULT_ORG_ALERT_SETTINGS.walkaroundCheckTargetMinutes,
-        fuelAnomalyMinMpg: Number(data.fuel_anomaly_min_mpg) || DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyMinMpg,
-        fuelAnomalyRollingDropPercent: Number(data.fuel_anomaly_rolling_drop_percent) || DEFAULT_ORG_ALERT_SETTINGS.fuelAnomalyRollingDropPercent,
         loadReminderMinutes: Number(data.load_reminder_minutes) || DEFAULT_ORG_ALERT_SETTINGS.loadReminderMinutes,
+        idleDetectionEnabled: data.idle_detection_enabled !== false,
       });
     } catch (_) {
       // Migration 038 likely not applied on this environment yet — keep defaults.
@@ -991,11 +915,45 @@ export default function App() {
 
   // Database States
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [isDispatchOpen, setIsDispatchOpen] = useState(false);
+  const [shipmentsView, setShipmentsView] = useState<'tracking' | 'history'>('tracking');
+  const [dispatchDriverId, setDispatchDriverId] = useState('');
+  // Loads the office has assigned that are still open — shown on the Active
+  // Loads live board so an assignment is visible the moment it's made and
+  // stays visible while the driver runs it.
+  const [dispatchBoard, setDispatchBoard] = useState<{ id: string; driver_id: string; vrid: string; origin: string | null; destination: string | null; status: 'assigned' | 'in_progress'; trailer_number: string | null }[]>([]);
+  const loadDispatchBoard = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const { data } = await supabase
+      .from('dispatch_loads')
+      .select('id, driver_id, vrid, origin, destination, status, trailer_number')
+      .in('status', ['assigned', 'in_progress'])
+      .order('created_at', { ascending: false });
+    if (data) setDispatchBoard(data as typeof dispatchBoard);
+  }, [isMockMode, currentOrgId]);
+  useEffect(() => { loadDispatchBoard(); }, [loadDispatchBoard]);
+  useEffect(() => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const channel = supabase
+      .channel('realtime_dispatch_loads')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'dispatch_loads' }, () => { loadDispatchBoard(); })
+      .subscribe();
+    return () => { supabase!.removeChannel(channel); };
+  }, [isMockMode, currentOrgId, loadDispatchBoard]);
   const [shifts, setShifts] = useState<Shift[]>([]);
-  const [alerts, setAlerts] = useState<IdleAlert[]>([]);
-  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending' | 'walkaround'>('all');
+  // Everything the server has sent; `alerts` below is what the UI sees.
+  // With company-wide idle detection switched off (Settings → Alerts),
+  // idle alerts are hidden everywhere — panel, bell badge, map markers,
+  // dashboard and the audio siren — while SOS alerts always show. Nothing
+  // is deleted, so switching it back on restores them.
+  const [allAlerts, setAlerts] = useState<IdleAlert[]>([]);
+  const alerts = useMemo(
+    () => (orgAlertSettings.idleDetectionEnabled ? allAlerts : allAlerts.filter(a => a.is_sos)),
+    [allAlerts, orgAlertSettings.idleDetectionEnabled],
+  );
+  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending' | 'walkaround' | 'holiday_pending' | 'access_requests' | 'risk_signoffs' | 'pin_reset'>('all');
   const [depots, setDepots] = useState<Depot[]>([]);
-  const [fleetVehicles, setFleetVehicles] = useState<FleetVehicle[]>([]);
+  const [, setFleetVehicles] = useState<FleetVehicle[]>([]);
   const [mileageByShift, setMileageByShift] = useState<Record<string, number>>({});
   const [fuelReceipts, setFuelReceipts] = useState<FuelReceipt[]>([]);
   const [fuelReceiptLightboxUrl, setFuelReceiptLightboxUrl] = useState<string | null>(null);
@@ -1007,7 +965,6 @@ export default function App() {
   const [reviewingFuelReceiptId, setReviewingFuelReceiptId] = useState<string | null>(null);
   // Fuel Receipts Audit modal — replaces the old full-width bottom
   // section; same data/handlers, just triggered from the toolbar now.
-  const [analyticsTrendTab, setAnalyticsTrendTab] = useState<'margin' | 'revenue'>('margin');
   const [isFuelReceiptsModalOpen, setIsFuelReceiptsModalOpen] = useState(false);
   const [fuelModalDriverSearch, setFuelModalDriverSearch] = useState('');
   // Overnight Parking Expenses — same review-queue shape as Fuel
@@ -1030,22 +987,19 @@ export default function App() {
   const [newDepotLng, setNewDepotLng] = useState('');
   const [newDepotRadius, setNewDepotRadius] = useState('150');
   const [isLocatingDepot, setIsLocatingDepot] = useState(false);
-  const [analyticsFilters, setAnalyticsFilters] = useState<AnalyticsFilter[]>([]);
-  // Chart view — Bar (default) or Line, switchable from the Filters menu.
-  // Ledger sort — 'date' (default, newest first) or 'margin' (lowest
-  // margin first, so the worst-performing loads surface immediately).
-  const [ledgerSort, setLedgerSort] = useState<'date' | 'margin'>('date');
-  // Inline edits for the per-load revenue table, keyed by shift id, so
-  // typing in one row's fields doesn't touch any other row's state.
-  const [revenueEdits, setRevenueEdits] = useState<Record<string, { revenue: string; loadRef: string; carrier?: string }>>({});
-  const [savingRevenueShiftId, setSavingRevenueShiftId] = useState<string | null>(null);
-  const [revenueSaveError, setRevenueSaveError] = useState('');
-  // Which row's Billed Revenue popover is open — at most one at a time,
-  // replacing the old always-visible inline <input> in every row.
-  const [revenuePopoverShiftId, setRevenuePopoverShiftId] = useState<string | null>(null);
+  const [analyticsFilters, setAnalyticsFilters] = useState<AnalyticsFilter[]>([
+    { id: 'default-period', type: FilterType.PERIOD, operator: FilterOperator.IS, value: ['Last 30 days'] },
+  ]);
+  // "Custom range" period (inclusive dates, yyyy-mm-dd).
+  const [analyticsCustomRange, setAnalyticsCustomRange] = useState(() => {
+    const to = new Date();
+    const from = new Date(Date.now() - 29 * 86_400_000);
+    return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
+  });
+  const [analyticsVatMode, setAnalyticsVatMode] = useState<VatMode>('ex');
+  const [isCostLedgerOpen, setIsCostLedgerOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isDriverBulkImportOpen, setIsDriverBulkImportOpen] = useState(false);
-  const [vehicleAssignShiftId, setVehicleAssignShiftId] = useState<string | null>(null);
   const [clearedAlertIds, setClearedAlertIds] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('cleared_alerts');
@@ -1181,10 +1135,13 @@ export default function App() {
 
   // Driver CRUD Forms State
   const [isAddingEmployee, setIsAddingEmployee] = useState(false);
+  // One-time activation code shown after Add Employee / Reset PIN
+  // (migration 065). Once dismissed it's gone — the admin has to issue
+  // a fresh one from the row menu.
+  const [activationCodeShown, setActivationCodeShown] = useState<null | { code: string; name: string; driverId: string; reason: 'created' | 'reset' }>(null);
   const [newEmployeeName, setNewEmployeeName] = useState('');
   const [newEmployeeCode, setNewEmployeeCode] = useState('');
   const [newEmployeePhone, setNewEmployeePhone] = useState('');
-  const [newEmployeePin, setNewEmployeePin] = useState('123456');
   const [crudError, setCrudError] = useState('');
   // Compensation Setup, collected in the same Add Employee dialog now
   // rather than a separate step — Section 2 of the merged form.
@@ -1568,7 +1525,7 @@ export default function App() {
       // otherwise be able to read straight off their own shift row.
       const { data: sfts, error: shiftsError } = await supabase!
         .from('shifts')
-        .select('*, drivers(full_name, driver_id), depots(name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name, delivered_at)')
+        .select('*, drivers(full_name, driver_id), depots(name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name, delivered_at, delivery_paperwork_path, delivery_evidence_path), shift_loads(id, load_reference, carrier_name, revenue_amount, booked_departure_at, booked_delivery_at, delivered_at, delivery_paperwork_path, delivery_evidence_path, created_at)')
         .order('start_time', { ascending: false });
 
       // A Postgrest-level error here (RLS denial, a bad embed, anything)
@@ -1597,10 +1554,13 @@ export default function App() {
           revenue_amount: revenueRow?.revenue_amount ?? null,
           load_reference: revenueRow?.load_reference ?? null,
           load_delivered_at: revenueRow?.delivered_at ?? null,
+          delivery_paperwork_path: revenueRow?.delivery_paperwork_path ?? null,
+          delivery_evidence_path: revenueRow?.delivery_evidence_path ?? null,
+          loads: ((s.shift_loads ?? []) as ShiftLoad[]).map(l => ({ ...l, revenue_amount: l.revenue_amount === null ? null : Number(l.revenue_amount) })).sort((a, b) => a.created_at.localeCompare(b.created_at)),
           vehicle_id: s.vehicle_id ?? null,
           vehicle_number: s.vehicle?.vehicle_number ?? null,
           trailer_id: s.trailer_id ?? null,
-          trailer_number: s.trailer?.vehicle_number ?? null,
+          trailer_number: s.trailer?.vehicle_number ?? s.custom_trailer_number ?? null,
           carrier_name: revenueRow?.carrier_name ?? null,
         };
       });
@@ -1694,7 +1654,7 @@ export default function App() {
           const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
 
           let currentStatus: 'moving' | 'stationary' | 'idle' = (item.speed || 0) < 0.5 ? 'stationary' : 'moving';
-          if (diffMinutes >= orgAlertSettings.idleAlertMinutes) {
+          if (orgAlertSettings.idleDetectionEnabled && diffMinutes >= orgAlertSettings.idleAlertMinutes) {
             currentStatus = 'idle';
           }
 
@@ -1729,7 +1689,7 @@ export default function App() {
             const diffMinutes = pingTime > 0 ? (now - pingTime) / 60000 : 999;
 
             let currentStatus: 'moving' | 'stationary' | 'idle' = (lastLoc.speed || 0) < 0.5 ? 'stationary' : 'moving';
-            if (diffMinutes >= orgAlertSettings.idleAlertMinutes) {
+            if (orgAlertSettings.idleDetectionEnabled && diffMinutes >= orgAlertSettings.idleAlertMinutes) {
               currentStatus = 'idle';
             }
 
@@ -1847,7 +1807,7 @@ export default function App() {
             setIsAuthenticated(false);
             localStorage.removeItem('admin_session');
             localStorage.removeItem('admin_role');
-            setLoginError(`Access for ${companyName ?? 'this company'} has ended. Contact support to reactivate.`);
+            setLoginError(`Access for ${companyName ?? 'this company'} is suspended. Contact Tachyo support to reactivate it.`);
             return;
           }
           setUserRole(role);
@@ -1915,15 +1875,24 @@ export default function App() {
       .subscribe();
 
     // Realtime channel for shift pings / clock actions
+    // Every table the dashboard/board/tables are built from triggers the
+    // same reload, so a change made in ANY section (a load attached or
+    // delivered, an employee edited, a vehicle changed) shows up
+    // everywhere without a refresh. Debounced so a burst of writes
+    // (e.g. one clock-in touching several rows) is one reload.
+    let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+    const reloadSoon = () => {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => loadData(), 400);
+    };
     const shiftChannel = supabase!
       .channel('realtime_shifts')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'shifts' },
-        () => {
-          loadData();
-        }
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shifts' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_loads' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_revenue' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicles' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'depots' }, reloadSoon)
       .subscribe();
 
     // Realtime channel for GPS coordinates (live driver movement updates)
@@ -1941,6 +1910,7 @@ export default function App() {
     return () => {
       supabase!.removeChannel(alertChannel);
       supabase!.removeChannel(sosAlertChannel);
+      clearTimeout(reloadTimer);
       supabase!.removeChannel(shiftChannel);
       supabase!.removeChannel(gpsChannel);
     };
@@ -1984,7 +1954,7 @@ export default function App() {
     if (isMockMode || !supabase || !currentOrgId) return;
     const { data, error } = await supabase
       .from('fuel_receipts')
-      .select('id, driver_id, shift_id, vehicle_id, liters, total_cost, vendor, receipt_photo_path, status, auto_approved, created_at, odometer_miles, dashboard_photo_path, gps_lat, gps_lng, drivers(full_name), vehicles!vehicle_id(vehicle_number, fuel_tank_capacity_litres)')
+      .select('id, driver_id, shift_id, vehicle_id, liters, total_cost, vendor, receipt_photo_path, status, auto_approved, created_at, odometer_miles, dashboard_photo_path, gps_lat, gps_lng, is_full_tank, delta_miles, calculated_mpg, theft_flag, theft_reason, drivers(full_name), vehicles!vehicle_id(vehicle_number, fuel_tank_capacity_litres)')
       .eq('organization_id', currentOrgId)
       .order('created_at', { ascending: false });
     // Was silently dropping a failed fetch (network error, RLS denial,
@@ -2101,27 +2071,313 @@ export default function App() {
     };
   }, [isMockMode, currentOrgId, loadRecentWalkarounds]);
 
-  // Logistics/dispatch staff don't take vehicles out, so they're exempt
-  // from walk-around checks (the driver app skips the step for them too).
-  const walkaroundExemptIds = useMemo(
-    () => new Set(employees.filter(e => e.profession === 'logistics').map(e => e.id)),
-    [employees],
-  );
-
   const walkaroundAlertIssues = useMemo(() => {
     const compliance = computeShiftCompliance(shifts, recentWalkarounds, {
       targetMinutes: orgAlertSettings.walkaroundCheckTargetMinutes,
       since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
-      isFieldRole: driverId => !walkaroundExemptIds.has(driverId),
+      // Every profession does walk-around checks — no exempt roles.
+      isFieldRole: () => true,
     });
     return walkaroundIssues(compliance);
-  }, [shifts, recentWalkarounds, walkaroundExemptIds, orgAlertSettings.walkaroundCheckTargetMinutes]);
+  }, [shifts, recentWalkarounds, orgAlertSettings.walkaroundCheckTargetMinutes]);
 
   const walkaroundIssuesToday = useMemo(() => {
     const midnight = new Date();
     midnight.setHours(0, 0, 0, 0);
     return walkaroundAlertIssues.filter(i => new Date(i.at) >= midnight).length;
   }, [walkaroundAlertIssues]);
+
+  // ── Plan & entitlements (migration 067) ─────────────────────
+  // The database decides what the plan allows; this only tidies the UI.
+  // Until the answer arrives (or if it can't be fetched) nothing is hidden.
+  const [entitlements, setEntitlements] = useState<Entitlements | null>(null);
+  const loadEntitlements = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const { data, error } = await supabase.rpc('my_entitlements');
+    if (!error && data) setEntitlements(data as Entitlements);
+  }, [isMockMode, currentOrgId]);
+
+  useEffect(() => {
+    loadEntitlements();
+  }, [loadEntitlements]);
+
+  // Pick up a plan change made by the Tachyo team without a full reload.
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === 'visible') loadEntitlements(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [loadEntitlements]);
+
+  const hasFeature = useCallback(
+    (key: FeatureKey) => (entitlements ? entitlements.features.includes(key) : true),
+    [entitlements],
+  );
+  const tabFeature = TAB_FEATURE[activeTab];
+  const tabLocked = tabFeature ? !hasFeature(tabFeature) : false;
+
+  // ── True cost ledger + analytics targets (migration 062) ────
+  const [orgCosts, setOrgCosts] = useState<OrgCost[]>([]);
+  const [analyticsSettings, setAnalyticsSettings] = useState<AnalyticsSettings>(DEFAULT_ANALYTICS_SETTINGS);
+  const loadTrueCostData = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const [{ data: costRows, error: costErr }, { data: settingsRow }] = await Promise.all([
+      supabase.from('org_costs').select('*').eq('organization_id', currentOrgId).order('start_date', { ascending: false }),
+      supabase.from('org_analytics_settings').select('*').eq('organization_id', currentOrgId).maybeSingle(),
+    ]);
+    if (costErr) {
+      console.error('loadTrueCostData failed:', costErr.message);
+      return;
+    }
+    setOrgCosts(((costRows ?? []) as any[]).map(c => ({ ...c, amount: Number(c.amount) })) as OrgCost[]);
+    if (settingsRow) {
+      setAnalyticsSettings({
+        employer_oncost_percent: Number(settingsRow.employer_oncost_percent) || 0,
+        target_margin_percent: Number(settingsRow.target_margin_percent),
+        target_revenue_per_truck_day: settingsRow.target_revenue_per_truck_day === null ? null : Number(settingsRow.target_revenue_per_truck_day),
+        target_weekly_profit: settingsRow.target_weekly_profit === null ? null : Number(settingsRow.target_weekly_profit),
+      });
+    }
+  }, [isMockMode, currentOrgId, userRole]);
+
+  useEffect(() => {
+    loadTrueCostData();
+  }, [loadTrueCostData]);
+
+  // ── Holiday requests (Alert Panel) ──────────────────────────
+  // Every employee can request holiday from the app (migration 061);
+  // pending requests wait here — and on Employee Holidays — for an admin
+  // to approve or decline.
+  const [holidayRequests, setHolidayRequests] = useState<{
+    id: string;
+    driver_id: string;
+    driver_name?: string;
+    start_date: string;
+    end_date: string;
+    note: string | null;
+    leave_type: string;
+    created_at: string;
+  }[]>([]);
+  const [decliningHolidayId, setDecliningHolidayId] = useState<string | null>(null);
+  const [holidayDeclineNote, setHolidayDeclineNote] = useState('');
+  const [reviewingHolidayId, setReviewingHolidayId] = useState<string | null>(null);
+
+  const loadHolidayRequests = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const { data, error } = await supabase
+      .from('employee_holidays')
+      .select('id, driver_id, start_date, end_date, note, leave_type, created_at, drivers(full_name)')
+      .eq('organization_id', currentOrgId)
+      .eq('status', 'pending')
+      .order('start_date');
+    if (error) {
+      console.error('loadHolidayRequests failed:', error.message);
+      return;
+    }
+    setHolidayRequests((data ?? []).map((h: any) => ({ ...h, driver_name: h.drivers?.full_name })));
+  }, [isMockMode, currentOrgId]);
+
+  useEffect(() => {
+    loadHolidayRequests();
+  }, [loadHolidayRequests]);
+
+  useEffect(() => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const channel = supabase
+      .channel('realtime_holiday_requests')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_holidays' }, () => loadHolidayRequests())
+      .subscribe();
+    return () => {
+      supabase!.removeChannel(channel);
+    };
+  }, [isMockMode, currentOrgId, loadHolidayRequests]);
+
+  const reviewHolidayRequest = async (id: string, decision: 'approved' | 'declined', note?: string) => {
+    if (isMockMode || !supabase) return;
+    setReviewingHolidayId(id);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { error } = await supabase
+        .from('employee_holidays')
+        .update({
+          status: decision,
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: user?.email?.toLowerCase() ?? null,
+          review_note: note?.trim() || null,
+        })
+        .eq('id', id)
+        .eq('status', 'pending');
+      if (error) throw error;
+      setHolidayRequests(prev => prev.filter(h => h.id !== id));
+      setDecliningHolidayId(null);
+      setHolidayDeclineNote('');
+      showToast(decision === 'approved' ? 'Holiday approved — it now shows on the calendar.' : 'Holiday request declined.', 'success');
+    } catch (err: any) {
+      showToast('Could not update the holiday request: ' + (err?.message ?? 'unknown error'), 'error');
+    } finally {
+      setReviewingHolidayId(null);
+    }
+  };
+
+  // ── PIN reset requests (migration 065) ─────────────────────
+  const [pinResetRequests, setPinResetRequests] = useState<{
+    id: string;
+    driver_id: string;
+    driver_name?: string;
+    driver_code?: string;
+    requested_at: string;
+  }[]>([]);
+  const loadPinResetRequests = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const { data, error } = await supabase
+      .from('driver_pin_reset_requests')
+      .select('id, driver_id, requested_at, drivers(full_name, driver_id)')
+      .eq('organization_id', currentOrgId)
+      .is('handled_at', null)
+      .order('requested_at', { ascending: false });
+    if (error) {
+      console.error('loadPinResetRequests failed:', error.message);
+      return;
+    }
+    setPinResetRequests((data ?? []).map((r: any) => ({
+      id: r.id, driver_id: r.driver_id, requested_at: r.requested_at,
+      driver_name: r.drivers?.full_name, driver_code: r.drivers?.driver_id,
+    })));
+  }, [isMockMode, currentOrgId]);
+
+  useEffect(() => { loadPinResetRequests(); }, [loadPinResetRequests]);
+
+  useEffect(() => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const channel = supabase
+      .channel('realtime_pin_reset')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_pin_reset_requests' }, () => loadPinResetRequests())
+      .subscribe();
+    return () => { supabase!.removeChannel(channel); };
+  }, [isMockMode, currentOrgId, loadPinResetRequests]);
+
+  const issuePinResetFromRequest = async (driverId: string, driverCode: string, driverName: string) => {
+    if (isMockMode || !supabase) return;
+    try {
+      const { data, error } = await supabase.functions.invoke('create-driver', {
+        body: { action: 'reset_pin', id: driverId },
+      });
+      if (error) {
+        showToast(`Could not issue an activation code: ${error.message}`, 'error');
+        return;
+      }
+      if (data?.activation_code) {
+        setActivationCodeShown({ code: data.activation_code, name: driverName, driverId: driverCode, reason: 'reset' });
+      }
+      loadPinResetRequests();
+    } catch (err: any) {
+      showToast(`Could not issue an activation code: ${err?.message ?? 'unknown error'}`, 'error');
+    }
+  };
+
+  // ── Unroadworthy sign-offs (migration 063) ──────────────────
+  // A driver who takes a unit/trailer with expired MOT/tax/insurance/
+  // inspection or VOR signs on screen; each one waits here until an
+  // admin marks it reviewed.
+  const [riskSignoffs, setRiskSignoffs] = useState<{
+    id: string;
+    driver_name?: string;
+    vehicle_number?: string;
+    issues: string[];
+    context: string;
+    signer_name: string;
+    signature_svg: string;
+    acknowledged_at: string;
+  }[]>([]);
+  const loadRiskSignoffs = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const { data, error } = await supabase
+      .from('vehicle_risk_acknowledgements')
+      .select('id, issues, context, signer_name, signature_svg, acknowledged_at, drivers(full_name), vehicle:vehicles!vehicle_id(vehicle_number)')
+      .eq('organization_id', currentOrgId)
+      .is('reviewed_at', null)
+      .order('acknowledged_at', { ascending: false })
+      .limit(100);
+    if (error) {
+      console.error('loadRiskSignoffs failed:', error.message);
+      return;
+    }
+    setRiskSignoffs((data ?? []).map((r: any) => ({ ...r, driver_name: r.drivers?.full_name, vehicle_number: r.vehicle?.vehicle_number })));
+  }, [isMockMode, currentOrgId]);
+
+  useEffect(() => {
+    loadRiskSignoffs();
+  }, [loadRiskSignoffs]);
+
+  useEffect(() => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const channel = supabase
+      .channel('realtime_risk_signoffs')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicle_risk_acknowledgements' }, () => loadRiskSignoffs())
+      .subscribe();
+    return () => {
+      supabase!.removeChannel(channel);
+    };
+  }, [isMockMode, currentOrgId, loadRiskSignoffs]);
+
+  const markRiskSignoffReviewed = async (id: string) => {
+    if (isMockMode || !supabase) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    const { error } = await supabase
+      .from('vehicle_risk_acknowledgements')
+      .update({ reviewed_at: new Date().toISOString(), reviewed_by: user?.email?.toLowerCase() ?? null })
+      .eq('id', id);
+    if (error) {
+      showToast('Could not mark it reviewed: ' + error.message, 'error');
+      return;
+    }
+    setRiskSignoffs(prev => prev.filter(r => r.id !== id));
+  };
+
+  // ── Platform owner (Accounts page) ──────────────────────────
+  // is_platform_admin() (migration 061) — only the Tachyo team sees the
+  // Accounts page and new interest buyers in the Alert Panel.
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  const [newAccessRequests, setNewAccessRequests] = useState<{
+    id: string;
+    company_name: string;
+    contact_name: string;
+    fleet_size: string | null;
+    source: string;
+    created_at: string;
+  }[]>([]);
+
+  useEffect(() => {
+    if (isMockMode || !supabase || !isAuthenticated) {
+      setIsPlatformAdmin(false);
+      return;
+    }
+    let cancelled = false;
+    supabase.rpc('is_platform_admin').then(({ data, error }) => {
+      if (!cancelled) setIsPlatformAdmin(!error && data === true);
+    });
+    return () => { cancelled = true; };
+  }, [isMockMode, isAuthenticated, currentOrgId]);
+
+  const loadNewAccessRequests = useCallback(async () => {
+    if (isMockMode || !supabase || !isPlatformAdmin) {
+      setNewAccessRequests([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('access_requests')
+      .select('id, company_name, contact_name, fleet_size, source, created_at')
+      .eq('stage', 'new')
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (!error) setNewAccessRequests(data ?? []);
+  }, [isMockMode, isPlatformAdmin]);
+
+  useEffect(() => {
+    loadNewAccessRequests();
+    if (!isPlatformAdmin) return;
+    const id = window.setInterval(loadNewAccessRequests, 60_000);
+    return () => window.clearInterval(id);
+  }, [isPlatformAdmin, loadNewAccessRequests]);
 
   // Approving a claim reimburses it straight into that shift's payroll
   // — added onto extras_amount/extras_note, the same "extra pay on top
@@ -2227,67 +2483,20 @@ export default function App() {
     return map;
   }, [fuelReceipts]);
 
-  // Fuel theft / skimming detection (migration 055) — a valid receipt
-  // proves litres were PAID for, not that they went in THIS tank. The
-  // real tell is distance achieved per litre claimed: siphon fuel or
-  // split it across a jerry can/second vehicle and the truck covers
-  // fewer miles than that litre figure should buy, so calculated MPG
-  // reads low. Two independent triggers, either one flags the row:
-  //   1. An absolute floor — implausible for any laden 44t HGV.
-  //   2. A sudden drop vs. that specific vehicle's own recent average
-  //      — catches a vehicle that's normally efficient suddenly
-  //      isn't, even if its absolute MPG is still "reasonable".
-  // Deliberately computed live from real columns (grouped by vehicle,
-  // sorted by created_at) rather than a stored column — a stored value
-  // would go stale the moment an earlier receipt's litres/odometer are
-  // corrected, the same reason getShiftFinancials computes gross pay
-  // live instead of trusting a stored figure.
-  const fuelAnomalyByReceiptId = useMemo(() => {
-    const result: Record<string, FuelAnomaly> = {};
-    const byVehicle = new Map<string, FuelReceipt[]>();
-    for (const r of fuelReceipts) {
-      if (!r.vehicle_id || r.odometer_miles === null) continue;
-      (byVehicle.get(r.vehicle_id) ?? byVehicle.set(r.vehicle_id, []).get(r.vehicle_id)!).push(r);
-    }
-    for (const [, rows] of byVehicle) {
-      // Chronological by when the fill actually happened, not by
-      // insertion/review order.
-      const sorted = [...rows].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      const mpgHistory: number[] = [];
-      for (let i = 0; i < sorted.length; i++) {
-        const current = sorted[i];
-        const previous = sorted[i - 1];
-        let deltaMiles: number | null = null;
-        let calculatedMpg: number | null = null;
-        if (
-          previous &&
-          current.odometer_miles !== null &&
-          previous.odometer_miles !== null &&
-          current.odometer_miles > previous.odometer_miles &&
-          current.liters
-        ) {
-          deltaMiles = current.odometer_miles - previous.odometer_miles;
-          calculatedMpg = deltaMiles / (current.liters * LITRES_TO_UK_GALLONS);
-        }
-        const rollingAverageMpg = mpgHistory.length > 0 ? mpgHistory.reduce((a, b) => a + b, 0) / mpgHistory.length : null;
-        let isAnomaly = false;
-        let anomalyReason: string | null = null;
-        if (calculatedMpg !== null) {
-          if (calculatedMpg < orgAlertSettings.fuelAnomalyMinMpg) {
-            isAnomaly = true;
-            anomalyReason = `${calculatedMpg.toFixed(1)} MPG is below the ${orgAlertSettings.fuelAnomalyMinMpg} MPG floor`;
-          } else if (rollingAverageMpg !== null && calculatedMpg < rollingAverageMpg * (1 - orgAlertSettings.fuelAnomalyRollingDropPercent / 100)) {
-            isAnomaly = true;
-            anomalyReason = `${calculatedMpg.toFixed(1)} MPG is a ${Math.round((1 - calculatedMpg / rollingAverageMpg) * 100)}% drop from this vehicle's recent average (${rollingAverageMpg.toFixed(1)} MPG)`;
-          }
-          mpgHistory.push(calculatedMpg);
-          if (mpgHistory.length > 5) mpgHistory.shift();
-        }
-        result[current.id] = { deltaMiles, calculatedMpg, rollingAverageMpg, isAnomaly, anomalyReason };
-      }
-    }
-    return result;
-  }, [fuelReceipts, orgAlertSettings.fuelAnomalyMinMpg, orgAlertSettings.fuelAnomalyRollingDropPercent]);
+  // Fuel theft / skimming detection (migration 070/071) — a valid
+  // receipt proves litres were PAID for, not that they went in THIS
+  // tank. Every truck in this fleet is always refuelled to the brim, so
+  // two full-tank fills bracket exactly the fuel burned over the miles
+  // between them: worse than the fixed 7.0 UK MPG / 40 L/100km fleet-
+  // wide ceiling on that stretch means fuel left the truck outside the
+  // engine. Computed and stored server-side by trg_calc_fuel_theft_flag
+  // (delta_miles/calculated_mpg/theft_flag/theft_reason columns on the
+  // row itself) — read directly off each FuelReceipt, not recomputed
+  // here, so every viewer of this table sees the same answer.
+  const anomalousFuelReceiptCount = useMemo(
+    () => fuelReceipts.filter(r => r.theft_flag).length,
+    [fuelReceipts],
+  );
 
   const handleReviewFuelReceipt = useCallback(async (id: string, status: 'approved' | 'rejected') => {
     if (isMockMode || !supabase) return;
@@ -2438,95 +2647,44 @@ export default function App() {
     return error.message ?? 'The request failed.';
   };
 
-  /// Registers a new dashboard account against a department registration code.
-  /// The department is granted by the edge function only if the code matches
-  /// that department's server-side secret — never on the client's say-so.
-  /// Same "use my current location" convenience as the Team & Access depot
-  /// form, for the optional first-depot section on the company signup page.
-  const handleUseCurrentLocationSignupDepot = async () => {
-    setCompanySignupError('');
-    setIsLocatingSignupDepot(true);
-    try {
-      const { lat, lng } = await getCurrentPosition();
-      setSignupDepotLat(lat.toFixed(6));
-      setSignupDepotLng(lng.toFixed(6));
-      const address = await reverseGeocode(lat, lng);
-      if (address && !signupDepotAddress.trim()) setSignupDepotAddress(address);
-    } catch (err: any) {
-      setCompanySignupError(err?.message ?? 'Could not get your current location.');
-    } finally {
-      setIsLocatingSignupDepot(false);
-    }
-  };
-
-  /// Self-service tenant onboarding: registers a brand-new company plus its
-  /// first payroll admin in one step. The returned codes are shown exactly
-  /// once — after this, only their hashes exist server-side.
-  const handleCompanySignup = async (e: React.FormEvent) => {
+  /// Sends a request-access enquiry from the login page. Nothing is
+  /// created beyond the access_requests row — see request-access.
+  const handleRequestAccess = async (e: React.FormEvent) => {
     e.preventDefault();
-    setCompanySignupError('');
-
-    const email = companySignupEmail.trim().toLowerCase();
-    if (!companyName.trim()) {
-      setCompanySignupError('Enter your company name.');
+    setRequestAccessError('');
+    const form = requestAccessForm;
+    if (form.companyName.trim().length < 2) {
+      setRequestAccessError('Enter your company name.');
       return;
     }
-    if (!email.includes('@')) {
-      setCompanySignupError('Enter a valid email address.');
+    if (form.contactName.trim().length < 2) {
+      setRequestAccessError('Enter your name.');
       return;
     }
-    if (companySignupPassword.length < 8) {
-      setCompanySignupError('Password must be at least 8 characters.');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      setRequestAccessError('Enter a valid work email address.');
       return;
     }
-    if (companySignupPassword !== companySignupConfirm) {
-      setCompanySignupError('Passwords do not match.');
-      return;
-    }
-    if (isMockMode) {
-      setCompanySignupError('Company registration is unavailable in sandbox mock mode.');
+    if (isMockMode || !supabase) {
+      setRequestAccessError('Access requests are unavailable in sandbox mock mode.');
       return;
     }
 
-    // Depot is optional here — only validate coordinates if they actually
-    // started naming one, so a blank depot section never blocks signup.
-    let depotPayload: { name: string; address: string; latitude: number; longitude: number } | undefined;
-    if (signupDepotName.trim()) {
-      const lat = parseFloat(signupDepotLat);
-      const lng = parseFloat(signupDepotLng);
-      if (Number.isNaN(lat) || lat < -90 || lat > 90) {
-        setCompanySignupError('Depot latitude must be a number between -90 and 90.');
-        return;
-      }
-      if (Number.isNaN(lng) || lng < -180 || lng > 180) {
-        setCompanySignupError('Depot longitude must be a number between -180 and 180.');
-        return;
-      }
-      depotPayload = { name: signupDepotName.trim(), address: signupDepotAddress.trim(), latitude: lat, longitude: lng };
-    }
-
-    setIsRegisteringCompany(true);
+    setIsSubmittingAccessRequest(true);
     try {
-      const { data, error } = await supabase!.functions.invoke('company-signup', {
-        body: { companyName: companyName.trim(), email, password: companySignupPassword, depot: depotPayload },
+      const { data, error } = await supabase.functions.invoke('request-access', {
+        body: { ...form, email: form.email.trim().toLowerCase(), source: 'admin_login' },
       });
-
       const failure = await readFunctionError(data, error);
       if (failure) {
-        setCompanySignupError(failure);
+        setRequestAccessError(failure);
       } else {
-        setCompanyCodesResult({
-          companySlug: data.companySlug,
-          logisticsCode: data.logisticsCode,
-          payrollCode: data.payrollCode,
-          depotCreated: Boolean(data.depotCreated),
-        });
-        setLoginEmail(email);
+        setRequestAccessDone(true);
       }
     } catch (_) {
-      setCompanySignupError('Could not reach the company registration service.');
+      setRequestAccessError('Could not reach the request service. Please try again.');
     } finally {
-      setIsRegisteringCompany(false);
+      setIsSubmittingAccessRequest(false);
     }
   };
 
@@ -2594,8 +2752,6 @@ export default function App() {
       nightOutMaxGapHours: String(orgAlertSettings.nightOutMaxGapHours),
       complianceAlertLeadDays: String(orgAlertSettings.complianceAlertLeadDays),
       walkaroundCheckTargetMinutes: String(orgAlertSettings.walkaroundCheckTargetMinutes),
-      fuelAnomalyMinMpg: String(orgAlertSettings.fuelAnomalyMinMpg),
-      fuelAnomalyRollingDropPercent: String(orgAlertSettings.fuelAnomalyRollingDropPercent),
       loadReminderMinutes: String(orgAlertSettings.loadReminderMinutes),
     });
   }, [orgAlertSettings]);
@@ -2612,8 +2768,6 @@ export default function App() {
     const nightOutMaxGapHours = parseFloat(alertSettingsForm.nightOutMaxGapHours);
     const complianceAlertLeadDays = parseInt(alertSettingsForm.complianceAlertLeadDays, 10);
     const walkaroundCheckTargetMinutes = parseInt(alertSettingsForm.walkaroundCheckTargetMinutes, 10);
-    const fuelAnomalyMinMpg = parseFloat(alertSettingsForm.fuelAnomalyMinMpg);
-    const fuelAnomalyRollingDropPercent = parseInt(alertSettingsForm.fuelAnomalyRollingDropPercent, 10);
     const loadReminderMinutes = parseInt(alertSettingsForm.loadReminderMinutes, 10);
 
     setAlertSettingsError('');
@@ -2643,14 +2797,6 @@ export default function App() {
       setAlertSettingsError('Walk-around check target must be a positive whole number of minutes.');
       return;
     }
-    if (!Number.isFinite(fuelAnomalyMinMpg) || fuelAnomalyMinMpg <= 0) {
-      setAlertSettingsError('Fuel anomaly MPG floor must be a positive number.');
-      return;
-    }
-    if (!Number.isInteger(fuelAnomalyRollingDropPercent) || fuelAnomalyRollingDropPercent <= 0 || fuelAnomalyRollingDropPercent >= 100) {
-      setAlertSettingsError('Fuel anomaly rolling-average drop must be a whole percentage between 1 and 99.');
-      return;
-    }
     if (!Number.isInteger(loadReminderMinutes) || loadReminderMinutes < 5 || loadReminderMinutes > 600) {
       setAlertSettingsError('Load reminder must be a whole number of minutes between 5 and 600.');
       return;
@@ -2667,8 +2813,6 @@ export default function App() {
           nightOutMaxGapHours,
           complianceAlertLeadDays,
           walkaroundCheckTargetMinutes,
-          fuelAnomalyMinMpg,
-          fuelAnomalyRollingDropPercent,
           loadReminderMinutes,
         },
       });
@@ -2678,7 +2822,7 @@ export default function App() {
       } else {
         setOrgAlertSettings(prev => ({
           ...prev, longShiftFlagHours, idleAlertMinutes, nightOutMinGapHours, nightOutMaxGapHours, complianceAlertLeadDays,
-          walkaroundCheckTargetMinutes, fuelAnomalyMinMpg, fuelAnomalyRollingDropPercent, loadReminderMinutes,
+          walkaroundCheckTargetMinutes, loadReminderMinutes,
         }));
         setAlertSettingsSuccess('Saved.');
         setTimeout(() => setAlertSettingsSuccess(''), 1800);
@@ -2687,6 +2831,38 @@ export default function App() {
       setAlertSettingsError('Could not save alert settings.');
     } finally {
       setIsSavingAlertSettings(false);
+    }
+  };
+
+  /// Instant on/off toggle for company-wide idle detection (item 3).
+  /// Same pattern as the Night Out toggle: an independent call so the
+  /// switch never depends on the numeric threshold fields also being
+  /// currently valid.
+  const [isSavingIdleToggle, setIsSavingIdleToggle] = useState(false);
+  const handleToggleIdleDetection = async () => {
+    if (isMockMode || !supabase || isSavingIdleToggle) return;
+    const nextValue = !orgAlertSettings.idleDetectionEnabled;
+    setIsSavingIdleToggle(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('admin-users', {
+        body: {
+          action: 'update-alert-settings',
+          longShiftFlagHours: orgAlertSettings.longShiftFlagHours,
+          idleAlertMinutes: orgAlertSettings.idleAlertMinutes,
+          nightOutMinGapHours: orgAlertSettings.nightOutMinGapHours,
+          nightOutMaxGapHours: orgAlertSettings.nightOutMaxGapHours,
+          complianceAlertLeadDays: orgAlertSettings.complianceAlertLeadDays,
+          walkaroundCheckTargetMinutes: orgAlertSettings.walkaroundCheckTargetMinutes,
+          loadReminderMinutes: orgAlertSettings.loadReminderMinutes,
+          idleDetectionEnabled: nextValue,
+        },
+      });
+      const failure = await readFunctionError(data, error);
+      if (!failure) {
+        setOrgAlertSettings(prev => ({ ...prev, idleDetectionEnabled: nextValue }));
+      }
+    } finally {
+      setIsSavingIdleToggle(false);
     }
   };
 
@@ -2809,79 +2985,6 @@ export default function App() {
     }
   };
 
-  /// Sets or updates the company revenue billed for one load/shift, from
-  /// the Analytics → Load Revenue table. Writes to the separate
-  /// shift_revenue table (migration 035) — never to shifts itself — so
-  /// this stays invisible to the driver app regardless of what columns
-  /// it selects. An empty amount clears the figure back to "Rate Pending"
-  /// rather than writing 0, since £0 and "not entered yet" mean different
-  /// things for margin reporting.
-  const handleSaveRevenue = async (shiftId: string) => {
-    if (isMockMode || !supabase) return;
-    const edit = revenueEdits[shiftId];
-    if (!edit) return;
-
-    setRevenueSaveError('');
-    const trimmedAmount = edit.revenue.trim();
-    let revenueAmount: number | null = null;
-    if (trimmedAmount) {
-      const parsed = Number(trimmedAmount);
-      if (Number.isNaN(parsed) || parsed < 0) {
-        setRevenueSaveError('Enter a valid revenue amount (0 or more), or leave it blank.');
-        return;
-      }
-      revenueAmount = Math.round(parsed * 100) / 100;
-    }
-    const loadReference = edit.loadRef.trim() || null;
-    const carrierName = edit.carrier !== undefined ? (edit.carrier.trim() || null) : undefined;
-
-    setSavingRevenueShiftId(shiftId);
-    try {
-      const { error } = await supabase
-        .from('shift_revenue')
-        .upsert(
-          {
-            shift_id: shiftId,
-            revenue_amount: revenueAmount,
-            load_reference: loadReference,
-            ...(carrierName !== undefined ? { carrier_name: carrierName } : {}),
-          },
-          { onConflict: 'shift_id' },
-        );
-
-      if (error) {
-        setRevenueSaveError(error.message || 'Could not save the revenue for this load.');
-        return;
-      }
-
-      setShifts(prev => prev.map(s => s.id === shiftId ? { ...s, revenue_amount: revenueAmount, load_reference: loadReference, ...(carrierName !== undefined ? { carrier_name: carrierName } : {}) } : s));
-      setRevenueEdits(prev => {
-        const next = { ...prev };
-        delete next[shiftId];
-        return next;
-      });
-    } catch (_) {
-      setRevenueSaveError('Could not reach the database to save this load.');
-    } finally {
-      setSavingRevenueShiftId(null);
-    }
-  };
-
-  /// Assigns (or clears) which real fleet vehicle ran a shift — writes
-  /// directly to shifts.vehicle_id (migration 045). Used both by the
-  /// Profitability ledger's inline picker and by the carrier settlement
-  /// importer when it auto-matches a load to a shift by registration.
-  const handleAssignVehicle = async (shiftId: string, vehicleId: string | null) => {
-    if (isMockMode || !supabase) return;
-    const { error } = await supabase.from('shifts').update({ vehicle_id: vehicleId }).eq('id', shiftId);
-    if (error) {
-      setRevenueSaveError(error.message || 'Could not assign a vehicle to this shift.');
-      return;
-    }
-    const vehicleNumber = vehicleId ? fleetVehicles.find(v => v.id === vehicleId)?.vehicle_number ?? null : null;
-    setShifts(prev => prev.map(s => (s.id === shiftId ? { ...s, vehicle_id: vehicleId, vehicle_number: vehicleNumber } : s)));
-  };
-
   /// Fills the Add Depot form's coordinates (and, best-effort, its address)
   /// from the device's current GPS position — for an admin standing at the
   /// depot itself rather than looking up its coordinates online.
@@ -2976,10 +3079,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (isAuthenticated && (settingsModalOpen || billingModalOpen)) {
+    if (isAuthenticated && settingsModalOpen) {
+      loadEntitlements();
       loadTeamInfo();
     }
-  }, [isAuthenticated, settingsModalOpen, billingModalOpen, loadTeamInfo]);
+  }, [isAuthenticated, settingsModalOpen, loadTeamInfo, loadEntitlements]);
 
   /// Sends a Supabase password-reset email. The link returns the admin to this
   /// app, where the PASSWORD_RECOVERY listener above opens the new-password screen.
@@ -3101,34 +3205,23 @@ export default function App() {
 
       if (error) {
         setLoginError(error.message);
-      } else {
-        setIsAuthenticated(true);
-        localStorage.setItem('admin_session', 'true');
-        persistRememberedEmail(loginEmail);
+        return;
+      }
 
-        // Department comes solely from the user_roles table. The previous
-        // email-pattern fallback let any address containing "admin" or
-        // "payroll" self-assign the payroll department.
-        const { role: resolvedRole, blocked, companyName, organizationId } = await resolveUserRole();
-
-        if (blocked) {
-          await supabase!.auth.signOut();
-          setIsAuthenticated(false);
-          localStorage.removeItem('admin_session');
-          setLoginError(`Access for ${companyName ?? 'this company'} has ended. Contact support to reactivate.`);
+      // Two-step: if the account has a verified authenticator, Supabase
+      // reports currentLevel < nextLevel and we ask for the code before
+      // handing over.
+      const { data: aal } = await supabase!.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (aal?.currentLevel === 'aal1' && aal.nextLevel === 'aal2') {
+        const { data: factors } = await supabase!.auth.mfa.listFactors();
+        const first = ((factors as any)?.totp ?? (factors as any)?.all ?? [])
+          .find((f: any) => f.status === 'verified') as { id: string } | undefined;
+        if (first) {
+          setMfaChallenge({ factorId: first.id, code: '', verifying: false, error: '' });
           return;
         }
-
-        setUserRole(resolvedRole);
-        localStorage.setItem('admin_role', resolvedRole);
-        if (organizationId) {
-          setCurrentOrgId(organizationId);
-          loadOrgAlertSettings(organizationId);
-        }
-        if (resolvedRole === 'logistics') {
-          setActiveTab('dashboard');
-        }
       }
+      await finishAdminLogin();
     } catch (_) {
       setLoginError('Authentication connection failure.');
     }
@@ -3228,13 +3321,8 @@ export default function App() {
     e.preventDefault();
     setCrudError('');
 
-    if (!newEmployeeName.trim() || !newEmployeeCode.trim() || !newEmployeePhone.trim() || !newEmployeePin.trim()) {
-      setCrudError('Please fill in all employee fields.');
-      return;
-    }
-
-    if (newEmployeePin.trim().length !== 6) {
-      setCrudError('PIN must be exactly 6 digits.');
+    if (!newEmployeeName.trim() || !newEmployeeCode.trim() || !newEmployeePhone.trim()) {
+      setCrudError('Please fill in the name, username and phone.');
       return;
     }
 
@@ -3244,9 +3332,8 @@ export default function App() {
     }
 
     const cleanCode = newEmployeeCode.trim();
-    const cleanName = newEmployeeName.trim();
+    const cleanName = toTitleCase(newEmployeeName.trim());
     const cleanPhone = newEmployeePhone.trim() || 'N/A';
-    const cleanPin = newEmployeePin.trim() || '123456';
 
     try {
       const { data, error } = await supabase.functions.invoke('create-driver', {
@@ -3254,7 +3341,6 @@ export default function App() {
           driver_id: cleanCode,
           full_name: cleanName,
           phone: cleanPhone,
-          pin: cleanPin,
         },
       });
 
@@ -3313,8 +3399,12 @@ export default function App() {
         setNewEmployeeName('');
         setNewEmployeeCode('');
         setNewEmployeePhone('');
-        setNewEmployeePin('123456');
         setNewEmployeeProfession('driver');
+        if (typeof data.activation_code === 'string') {
+          setActivationCodeShown({ code: data.activation_code, name: cleanName, driverId: createdDriver.driver_id, reason: 'created' });
+        } else if (data.activation_code_error) {
+          showToast(`Employee created, but the activation code failed: ${data.activation_code_error} — use "Reset PIN" from the row menu.`, 'error');
+        }
         setNewEmployeeRateType('Hourly');
         setNewEmployeeBaseRate('16.00');
         setNewEmployeeAgency('Direct');
@@ -3427,7 +3517,7 @@ export default function App() {
     setEditEmployeeError('');
     setIsSavingEmployee(true);
 
-    const cleanName = editFullName.trim();
+    const cleanName = toTitleCase(editFullName.trim());
     const cleanUsername = editUsername.trim();
     const cleanPhone = editPhone.trim();
     const cleanPin = editNewPin.trim();
@@ -3468,6 +3558,17 @@ export default function App() {
       };
       if (cleanPin) {
         dbPayload.pin_hash = cleanPin;
+        // Without this the driver stays 'pending' forever if they hadn't
+        // activated yet — driver-login refuses any PIN outright while
+        // pending, no matter how correct it is, so a PIN set here would
+        // silently never work. (The hash itself is fine: a BEFORE UPDATE
+        // trigger on drivers bcrypts pin_hash on every write.)
+        dbPayload.pin_status = 'set';
+        dbPayload.pin_set_at = new Date().toISOString();
+        dbPayload.pin_locked_until = null;
+        dbPayload.pin_lock_level = 0;
+        dbPayload.pin_failed_attempts = 0;
+        dbPayload.pin_failed_since = null;
       }
 
       const { error: dbError } = await supabase
@@ -3532,31 +3633,35 @@ export default function App() {
     }
   };
 
-  // Bcrypt-hashed PINs can't be recovered, only reset — same rule as the
-  // Edit modal's own "new PIN" field, just surfaced as a one-click action
-  // in the row's overflow menu for the common "driver forgot their PIN"
-  // case. The new PIN is shown once, here, since there's no other way for
-  // the admin to relay it to the driver afterward.
+  // Migration 065: admins never see PINs. A one-time activation code
+  // is issued and shown once; the driver enters it in the app and picks
+  // their own 6-digit PIN.
   const handleResetPin = (emp: Employee) => {
-    const newPin = generateRandomPin();
     requestConfirm(
-      `Reset ${emp.full_name}'s PIN to ${newPin}? Their old PIN will stop working immediately — make sure you can tell them the new one.`,
+      `Issue a new activation code for ${emp.full_name}? Their current PIN keeps working until they finish setting a new one.`,
       async () => {
         if (isMockMode || !supabase) {
-          showToast(`New PIN for ${emp.full_name}: ${newPin} (Mock Mode)`, 'success');
+          showToast('Activation codes are not available in mock mode.', 'error');
           return;
         }
         try {
-          const { error } = await supabase.functions.invoke('create-driver', {
-            body: { action: 'update', id: emp.id, pin: newPin },
+          const { data, error } = await supabase.functions.invoke('create-driver', {
+            body: { action: 'reset_pin', id: emp.id },
           });
           if (error) {
-            showToast(`Failed to reset PIN: ${error.message}`, 'error');
+            let msg = error.message;
+            try {
+              const body = await (error as any).context?.json?.();
+              if (body?.error) msg = body.error;
+            } catch (_) {}
+            showToast(`Could not issue an activation code: ${msg}`, 'error');
             return;
           }
-          showToast(`New PIN for ${emp.full_name}: ${newPin}`, 'success');
+          if (data?.activation_code) {
+            setActivationCodeShown({ code: data.activation_code, name: emp.full_name, driverId: data.driver_id ?? emp.driver_id, reason: 'reset' });
+          }
         } catch (err: any) {
-          showToast(`Failed to reset PIN: ${err?.message ?? 'Unknown error'}`, 'error');
+          showToast(`Could not issue an activation code: ${err?.message ?? 'unknown error'}`, 'error');
         }
       },
       'default'
@@ -4743,9 +4848,8 @@ export default function App() {
   }, [isAuthenticated, activeTab, liveLocations, alerts, depots]);
 
   // ── Render login Page if Unauthenticated ───────────────────
-  // ── Department Sign-Up ─────────────────────────────────────
-  // ── Company Sign-Up: register a brand-new tenant ────────────
-  if (!isAuthenticated && companySignupMode && !companyCodesResult) {
+  // ── Two-step sign-in code ─────────────────────────────────
+  if (!isAuthenticated && mfaChallenge) {
     return (
       <div className="login-shell">
         <div className="login-card login-card--single">
@@ -4754,187 +4858,57 @@ export default function App() {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '18px' }}>
                 <BrandLogo transparentIcon iconSize={32} textSize={22} gap={7} fontFamily="'Plus Jakarta Sans', 'Inter', sans-serif" />
               </div>
-              <h1 className="login-title">Register Your Company</h1>
-              <p className="login-subtitle">Create your company's dispatch console and become its first admin</p>
+              <h1 className="login-title">Enter your 6-digit code</h1>
+              <p className="login-subtitle">Open your authenticator app on your phone.</p>
             </div>
-
-            <form onSubmit={handleCompanySignup}>
-              <div className="input-group">
-                <label className="input-label" htmlFor="company-name">COMPANY NAME</label>
-                <div className="login-field">
-                  <span className="login-field-icon"><Building2 size={16} /></span>
-                  <input
-                    id="company-name"
-                    type="text"
-                    className="login-input"
-                    placeholder="Your Company Ltd"
-                    value={companyName}
-                    onChange={(e) => setCompanyName(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label" htmlFor="company-signup-email">YOUR EMAIL</label>
-                <div className="login-field">
-                  <span className="login-field-icon"><Mail size={16} /></span>
-                  <input
-                    id="company-signup-email"
-                    type="email"
-                    className="login-input"
-                    placeholder="you@yourcompany.com"
-                    autoComplete="username"
-                    value={companySignupEmail}
-                    onChange={(e) => setCompanySignupEmail(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label" htmlFor="company-signup-password">PASSWORD</label>
-                <div className="login-field">
-                  <span className="login-field-icon"><Lock size={16} /></span>
-                  <input
-                    id="company-signup-password"
-                    type={showCompanySignupPassword ? 'text' : 'password'}
-                    className="login-input login-input--with-toggle"
-                    placeholder="At least 8 characters"
-                    autoComplete="new-password"
-                    value={companySignupPassword}
-                    onChange={(e) => setCompanySignupPassword(e.target.value)}
-                    required
-                  />
-                  <button
-                    type="button"
-                    className="login-toggle"
-                    onClick={() => setShowCompanySignupPassword(v => !v)}
-                    aria-label={showCompanySignupPassword ? 'Hide password' : 'Show password'}
-                    aria-pressed={showCompanySignupPassword}
-                  >
-                    <EyeToggleIcon on={showCompanySignupPassword} size={16} />
-                  </button>
-                </div>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label" htmlFor="company-signup-confirm">CONFIRM PASSWORD</label>
-                <div className="login-field">
-                  <span className="login-field-icon"><Lock size={16} /></span>
-                  <input
-                    id="company-signup-confirm"
-                    type={showCompanySignupPassword ? 'text' : 'password'}
-                    className="login-input"
-                    placeholder="Re-enter password"
-                    autoComplete="new-password"
-                    value={companySignupConfirm}
-                    onChange={(e) => setCompanySignupConfirm(e.target.value)}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div style={{ borderTop: '1px solid var(--border-color)', margin: '20px 0 16px', paddingTop: '16px' }}>
-                <p className="text-xs text-muted mb-8" style={{ fontWeight: 700, letterSpacing: '0.4px' }}>
-                  FIRST DEPOT <span style={{ fontWeight: 400, textTransform: 'none' }}>(optional — add later from Team &amp; Access instead)</span>
-                </p>
-
-                <div className="input-group">
-                  <label className="input-label" htmlFor="signup-depot-name">DEPOT NAME</label>
-                  <div className="login-field">
-                    <span className="login-field-icon"><Building2 size={16} /></span>
-                    <input
-                      id="signup-depot-name"
-                      type="text"
-                      className="login-input"
-                      placeholder="e.g. Rossington Depot"
-                      value={signupDepotName}
-                      onChange={(e) => setSignupDepotName(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="input-group">
-                  <label className="input-label" htmlFor="signup-depot-address">ADDRESS (OPTIONAL)</label>
-                  <div className="login-field">
-                    <span className="login-field-icon"><MapPinned size={16} /></span>
-                    <input
-                      id="signup-depot-address"
-                      type="text"
-                      className="login-input"
-                      placeholder="e.g. Great North Road, Rossington"
-                      value={signupDepotAddress}
-                      onChange={(e) => setSignupDepotAddress(e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  className="login-forgot"
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: '12px' }}
-                  onClick={handleUseCurrentLocationSignupDepot}
-                  disabled={isLocatingSignupDepot}
-                >
-                  <LocateFixed size={14} />
-                  {isLocatingSignupDepot ? 'Getting your location…' : 'Use My Current Location'}
-                </button>
-
-                <div className="flex" style={{ gap: '12px' }}>
-                  <div className="input-group" style={{ flex: 1 }}>
-                    <label className="input-label" htmlFor="signup-depot-lat">LATITUDE</label>
-                    <input
-                      id="signup-depot-lat"
-                      type="text"
-                      inputMode="decimal"
-                      className="login-input"
-                      style={{ padding: '10px 12px' }}
-                      placeholder="53.4818"
-                      value={signupDepotLat}
-                      onChange={(e) => setSignupDepotLat(e.target.value)}
-                    />
-                  </div>
-                  <div className="input-group" style={{ flex: 1 }}>
-                    <label className="input-label" htmlFor="signup-depot-lng">LONGITUDE</label>
-                    <input
-                      id="signup-depot-lng"
-                      type="text"
-                      inputMode="decimal"
-                      className="login-input"
-                      style={{ padding: '10px 12px' }}
-                      placeholder="-1.0866"
-                      value={signupDepotLng}
-                      onChange={(e) => setSignupDepotLng(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <p className="text-xs text-muted mt-4">
-                  Tap "Use My Current Location" while standing at the depot, or find coordinates by
-                  searching the address on Google Maps and copying the latitude/longitude shown for the pin.
-                </p>
-              </div>
-
-              {companySignupError && (
-                <div className="login-notice login-notice--error">{companySignupError}</div>
-              )}
-
-              <FlowButton
-                type="submit"
-                disabled={isRegisteringCompany}
-                text={isRegisteringCompany ? 'CREATING COMPANY…' : 'REGISTER COMPANY'}
-                hoverText="WELCOME ABOARD"
-                className="w-full"
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (!mfaChallenge) return;
+              const code = mfaChallenge.code.trim();
+              if (!/^\d{6}$/.test(code)) {
+                setMfaChallenge(m => m && { ...m, error: 'Enter the 6-digit code from your app.' });
+                return;
+              }
+              setMfaChallenge(m => m && { ...m, verifying: true, error: '' });
+              const { data: challenge, error: chErr } = await supabase!.auth.mfa.challenge({ factorId: mfaChallenge.factorId });
+              if (chErr || !challenge) {
+                setMfaChallenge(m => m && { ...m, verifying: false, error: chErr?.message ?? 'Could not start the check — try again.' });
+                return;
+              }
+              const { error: vErr } = await supabase!.auth.mfa.verify({ factorId: mfaChallenge.factorId, challengeId: challenge.id, code });
+              if (vErr) {
+                setMfaChallenge(m => m && { ...m, verifying: false, error: vErr.message });
+                return;
+              }
+              setMfaChallenge(null);
+              await finishAdminLogin();
+            }}>
+              <input
+                className="login-input font-mono"
+                inputMode="numeric"
+                maxLength={6}
+                autoFocus
+                autoComplete="one-time-code"
+                placeholder="000000"
+                style={{ padding: '14px', fontSize: '22px', letterSpacing: '0.3em', textAlign: 'center' }}
+                value={mfaChallenge.code}
+                onChange={(e) => setMfaChallenge(m => m && { ...m, code: e.target.value.replace(/\D/g, '').slice(0, 6) })}
               />
+              {mfaChallenge.error && (
+                <div className="text-error text-sm font-semibold mt-16">{mfaChallenge.error}</div>
+              )}
+              <FlowButton type="submit" disabled={mfaChallenge.verifying} text={mfaChallenge.verifying ? 'CHECKING…' : 'VERIFY'} hoverText="LET ME IN" className="w-full" />
             </form>
-
             <div className="login-utils" style={{ marginTop: '16px', justifyContent: 'center' }}>
               <button
                 type="button"
                 className="login-forgot"
-                onClick={() => { setCompanySignupMode(false); setCompanySignupError(''); }}
+                onClick={async () => {
+                  await supabase!.auth.signOut();
+                  setMfaChallenge(null);
+                }}
               >
-                ← Back to sign in
+                ← Sign in as someone else
               </button>
             </div>
           </div>
@@ -4943,77 +4917,140 @@ export default function App() {
     );
   }
 
-  // ── Company Sign-Up: one-time reveal of the new company's codes ──
-  if (!isAuthenticated && companySignupMode && companyCodesResult) {
+  // ── Request access: new visitors become interest buyers ────
+  if (!isAuthenticated && requestAccessMode) {
+    const setAccessField = (key: keyof typeof EMPTY_ACCESS_REQUEST) =>
+      (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) =>
+        setRequestAccessForm(prev => ({ ...prev, [key]: e.target.value }));
+    const backToSignIn = () => {
+      setRequestAccessMode(false);
+      setRequestAccessError('');
+      if (requestAccessDone) {
+        setRequestAccessDone(false);
+        setRequestAccessForm(EMPTY_ACCESS_REQUEST);
+      }
+    };
     return (
       <div className="login-shell">
         <div className="login-card login-card--single">
           <div className="login-form-col">
             <div className="text-center mb-24">
-              <Building2 size={40} style={{ color: 'var(--brand-red, #CC0000)', marginBottom: '12px' }} />
-              <h1 className="login-title">Save These Codes</h1>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '18px' }}>
+                <BrandLogo transparentIcon iconSize={32} textSize={22} gap={7} fontFamily="'Plus Jakarta Sans', 'Inter', sans-serif" />
+              </div>
+              <h1 className="login-title">{requestAccessDone ? 'Request Received' : 'Request Access'}</h1>
               <p className="login-subtitle">
-                Shown once. Anyone who has the right code can join — logistics/payroll codes let staff
-                register a dashboard account, and the driver company code lets your drivers sign in.
+                {requestAccessDone
+                  ? 'Thanks — the Tachyo team will be in touch within one business day.'
+                  : "Tell us about your fleet and we'll set up your company's account with you."}
               </p>
             </div>
 
-            <div className="input-group">
-              <label className="input-label">DRIVER COMPANY CODE</label>
-              <div className="login-field">
-                <span className="login-field-icon"><Users size={16} /></span>
-                <input readOnly className="login-input" value={companyCodesResult.companySlug} />
+            {requestAccessDone ? (
+              <>
+                <div className="login-notice login-notice--info">
+                  We'll contact you at <strong>{requestAccessForm.email.trim()}</strong> to walk you through Tachyo and create
+                  your company's login. No account exists yet, so there's nothing to sign in to until then.
+                </div>
+                <button type="button" className="login-submit" style={{ marginTop: '8px' }} onClick={backToSignIn}>
+                  <Shield size={15} />
+                  BACK TO SIGN IN
+                </button>
+              </>
+            ) : (
+              <form onSubmit={handleRequestAccess} style={{ position: 'relative' }}>
+                <div className="input-group">
+                  <label className="input-label" htmlFor="access-company">COMPANY NAME</label>
+                  <div className="login-field">
+                    <span className="login-field-icon"><Building2 size={16} /></span>
+                    <input id="access-company" type="text" className="login-input" placeholder="Your Haulage Ltd" autoComplete="organization" value={requestAccessForm.companyName} onChange={setAccessField('companyName')} required />
+                  </div>
+                </div>
+
+                <div className="input-group">
+                  <label className="input-label" htmlFor="access-name">YOUR NAME</label>
+                  <div className="login-field">
+                    <span className="login-field-icon"><User size={16} /></span>
+                    <input id="access-name" type="text" className="login-input" placeholder="Full name" autoComplete="name" value={requestAccessForm.contactName} onChange={setAccessField('contactName')} required />
+                  </div>
+                </div>
+
+                <div className="input-group">
+                  <label className="input-label" htmlFor="access-email">WORK EMAIL</label>
+                  <div className="login-field">
+                    <span className="login-field-icon"><Mail size={16} /></span>
+                    <input id="access-email" type="email" className="login-input" placeholder="you@yourcompany.com" autoComplete="email" value={requestAccessForm.email} onChange={setAccessField('email')} required />
+                  </div>
+                </div>
+
+                <div className="flex" style={{ gap: '12px' }}>
+                  <div className="input-group" style={{ flex: 1, minWidth: 0 }}>
+                    <label className="input-label" htmlFor="access-phone">PHONE (OPTIONAL)</label>
+                    <div className="login-field">
+                      <span className="login-field-icon"><Phone size={16} /></span>
+                      <input id="access-phone" type="tel" className="login-input" placeholder="07…" autoComplete="tel" value={requestAccessForm.phone} onChange={setAccessField('phone')} />
+                    </div>
+                  </div>
+                  <div className="input-group" style={{ flex: 1, minWidth: 0 }}>
+                    <label className="input-label" htmlFor="access-fleet">FLEET SIZE</label>
+                    <div className="login-field">
+                      <span className="login-field-icon"><Truck size={16} /></span>
+                      <select id="access-fleet" className="login-input" style={{ appearance: 'none', cursor: 'pointer', paddingRight: '34px' }} value={requestAccessForm.fleetSize} onChange={setAccessField('fleetSize')}>
+                        <option value="">Select…</option>
+                        <option value="1-9">1–9 vehicles</option>
+                        <option value="10-49">10–49 vehicles</option>
+                        <option value="50-149">50–149 vehicles</option>
+                        <option value="150+">150+ vehicles</option>
+                      </select>
+                      <ChevronDown size={14} style={{ position: 'absolute', right: '14px', color: '#9AA1AC', pointerEvents: 'none' }} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="input-group">
+                  <label className="input-label" htmlFor="access-message">WHAT WOULD YOU LIKE TACHYO TO SOLVE? (OPTIONAL)</label>
+                  <textarea
+                    id="access-message"
+                    className="login-input"
+                    style={{ paddingLeft: '14px', minHeight: '76px', resize: 'vertical' }}
+                    placeholder="e.g. Idle time, payroll reconciliation, walk-around checks…"
+                    value={requestAccessForm.message}
+                    onChange={setAccessField('message')}
+                  />
+                </div>
+
+                {/* Honeypot — hidden from people, filled in by bots. */}
+                <input
+                  type="text"
+                  tabIndex={-1}
+                  autoComplete="off"
+                  aria-hidden="true"
+                  value={requestAccessForm.website}
+                  onChange={setAccessField('website')}
+                  style={{ position: 'absolute', left: '-10000px', width: '1px', height: '1px', opacity: 0 }}
+                />
+
+                {requestAccessError && (
+                  <div className="login-notice login-notice--error">{requestAccessError}</div>
+                )}
+
+                <FlowButton
+                  type="submit"
+                  disabled={isSubmittingAccessRequest}
+                  text={isSubmittingAccessRequest ? 'SENDING…' : 'REQUEST ACCESS'}
+                  hoverText="LET'S TALK"
+                  className="w-full"
+                />
+              </form>
+            )}
+
+            {!requestAccessDone && (
+              <div className="login-utils" style={{ marginTop: '16px', justifyContent: 'center' }}>
+                <button type="button" className="login-forgot" onClick={backToSignIn}>
+                  ← Already have an account? Sign in
+                </button>
               </div>
-            </div>
-
-            <div className="input-group">
-              <label className="input-label">LOGISTICS REGISTRATION CODE</label>
-              <div className="login-field">
-                <span className="login-field-icon"><Shield size={16} /></span>
-                <input readOnly className="login-input" value={companyCodesResult.logisticsCode} />
-              </div>
-            </div>
-
-            <div className="input-group">
-              <label className="input-label">PAYROLL REGISTRATION CODE</label>
-              <div className="login-field">
-                <span className="login-field-icon"><Shield size={16} /></span>
-                <input readOnly className="login-input" value={companyCodesResult.payrollCode} />
-              </div>
-            </div>
-
-            <div className="login-notice login-notice--success">
-              You can rotate the logistics/payroll codes any time from the Team &amp; Access tab once
-              you're signed in — but this is the only time the driver company code will be shown here.
-            </div>
-
-            <div className={`login-notice ${companyCodesResult.depotCreated ? 'login-notice--success' : 'login-notice--info'}`}>
-              {companyCodesResult.depotCreated
-                ? 'Your first depot has been saved — drivers can clock in there once you sign in.'
-                : 'No depot added yet. Add one from Team & Access before clocking any driver in.'}
-            </div>
-
-            <button
-              type="button"
-              className="login-submit"
-              style={{ marginTop: '16px' }}
-              onClick={() => {
-                setCompanySignupMode(false);
-                setCompanyCodesResult(null);
-                setCompanyName('');
-                setCompanySignupEmail('');
-                setCompanySignupPassword('');
-                setCompanySignupConfirm('');
-                setSignupDepotName('');
-                setSignupDepotAddress('');
-                setSignupDepotLat('');
-                setSignupDepotLng('');
-                setResetNotice({ tone: 'success', text: 'Company registered. Sign in with your new password.' });
-              }}
-            >
-              <Shield size={15} />
-              CONTINUE TO SIGN IN
-            </button>
+            )}
           </div>
         </div>
       </div>
@@ -5208,9 +5245,9 @@ export default function App() {
               <button
                 type="button"
                 className="login-forgot"
-                onClick={() => { setCompanySignupMode(true); setResetNotice(null); setLoginError(''); }}
+                onClick={() => { setRequestAccessMode(true); setResetNotice(null); setLoginError(''); }}
               >
-                New company? Register your company
+                New to Tachyo? Request access
               </button>
             </div>
 
@@ -5319,7 +5356,7 @@ export default function App() {
   // Includes fuel/parking items still awaiting review — the Alert Panel
   // (Alert Monitors) is now the only place those get approved, so the
   // "needs attention" badge belongs on this nav item, not Analytics'.
-  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + pendingFuelReceiptsCount + pendingParkingExpensesCount + walkaroundIssuesToday;
+  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + (hasFeature('fuel_audit') ? pendingFuelReceiptsCount : 0) + (hasFeature('payroll_rates') ? pendingParkingExpensesCount : 0) + walkaroundIssuesToday + holidayRequests.length + newAccessRequests.length + riskSignoffs.length + pinResetRequests.length;
   const pendingNightOutsCount = shifts.filter(s => s.night_out_status === 'pending').length;
 
   return (
@@ -5400,6 +5437,7 @@ export default function App() {
                             className={`nav-subitem ${activeTab === tab ? 'active' : ''}`}
                           >
                             {label}
+                            {TAB_FEATURE[tab] && !hasFeature(TAB_FEATURE[tab] as FeatureKey) && <Lock size={11} style={{ opacity: 0.6, marginLeft: '2px' }} />}
                             {count > 0 && (
                               <span
                                 style={{
@@ -5458,9 +5496,9 @@ export default function App() {
                 >
                   <span className="nav-icon">
                     <IdCard size={18} />
-                    {pendingNightOutsCount > 0 && (
-                      <span className="nav-count-badge" title={`${pendingNightOutsCount} night out request${pendingNightOutsCount === 1 ? '' : 's'} pending`}>
-                        {pendingNightOutsCount > 9 ? '9+' : pendingNightOutsCount}
+                    {pendingNightOutsCount + holidayRequests.length > 0 && (
+                      <span className="nav-count-badge" title={`${pendingNightOutsCount + holidayRequests.length} request${pendingNightOutsCount + holidayRequests.length === 1 ? '' : 's'} pending`}>
+                        {pendingNightOutsCount + holidayRequests.length > 9 ? '9+' : pendingNightOutsCount + holidayRequests.length}
                       </span>
                     )}
                   </span>
@@ -5483,7 +5521,7 @@ export default function App() {
                         {([
                           ['drivers', 'Employee Database', 0] as const,
                           ...(userRole === 'payroll_admin' ? [['rates', 'Compensation Summary', pendingNightOutsCount] as const] : []),
-                          ['holidays', 'Employee Holidays', 0] as const,
+                          ['holidays', 'Employee Holidays', holidayRequests.length] as const,
                         ]).map(([tab, label, count]) => (
                           <button
                             key={tab}
@@ -5492,6 +5530,7 @@ export default function App() {
                             className={`nav-subitem ${activeTab === tab ? 'active' : ''}`}
                           >
                             {label}
+                            {TAB_FEATURE[tab] && !hasFeature(TAB_FEATURE[tab] as FeatureKey) && <Lock size={11} style={{ opacity: 0.6, marginLeft: '2px' }} />}
                             {count > 0 && (
                               <span
                                 style={{
@@ -5563,6 +5602,7 @@ export default function App() {
                             className={`nav-subitem ${activeTab === tab ? 'active' : ''}`}
                           >
                             {label}
+                            {TAB_FEATURE[tab] && !hasFeature(TAB_FEATURE[tab] as FeatureKey) && <Lock size={11} style={{ opacity: 0.6, marginLeft: '2px' }} />}
                             {count > 0 && (
                               <span
                                 style={{
@@ -5581,7 +5621,7 @@ export default function App() {
                 )}
               </div>
 
-              {userRole === 'payroll_admin' && (
+              {(
                 <SidebarLink
                   link={{
                     label: 'Analytics',
@@ -5591,10 +5631,34 @@ export default function App() {
                     icon: (
                       <span className="nav-icon">
                         <BarChart3 size={18} />
+                        {!hasFeature('analytics') && <Lock size={10} style={{ position: 'absolute', right: '-3px', bottom: '-3px', color: 'var(--brand-red)' }} />}
                       </span>
                     ),
                   }}
                   className={`nav-item ${activeTab === 'analytics' ? 'active' : ''}`}
+                  labelClassName="text-inherit dark:text-inherit"
+                />
+              )}
+
+              {isPlatformAdmin && (
+                <SidebarLink
+                  link={{
+                    label: 'Accounts',
+                    href: '#',
+                    active: activeTab === 'accounts',
+                    onClick: () => setActiveTab('accounts'),
+                    icon: (
+                      <span className="nav-icon">
+                        <Inbox size={18} />
+                        {newAccessRequests.length > 0 && (
+                          <span className="nav-count-badge" title={`${newAccessRequests.length} new interest buyer${newAccessRequests.length === 1 ? '' : 's'}`}>
+                            {newAccessRequests.length > 9 ? '9+' : newAccessRequests.length}
+                          </span>
+                        )}
+                      </span>
+                    ),
+                  }}
+                  className={`nav-item ${activeTab === 'accounts' ? 'active' : ''}`}
                   labelClassName="text-inherit dark:text-inherit"
                 />
               )}
@@ -5642,20 +5706,6 @@ export default function App() {
               </div>
             )}
 
-            {userRole === 'payroll_admin' && (
-              <SidebarLink
-                link={{
-                  label: 'Billing',
-                  href: '#',
-                  active: billingModalOpen,
-                  onClick: () => setBillingModalOpen(true),
-                  icon: <span className="nav-icon"><CreditCard size={18} /></span>,
-                }}
-                className={`nav-item ${billingModalOpen ? 'active' : ''}`}
-                labelClassName="text-inherit dark:text-inherit"
-                style={{ paddingLeft: '14px', borderLeft: 0, borderRadius: '8px' }}
-              />
-            )}
 
             <SidebarLink
               link={{
@@ -5682,7 +5732,9 @@ export default function App() {
             shifts={shifts}
             alerts={alerts}
             idleThresholdMinutes={orgAlertSettings.idleAlertMinutes}
+            idleDetectionEnabled={orgAlertSettings.idleDetectionEnabled}
             fuelCostByShift={approvedFuelCostByShift}
+            dispatchLoads={dispatchBoard}
             showFinancials={userRole === 'payroll_admin'}
             onNavigate={setActiveTab}
           />
@@ -6041,32 +6093,43 @@ export default function App() {
                 would just be a fake filter, so it's deliberately not
                 here. Fuel Anomaly / Fuel Pending / Parking Pending (Alert
                 Monitors consolidation) reuse the same fuelReceipts/
-                parkingExpenses/fuelAnomalyByReceiptId this file already
-                loads for Analytics — no new query, just a second place
+                parkingExpenses this file already loads for Analytics
+                (theft_flag/theft_reason come straight off each row,
+                computed server-side) — no new query, just a second place
                 those same categories surface; this panel is now the only
                 place a fuel receipt or parking claim gets approved,
                 Analytics only shows the already-approved totals. */}
-            <div className="mb-16" style={{ maxWidth: '320px' }}>
-              <select
-                value={alertCategoryFilter}
-                onChange={e => setAlertCategoryFilter(e.target.value as typeof alertCategoryFilter)}
-                className="input"
-                style={{ fontWeight: 700, cursor: 'pointer' }}
-              >
-                {([
-                  ['all', 'All Alerts', alerts.length],
-                  ['sos', 'Emergency SOS', alerts.filter(a => a.is_sos).length],
-                  ['idle50', 'Idle >50m', null],
-                  ['fuel_anomaly', 'Fuel Anomaly', Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length],
-                  ['fuel_pending', 'Fuel Receipts Pending', pendingFuelReceiptsCount],
-                  ['parking_pending', 'Parking Claims Pending', pendingParkingExpensesCount],
-                  ['walkaround', 'Walk-Around Checks', walkaroundAlertIssues.length],
-                ] as const).map(([key, label, count]) => (
-                  <option key={key} value={key}>
-                    {label}{count !== null && count > 0 ? ` (${count})` : ''}
-                  </option>
-                ))}
-              </select>
+            <div className="mb-16 flex align-center" style={{ gap: '10px', flexWrap: 'wrap' }}>
+              <div className="telemetry-pill-select-wrap">
+                <span className="telemetry-pill-icon"><Filter size={13} color="#94A3B8" /></span>
+                <select
+                  aria-label="Alert category"
+                  className="telemetry-pill-select"
+                  value={alertCategoryFilter}
+                  onChange={e => setAlertCategoryFilter(e.target.value as typeof alertCategoryFilter)}
+                >
+                  {([
+                    ['all', 'All Alerts', alerts.length],
+                    ['sos', 'Emergency SOS', alerts.filter(a => a.is_sos).length],
+                    ...(orgAlertSettings.idleDetectionEnabled ? [['idle50', 'Idle >50m', null] as const] : []),
+                    ...(hasFeature('fuel_audit') ? [
+                      ['fuel_anomaly', 'Fuel Anomaly', anomalousFuelReceiptCount] as const,
+                      ['fuel_pending', 'Fuel Receipts Pending', pendingFuelReceiptsCount] as const,
+                    ] : []),
+                    ...(hasFeature('payroll_rates') ? [['parking_pending', 'Parking Claims Pending', pendingParkingExpensesCount] as const] : []),
+                    ['walkaround', 'Walk-Around Checks', walkaroundAlertIssues.length],
+                    ['risk_signoffs', 'Unroadworthy Sign-Offs', riskSignoffs.length],
+                    ['pin_reset', 'PIN Reset Requests', pinResetRequests.length],
+                    ['holiday_pending', 'Holiday Requests', holidayRequests.length],
+                    ...(isPlatformAdmin ? [['access_requests', 'Access Requests', newAccessRequests.length] as const] : []),
+                  ] as const).map(([key, label, count]) => (
+                    <option key={key} value={key}>
+                      {label}{count !== null && count > 0 ? ` (${count})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={12} className="telemetry-pill-chevron" />
+              </div>
             </div>
 
             {/* Fuel Anomaly / Fuel Pending / Parking Pending — same card
@@ -6075,7 +6138,7 @@ export default function App() {
                 Each card links out to its real review modal (Fuel Audit /
                 Parking Claims) instead of duplicating the approve/reject
                 actions here. */}
-            {(alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending' || alertCategoryFilter === 'walkaround') ? (() => {
+            {(alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending' || alertCategoryFilter === 'walkaround' || alertCategoryFilter === 'holiday_pending' || alertCategoryFilter === 'access_requests' || alertCategoryFilter === 'risk_signoffs' || alertCategoryFilter === 'pin_reset') ? (() => {
               const renderQueueAlertCards = (
                 items: { key: string; driverName?: string; subtitle?: string; dateStr: string; reasonText: string }[],
                 emptyTitle: string,
@@ -6120,12 +6183,12 @@ export default function App() {
 
               if (alertCategoryFilter === 'fuel_anomaly') {
                 return renderQueueAlertCards(
-                  fuelReceipts.filter(r => fuelAnomalyByReceiptId[r.id]?.isAnomaly).map(r => ({
+                  fuelReceipts.filter(r => r.theft_flag).map(r => ({
                     key: r.id,
                     driverName: toTitleCase(r.driver_name ?? ''),
                     subtitle: r.vehicle_number,
                     dateStr: new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
-                    reasonText: fuelAnomalyByReceiptId[r.id]?.anomalyReason ?? 'Flagged as anomalous.',
+                    reasonText: r.theft_reason ?? 'Flagged as anomalous.',
                   })),
                   'No Fuel Anomalies',
                   "Every fuel log's MPG is within normal range for its vehicle.",
@@ -6148,6 +6211,180 @@ export default function App() {
                   'Awaiting Review',
                   'Review in Fuel Audit',
                   () => setIsFuelReceiptsModalOpen(true),
+                );
+              }
+              if (alertCategoryFilter === 'pin_reset') {
+                return pinResetRequests.length === 0 ? (
+                  <div className="glass-card">
+                    <Empty>
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon"><KeyRound /></EmptyMedia>
+                        <EmptyTitle>No PIN Reset Requests</EmptyTitle>
+                        <EmptyDescription>When a driver taps "Forgot PIN" in the app, their request appears here.</EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  </div>
+                ) : (
+                  <div className="flex flex-col" style={{ gap: '12px' }}>
+                    {pinResetRequests.map(r => (
+                      <div key={r.id} className="alert-card alert-card--idle">
+                        <div className="flex align-center justify-between mb-8">
+                          <span className="alert-badge-pill alert-badge-pill--idle"><KeyRound size={12} /> PIN Reset Requested</span>
+                          <span className="font-mono tabular-nums text-xs text-muted">
+                            {new Date(r.requested_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div className="flex align-center mb-4" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                          <span className="font-semibold text-primary" style={{ fontSize: '13.5px' }}>{toTitleCase(r.driver_name ?? '') || 'Unknown Employee'}</span>
+                          <span className="font-mono font-bold text-secondary" style={{ fontSize: '12px' }}>{r.driver_code ?? ''}</span>
+                        </div>
+                        <p className="text-xs text-secondary" style={{ margin: '0 0 10px' }}>Issue a new activation code and pass it on so they can set a new PIN.</p>
+                        <button type="button" className="alert-ack-btn" onClick={() => issuePinResetFromRequest(r.driver_id, r.driver_code ?? '', r.driver_name ?? 'Driver')}>
+                          <KeyRound size={13} /> Issue activation code
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              }
+              if (alertCategoryFilter === 'risk_signoffs') {
+                const contextLabel: Record<string, string> = { coupling: 'when coupling', walkaround: 'during a walk-around check' };
+                return riskSignoffs.length === 0 ? (
+                  <div className="glass-card">
+                    <Empty>
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon"><ShieldCheck /></EmptyMedia>
+                        <EmptyTitle>No Unroadworthy Sign-Offs</EmptyTitle>
+                        <EmptyDescription>When a driver signs to take a unit or trailer with expired MOT, tax, insurance or inspection — or marked VOR — it appears here.</EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  </div>
+                ) : (
+                  <div className="flex flex-col" style={{ gap: '12px' }}>
+                    {riskSignoffs.map(r => (
+                      <div key={r.id} className="alert-card alert-card--sos">
+                        <div className="flex align-center justify-between mb-8">
+                          <span className="alert-badge-pill alert-badge-pill--sos">
+                            <AlertOctagon size={12} /> Not Roadworthy — Driver Signed
+                          </span>
+                          <span className="font-mono tabular-nums text-xs text-muted">
+                            {new Date(r.acknowledged_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div className="flex align-center mb-4" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                          <span className="font-semibold text-primary" style={{ fontSize: '13.5px' }}>{toTitleCase(r.driver_name ?? '') || 'Unknown Employee'}</span>
+                          <span className="font-mono font-bold text-secondary" style={{ fontSize: '12px', textTransform: 'uppercase' }}>{r.vehicle_number ?? ''}</span>
+                        </div>
+                        <p className="text-xs font-bold" style={{ margin: '0 0 8px', color: 'var(--brand-red)' }}>{r.issues.join(' · ')}</p>
+                        <div className="flex align-center" style={{ gap: '14px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                          <img
+                            alt={`Signature of ${r.signer_name}`}
+                            src={`data:image/svg+xml;utf8,${encodeURIComponent(r.signature_svg)}`}
+                            style={{ width: '200px', height: '80px', objectFit: 'contain', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px' }}
+                          />
+                          <p className="text-xs text-secondary m-0">
+                            Signed by <strong className="text-primary">{r.signer_name}</strong> {contextLabel[r.context] ?? ''},<br />accepting responsibility for taking it on the road.
+                          </p>
+                        </div>
+                        <button type="button" className="alert-ack-btn" onClick={() => markRiskSignoffReviewed(r.id)}>
+                          <CheckCircle2 size={13} /> Mark reviewed
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              }
+              if (alertCategoryFilter === 'holiday_pending') {
+                const leaveLabel: Record<string, string> = { annual: 'Annual leave', unpaid: 'Unpaid leave', other: 'Other leave' };
+                const dayCount = (start: string, end: string) =>
+                  Math.round((new Date(end).getTime() - new Date(start).getTime()) / 86_400_000) + 1;
+                const shortDate = (d: string) => new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' });
+                return holidayRequests.length === 0 ? (
+                  <div className="glass-card">
+                    <Empty>
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon"><CalendarDays /></EmptyMedia>
+                        <EmptyTitle>No Holiday Requests</EmptyTitle>
+                        <EmptyDescription>Requests employees send from the app will wait here for approval.</EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  </div>
+                ) : (
+                  <div className="flex flex-col" style={{ gap: '12px' }}>
+                    {holidayRequests.map(h => {
+                      const days = dayCount(h.start_date, h.end_date);
+                      const busy = reviewingHolidayId === h.id;
+                      const declining = decliningHolidayId === h.id;
+                      return (
+                        <div key={h.id} className="alert-card alert-card--idle">
+                          <div className="flex align-center justify-between mb-8">
+                            <span className="alert-badge-pill alert-badge-pill--idle">
+                              <CalendarDays size={12} /> Holiday Request
+                            </span>
+                            <span className="font-mono tabular-nums text-xs text-muted">
+                              Sent {new Date(h.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
+                            </span>
+                          </div>
+                          <div className="flex align-center mb-4" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                            <span className="font-semibold text-primary" style={{ fontSize: '13.5px' }}>{toTitleCase(h.driver_name ?? '') || 'Unknown Employee'}</span>
+                            <span className="font-mono font-bold text-secondary" style={{ fontSize: '12px' }}>
+                              {shortDate(h.start_date)}{h.end_date !== h.start_date ? ` – ${shortDate(h.end_date)}` : ''}
+                            </span>
+                          </div>
+                          <p className="text-xs text-secondary" style={{ margin: '0 0 10px' }}>
+                            {leaveLabel[h.leave_type] ?? 'Leave'} · {days} day{days === 1 ? '' : 's'}{h.note ? ` — “${h.note}”` : ''}
+                          </p>
+                          {declining ? (
+                            <div className="flex align-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                              <input
+                                type="text"
+                                className="input-field"
+                                style={{ flex: '1 1 220px', padding: '7px 10px', fontSize: '12.5px' }}
+                                placeholder="Reason (optional) — the employee sees this"
+                                value={holidayDeclineNote}
+                                onChange={e => setHolidayDeclineNote(e.target.value)}
+                                autoFocus
+                              />
+                              <button type="button" className="alert-ack-btn" disabled={busy} onClick={() => reviewHolidayRequest(h.id, 'declined', holidayDeclineNote)}>
+                                <CircleX size={13} /> {busy ? 'Declining…' : 'Confirm decline'}
+                              </button>
+                              <button type="button" className="alert-dismiss-btn" disabled={busy} onClick={() => { setDecliningHolidayId(null); setHolidayDeclineNote(''); }}>
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="flex align-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                              <button type="button" className="alert-ack-btn" disabled={busy} onClick={() => reviewHolidayRequest(h.id, 'approved')}>
+                                <CheckCircle2 size={13} /> {busy ? 'Approving…' : 'Approve'}
+                              </button>
+                              <button type="button" className="alert-dismiss-btn" disabled={busy} onClick={() => { setDecliningHolidayId(h.id); setHolidayDeclineNote(''); }}>
+                                <CircleX size={12} /> Decline
+                              </button>
+                              <button type="button" className="comp-edit-btn" onClick={() => setActiveTab('holidays')}>
+                                <CalendarDays size={13} /> View calendar
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
+              if (alertCategoryFilter === 'access_requests') {
+                return renderQueueAlertCards(
+                  newAccessRequests.map(r => ({
+                    key: r.id,
+                    driverName: r.company_name,
+                    subtitle: r.fleet_size ? `${r.fleet_size} vehicles` : undefined,
+                    dateStr: new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+                    reasonText: `${r.contact_name} asked for access from the ${r.source === 'website' ? 'website' : 'admin login page'}. No account exists yet.`,
+                  })),
+                  'No New Access Requests',
+                  'Interest buyers from the website and login page will appear here.',
+                  'Interest Buyer',
+                  'Open Accounts',
+                  () => setActiveTab('accounts'),
                 );
               }
               if (alertCategoryFilter === 'walkaround') {
@@ -6399,27 +6636,15 @@ export default function App() {
                           <option value="logistics">Dispatcher / Logistics</option>
                         </select>
                       </div>
-                      <div className="input-group">
-                        <span className="input-label">DEFAULT PIN</span>
-                        <div className="login-field">
-                          <span className="login-field-icon"><Lock size={15} /></span>
-                          <input
-                            type="text"
-                            className="login-input login-input--with-toggle"
-                            placeholder="6 digit PIN"
-                            value={newEmployeePin}
-                            maxLength={6}
-                            onChange={(e) => setNewEmployeePin(e.target.value)}
-                          />
-                          <button
-                            type="button"
-                            className="login-toggle"
-                            title="Generate a random PIN"
-                            onClick={() => setNewEmployeePin(generateRandomPin())}
-                          >
-                            <Sparkles size={15} />
-                          </button>
-                        </div>
+                      {/* Migration 065: PINs are never set by admins. On
+                          save, an activation code is issued and shown
+                          once; the driver enters it in the app and
+                          picks their own PIN. */}
+                      <div className="input-group" style={{ background: 'var(--card-bg-hover)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '10px 12px' }}>
+                        <span className="input-label" style={{ margin: 0 }}>APP ACCESS</span>
+                        <p className="text-xs text-secondary m-0 mt-4">
+                          The employee sets their own PIN. Save this form and we'll show a one-time <strong className="text-primary">activation code</strong> to pass on to them.
+                        </p>
                       </div>
                     </div>
 
@@ -6565,16 +6790,6 @@ export default function App() {
                       <tr key={drv.id}>
                         <td>
                           <div className="flex align-center" style={{ gap: '10px' }}>
-                            <div
-                              aria-hidden="true"
-                              style={{
-                                width: '32px', height: '32px', borderRadius: '50%', flexShrink: 0,
-                                background: 'var(--charcoal)', color: '#fff', fontSize: '11px', fontWeight: 600,
-                                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                              }}
-                            >
-                              {getInitials(drv.full_name)}
-                            </div>
                             <div style={{ minWidth: 0 }}>
                               <p className="font-semibold text-primary m-0" style={{ fontSize: '13px' }}>{toTitleCase(drv.full_name)}</p>
                               <p className="font-mono text-xs text-muted m-0">{drv.driver_id}</p>
@@ -6639,6 +6854,16 @@ export default function App() {
                         </td>
                         <td style={{ position: 'relative', textAlign: 'right' }}>
                           <div className="flex align-center justify-end" style={{ gap: '8px' }}>
+                            {activeShift && (
+                              <button
+                                type="button"
+                                className="comp-edit-btn"
+                                onClick={() => { setDispatchDriverId(drv.id); setIsDispatchOpen(true); }}
+                                title={`Assign a load to ${toTitleCase(drv.full_name)}`}
+                              >
+                                <Truck size={12} /> Assign load
+                              </button>
+                            )}
                             {activeShift ? (
                               <button
                                 className="alert-ack-btn"
@@ -6728,7 +6953,7 @@ export default function App() {
 
         {/* ── Defect Registry — the full, filterable/paginated defect
              list the Overview's compact 4-row inbox links out to. ───── */}
-        {activeTab === 'compliance-defects' && (
+        {activeTab === 'compliance-defects' && !tabLocked && (
           <ComplianceDefects
             organizationId={currentOrgId}
             onBack={() => setActiveTab('compliance')}
@@ -6743,7 +6968,6 @@ export default function App() {
             organizationId={currentOrgId}
             targetMinutes={orgAlertSettings.walkaroundCheckTargetMinutes}
             shifts={shifts}
-            exemptDriverIds={walkaroundExemptIds}
             onBack={() => setActiveTab('compliance')}
           />
         )}
@@ -6751,8 +6975,14 @@ export default function App() {
         {activeTab === 'holidays' && (
           <EmployeeHolidays
             organizationId={currentOrgId}
+            onReviewRequest={reviewHolidayRequest}
             onBack={() => setActiveTab('drivers')}
           />
+        )}
+
+        {/* Platform owner only — interest buyers + every customer account. */}
+        {activeTab === 'accounts' && isPlatformAdmin && (
+          <PlatformAccounts currentOrgId={currentOrgId} onChanged={loadNewAccessRequests} />
         )}
 
         {/* ── Fleet Roadworthiness — MOT/PMI/VOR asset register, reached
@@ -6771,7 +7001,7 @@ export default function App() {
 
         {/* ── Driver Hours & WTD — duty monitor, reached via the
              Compliance & Safety hover flyout. ──────────────────────── */}
-        {activeTab === 'driver-hours' && (
+        {activeTab === 'driver-hours' && !tabLocked && (
           <DriverHours
             organizationId={currentOrgId}
             onAlertCountChange={setWtdAlertCount}
@@ -6780,6 +7010,8 @@ export default function App() {
             onViewRouteHistory={() => setActiveTab('live')}
           />
         )}
+
+        {isDispatchOpen && <DispatchLoadsModal drivers={employees} initialDriverId={dispatchDriverId} onChanged={loadDispatchBoard} onClose={() => { setIsDispatchOpen(false); setDispatchDriverId(''); }} />}
 
         {isImportModalOpen && (
           <CarrierSettlementImportModal
@@ -6798,7 +7030,11 @@ export default function App() {
         )}
 
         {/* ── TAB 4: Compensation Summary (Payroll Admin Only) ───── */}
-        {activeTab === 'rates' && userRole === 'payroll_admin' && (
+        {tabLocked && tabFeature && (
+          <LockedFeature featureLabel={FEATURE_LABEL[tabFeature]} planLabel={entitlements?.plan_label ?? 'current'} companyName={teamOrgInfo?.name} />
+        )}
+
+        {activeTab === 'rates' && userRole === 'payroll_admin' && !tabLocked && (
           <div className="flex-1">
             {/* Compensation Profiles is merged into Employee Database now
                 (see the `drivers` tab) — this tab is purely the payroll-
@@ -7559,7 +7795,7 @@ export default function App() {
           </div>
         )}
 
-        {(activeTab === 'analytics' || activeTab === 'shipments') && userRole === 'payroll_admin' && (() => {
+        {!tabLocked && (activeTab === 'analytics' || (activeTab === 'shipments' && userRole === 'payroll_admin')) && (() => {
           const resolveAgency = (emp: typeof employees[number]) => {
             const currentRate = employeeRates[emp.id] || employeeRates[emp.driver_id];
             return (emp as any).agency_name || (emp as any).agency || currentRate?.agency_name || 'Direct';
@@ -7579,18 +7815,23 @@ export default function App() {
           // need an upper bound the rest of this filter doesn't support
           // yet, so it's deliberately left out rather than half-built.
           const PERIOD_WEEKS: Record<string, number | null> = {
-            'This Week': null, 'This Month': null,
-            'Last 4 weeks': 4, 'Last 8 weeks': 8, 'Last 12 weeks': 12, 'All time': null,
+            'Last 30 days': null, 'This Week': null, 'This Month': null,
+            'Last 4 weeks': 4, 'Last 8 weeks': 8, 'Last 12 weeks': 12, 'This Year': null, 'Custom range': null, 'All time': null,
           };
           const startOfTodayForPeriod = new Date();
           startOfTodayForPeriod.setHours(0, 0, 0, 0);
-          const isoDayOfWeek = (startOfTodayForPeriod.getDay() + 6) % 7; // Mon=0..Sun=6
+          // Weeks start on Sunday (the company's payroll week).
           const startOfThisWeek = new Date(startOfTodayForPeriod);
-          startOfThisWeek.setDate(startOfTodayForPeriod.getDate() - isoDayOfWeek);
+          startOfThisWeek.setDate(startOfTodayForPeriod.getDate() - startOfTodayForPeriod.getDay());
+          const customFrom = analyticsCustomRange.from ? new Date(`${analyticsCustomRange.from}T00:00:00`) : null;
+          const customTo = analyticsCustomRange.to ? new Date(`${analyticsCustomRange.to}T00:00:00`) : null;
           const startOfThisMonth = new Date(startOfTodayForPeriod.getFullYear(), startOfTodayForPeriod.getMonth(), 1);
           const NAMED_PERIOD_CUTOFFS: Record<string, number> = {
+            'Last 30 days': startOfTodayForPeriod.getTime() - 29 * 86_400_000,
             'This Week': startOfThisWeek.getTime(),
             'This Month': startOfThisMonth.getTime(),
+            'This Year': new Date(startOfTodayForPeriod.getFullYear(), 0, 1).getTime(),
+            ...(customFrom ? { 'Custom range': customFrom.getTime() } : {}),
           };
           const periodFilterOptions: FilterOption[] = Object.keys(PERIOD_WEEKS).map(name => ({ name }));
 
@@ -7672,6 +7913,8 @@ export default function App() {
           const periodCutoff = periodFilter
             ? NAMED_PERIOD_CUTOFFS[periodFilter.value[0]] ?? (periodWeeks ? Date.now() - periodWeeks * 7 * 24 * 60 * 60 * 1000 : null)
             : null;
+          // Upper bound only exists for a custom range (inclusive end day).
+          const periodEnd = periodFilter?.value[0] === 'Custom range' && customTo ? customTo.getTime() + 86_400_000 : null;
 
           const driverNameById = new Map(employees.map(e => [e.id, e.full_name]));
           const agencyById = new Map(employees.map(e => [e.id, resolveAgency(e)]));
@@ -7699,6 +7942,7 @@ export default function App() {
           const matchesShiftFilters = (s: Shift) => {
             if (!matchesNonPeriodFilters(s)) return false;
             if (periodCutoff && new Date(s.start_time).getTime() < periodCutoff) return false;
+            if (periodEnd && new Date(s.start_time).getTime() >= periodEnd) return false;
             return true;
           };
           // Sub-15-minute shifts (a clock-in/out test, or an immediate
@@ -7746,7 +7990,7 @@ export default function App() {
           // profitability.
           const shiftsWithRevenue = completedShiftsForAnalytics.filter(s => s.revenue_amount !== null && s.revenue_amount !== undefined);
 
-          const TARGET_MARGIN_PCT = 35;
+          const TARGET_MARGIN_PCT = analyticsSettings.target_margin_percent;
           // GPS miles (mileageByShift, read directly where the ledger/CSV
           // display them) stay a separate, purely informational column —
           // migration 045's shift_mileages() RPC, no longer what fuel
@@ -7799,52 +8043,143 @@ export default function App() {
             return sum + (r.liters ?? 0);
           }, 0);
 
-          // Fleet Unit Economics — £/mile is ideally scoped to shifts that
-          // have both a settled revenue figure and a real GPS mileage
-          // reading. Early in a period (or a org that's just started
-          // logging GPS), that set can be genuinely empty even though the
-          // fleet has other completed, mileage-logged shifts — falling
-          // back to fleet-wide logged miles for the period avoids a blank
-          // "—" in that case, at the cost of the rate/mile figure then
-          // being a blended estimate (real revenue ÷ a broader mileage
-          // base than earned it) rather than an exact one; the UI marks it
-          // "(fleet-wide)" whenever this fallback is actually used.
-          const totalGpsMiles = shiftsWithRevenue.reduce((sum, s) => sum + (mileageByShift[s.id] ?? 0), 0);
-          const totalFleetLoggedMiles = completedShiftsForAnalytics.reduce((sum, s) => sum + (mileageByShift[s.id] ?? 0), 0);
-          const usingFleetWideMiles = totalGpsMiles <= 0 && totalFleetLoggedMiles > 0;
-          const validMiles = totalGpsMiles > 0 ? totalGpsMiles : totalFleetLoggedMiles;
-          const ratePerMile = validMiles > 0 ? totalRevenue / validMiles : null;
-          const costPerMile = validMiles > 0 ? (totalDriverCost + totalFuelCost) / validMiles : null;
-          const yieldPerMile = ratePerMile !== null && costPerMile !== null ? ratePerMile - costPerMile : null;
-          const opCostTotal = totalDriverCost + totalFuelCost;
-          const wagesSharePct = opCostTotal > 0 ? (totalDriverCost / opCostTotal) * 100 : 0;
-          const fuelSharePct = opCostTotal > 0 ? 100 - wagesSharePct : 0;
-          // Miles per litre — approved-fuel-scoped litres against the same
-          // GPS mileage base as £/mile above, so the two per-mile figures
-          // never silently disagree on which shifts they're counting.
-          const milesPerLitre = totalFuelLiters > 0 && validMiles > 0 ? validMiles / totalFuelLiters : null;
+          // Fleet economics (unit economics + fuel efficiency in one card).
+          // Per day, over rated shifts that logged GPS mileage — so a
+          // period window's £/mile is always revenue and cost from the
+          // same shifts that earned those miles. GPS pings arrive roughly
+          // every 2 minutes, so miles (and therefore £/mile and mi/L) are
+          // a close estimate rather than odometer-exact; the card says so.
+          const approvedLitresByShift = new Map<string, number>();
+          for (const r of fuelReceipts) {
+            if (r.status !== 'approved' || !r.shift_id) continue;
+            approvedLitresByShift.set(r.shift_id, (approvedLitresByShift.get(r.shift_id) ?? 0) + (r.liters ?? 0));
+          }
+          const economicsByDay = new Map<string, { date: Date; revenue: number; wages: number; fuel: number; miles: number; litres: number }>();
+          shiftsWithRevenue.forEach(s => {
+            const miles = mileageByShift[s.id] ?? 0;
+            if (miles <= 0) return;
+            const d = new Date(s.start_time);
+            const key = d.toISOString().slice(0, 10);
+            const day = economicsByDay.get(key) ?? { date: d, revenue: 0, wages: 0, fuel: 0, miles: 0, litres: 0 };
+            day.revenue += s.revenue_amount || 0;
+            day.wages += s.total_pay || 0;
+            day.fuel += shiftFuelCost(s);
+            day.miles += miles;
+            day.litres += approvedLitresByShift.get(s.id) ?? 0;
+            economicsByDay.set(key, day);
+          });
+          const economicsSeries: MetricPoint[] = Array.from(economicsByDay.values())
+            .sort((a, b) => a.date.getTime() - b.date.getTime())
+            .map(d => ({
+              date: d.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+              value: Math.round(((d.revenue - d.wages - d.fuel) / d.miles) * 100) / 100,
+              revenue: d.revenue,
+              wages: d.wages,
+              fuel: d.fuel,
+              miles: d.miles,
+              litres: d.litres,
+            }));
+          const summarizeEconomics = (points: MetricPoint[]): MetricSummary => {
+            const sum = (field: string) => points.reduce((total, p) => total + Number(p[field] ?? 0), 0);
+            const miles = sum('miles');
+            const wages = sum('wages');
+            const fuel = sum('fuel');
+            const litres = sum('litres');
+            const rate = miles > 0 ? sum('revenue') / miles : 0;
+            const cost = miles > 0 ? (wages + fuel) / miles : 0;
+            const net = rate - cost;
+            const first = points[0]?.value;
+            const last = points[points.length - 1]?.value;
+            const opCost = wages + fuel;
+            const wagesShare = opCost > 0 ? (wages / opCost) * 100 : 0;
+            return {
+              headline: `${net < 0 ? '−' : ''}£${Math.abs(net).toFixed(2)}/mi`,
+              changePct: points.length >= 2 && first ? ((last - first) / Math.abs(first)) * 100 : null,
+              footerLeft: (
+                <span className="text-xs text-muted">
+                  <strong className="text-primary">£{rate.toFixed(2)}</strong> rate · <strong style={{ color: '#CC0000' }}>£{cost.toFixed(2)}</strong> cost per mile · {Math.round(miles).toLocaleString('en-GB')} mi
+                </span>
+              ),
+              footerRight: (
+                <span className="text-xs text-muted">
+                  <strong className="text-primary">{litres > 0 ? (miles / litres).toFixed(2) : '—'}</strong> mi/L · wages {wagesShare.toFixed(0)}% / fuel {opCost > 0 ? (100 - wagesShare).toFixed(0) : 0}%
+                </span>
+              ),
+            };
+          };
 
-          // Driver profitability leaderboard — the "who and what" view
-          // that used to exist (per the comment above about the old
-          // Driver Profitability card) and was removed with nothing put
-          // back in its place. Summed gross margin per driver, over the
+          // Fallback for Fleet Economics when too few rated shifts have GPS
+          // mileage for per-mile figures: the same unit economics per
+          // driver-hour, which every rated shift has — so the card never
+          // sits as an empty block beside the driver list.
+          const hourlyByDay = new Map<string, { date: Date; revenue: number; wages: number; fuel: number; hours: number }>();
+          shiftsWithRevenue.forEach(s => {
+            const hours = s.total_hours ?? 0;
+            if (hours <= 0) return;
+            const d = new Date(s.start_time);
+            const key = d.toISOString().slice(0, 10);
+            const day = hourlyByDay.get(key) ?? { date: d, revenue: 0, wages: 0, fuel: 0, hours: 0 };
+            day.revenue += s.revenue_amount || 0;
+            day.wages += s.total_pay || 0;
+            day.fuel += shiftFuelCost(s);
+            day.hours += hours;
+            hourlyByDay.set(key, day);
+          });
+          const hourlyEconomicsSeries: MetricPoint[] = Array.from(hourlyByDay.values())
+            .sort((a, b) => a.date.getTime() - b.date.getTime())
+            .map(d => ({
+              date: d.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+              value: Math.round(((d.revenue - d.wages - d.fuel) / d.hours) * 100) / 100,
+              revenue: d.revenue,
+              wages: d.wages,
+              fuel: d.fuel,
+              hours: d.hours,
+            }));
+          const summarizeHourlyEconomics = (points: MetricPoint[]): MetricSummary => {
+            const sum = (field: string) => points.reduce((total, p) => total + Number(p[field] ?? 0), 0);
+            const hours = sum('hours');
+            const wages = sum('wages');
+            const fuel = sum('fuel');
+            const rate = hours > 0 ? sum('revenue') / hours : 0;
+            const cost = hours > 0 ? (wages + fuel) / hours : 0;
+            const net = rate - cost;
+            const first = points[0]?.value;
+            const last = points[points.length - 1]?.value;
+            const opCost = wages + fuel;
+            const wagesShare = opCost > 0 ? (wages / opCost) * 100 : 0;
+            return {
+              headline: `${net < 0 ? '−' : ''}£${Math.abs(net).toFixed(2)}/h`,
+              changePct: points.length >= 2 && first ? ((last - first) / Math.abs(first)) * 100 : null,
+              footerLeft: (
+                <span className="text-xs text-muted">
+                  <strong className="text-primary">£{rate.toFixed(2)}</strong> rate · <strong style={{ color: '#CC0000' }}>£{cost.toFixed(2)}</strong> cost per hour · {Math.round(hours).toLocaleString('en-GB')} h
+                </span>
+              ),
+              footerRight: (
+                <span className="text-xs text-muted">
+                  wages {wagesShare.toFixed(0)}% / fuel {opCost > 0 ? (100 - wagesShare).toFixed(0) : 0}% of running cost
+                </span>
+              ),
+            };
+          };
+          const economicsUsesHours = economicsSeries.length < 2 && hourlyEconomicsSeries.length >= 2;
+
+          // Driver profitability — summed gross margin per driver over the
           // same shiftsWithRevenue set everything else in this cockpit
-          // uses, so a driver's leaderboard figure always agrees with
-          // what the ledger below would show for their own rows.
-          const driverMarginMap = new Map<string, { name: string; margin: number; shifts: number }>();
+          // uses, so a driver's figure always agrees with their own rows
+          // in the Shipments ledger.
+          const driverMarginMap = new Map<string, { id: string; name: string; margin: number; shifts: number; lastShift: string }>();
           shiftsWithRevenue.forEach(s => {
             const m = shiftGrossMargin(s);
             if (m === null) return;
             const name = driverNameById.get(s.driver_id) || 'Unknown driver';
-            const entry = driverMarginMap.get(s.driver_id) ?? { name, margin: 0, shifts: 0 };
+            const entry = driverMarginMap.get(s.driver_id) ?? { id: s.driver_id, name, margin: 0, shifts: 0, lastShift: s.start_time };
             entry.margin += m;
             entry.shifts += 1;
+            if (new Date(s.start_time) > new Date(entry.lastShift)) entry.lastShift = s.start_time;
             driverMarginMap.set(s.driver_id, entry);
           });
           const driverLeaderboard = Array.from(driverMarginMap.values()).sort((a, b) => b.margin - a.margin);
-          const leaderboardTop = driverLeaderboard.slice(0, 3);
-          const leaderboardBottom = driverLeaderboard.length > 6 ? driverLeaderboard.slice(-3) : [];
-          const leaderboardMaxAbs = Math.max(1, ...driverLeaderboard.map(d => Math.abs(d.margin)));
 
           // Status strip — the things Compensation Summary's own "Flags &
           // Reviews" bell already tracks (see its comment elsewhere in
@@ -7962,67 +8297,6 @@ export default function App() {
             }));
 
 
-          // Carrier filter — same multi-select pattern as Driver/Agency/
-          // Depot, over the real carrier_name values actually present on
-          // rated loads in this org (never a hardcoded Amazon/DHL/Stobart
-          // list — an org that's never imported from a given carrier
-          // simply won't have it as an option yet).
-          const carrierFilter = analyticsFilters.find(f => f.type === FilterType.CARRIER && f.value.length > 0);
-          const matchesCarrierFilter = (s: Shift) => {
-            if (!carrierFilter) return true;
-            const included = !!s.carrier_name && carrierFilter.value.includes(s.carrier_name);
-            return carrierFilter.operator === FilterOperator.IS_NOT ? !included : included;
-          };
-
-          // Shift Revenue / Load Yield — every completed shift in the
-          // filtered period (not just rated ones). Default sort is most
-          // recent first; clicking the Gross Margin header switches to
-          // lowest margin first so problem loads surface immediately.
-          // Pending-remittance rows (no margin yet) always sort to the
-          // bottom in margin mode — an unrated load isn't "low margin",
-          // it's unknown, and shouldn't be conflated with a real loss.
-          const loadRevenueRowsAll = [...completedShiftsForAnalytics].filter(matchesCarrierFilter).sort((a, b) => {
-            if (ledgerSort === 'date') return new Date(b.start_time).getTime() - new Date(a.start_time).getTime();
-            const marginA = shiftGrossMargin(a);
-            const marginB = shiftGrossMargin(b);
-            if (marginA === null && marginB === null) return 0;
-            if (marginA === null) return 1;
-            if (marginB === null) return -1;
-            return marginA - marginB;
-          });
-          const loadRevenueRows = loadRevenueRowsAll;
-
-          const exportLedgerCsv = () => {
-            const rows = loadRevenueRowsAll.map(s => {
-              const isPending = s.revenue_amount === null || s.revenue_amount === undefined;
-              const margin = shiftGrossMargin(s);
-              const miles = mileageByShift[s.id];
-              return {
-                Date: new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
-                Driver: toTitleCase(s.driver_name ?? ''),
-                'Assigned Vehicle': s.vehicle_number ?? '',
-                'Base/Depot': s.depot_name ?? '',
-                Carrier: s.carrier_name ?? '',
-                'Load Reference': s.load_reference ?? '',
-                Duration: formatHoursMinutes(s.total_hours ?? 0),
-                'GPS Miles': miles === undefined ? '' : miles.toFixed(1),
-                'Driver Wage (£)': (s.total_pay ?? 0).toFixed(2),
-                'Actual Fuel Cost (£)': shiftFuelCost(s).toFixed(2),
-                'Billed Revenue (£)': isPending ? 'Pending Remittance' : (s.revenue_amount as number).toFixed(2),
-                'Gross Margin (£)': margin === null ? '' : margin.toFixed(2),
-                'Gross Margin (%)': margin === null || !s.revenue_amount ? '' : ((margin / s.revenue_amount) * 100).toFixed(1),
-              };
-            });
-            const csv = Papa.unparse(rows);
-            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `payroll-ledger-${new Date().toISOString().slice(0, 10)}.csv`;
-            link.click();
-            URL.revokeObjectURL(url);
-          };
-
           return (
             <>
             <div className="analytics-container">
@@ -8034,33 +8308,59 @@ export default function App() {
                     chips, which the single-group tables don't need but
                     this one benefits from given five filterable
                     dimensions at once. */}
-                <TableFilter groups={analyticsFilterGroups} />
-                <FilterBar
-                  filters={analyticsFilters}
-                  setFilters={setAnalyticsFilters}
-                  filterViewOptions={[]}
-                  showAddFilterButton={false}
-                  filterOptionsByType={{
-                    [FilterType.DRIVER]: driverFilterOptions,
-                    [FilterType.AGENCY]: agencyFilterOptions,
-                    [FilterType.DEPOT]: depotFilterOptions,
-                    [FilterType.PERIOD]: periodFilterOptions,
-                    [FilterType.CARRIER]: carrierFilterOptions,
-                  }}
-                  typeIcons={{
-                    [FilterType.DRIVER]: <IdCard className="size-3.5" />,
-                    [FilterType.AGENCY]: <Building2 className="size-3.5" />,
-                    [FilterType.DEPOT]: <Warehouse className="size-3.5" />,
-                    [FilterType.PERIOD]: <Calendar className="size-3.5" />,
-                    [FilterType.CARRIER]: <Building2 className="size-3.5" />,
-                  }}
-                />
+                {/* These filter the Analytics table below only — on
+                    Shipments they filtered nothing and just duplicated
+                    Delivery History's own Filters button, so they're
+                    scoped to the Analytics tab now. */}
+                {activeTab === 'analytics' && (
+                  <>
+                    <TableFilter groups={analyticsFilterGroups} />
+                    {periodFilter?.value[0] === 'Custom range' && (
+                      <span className="flex items-center text-xs text-secondary" style={{ gap: '6px' }}>
+                        <input type="date" aria-label="From" className="input-field" style={{ padding: '6px 8px', fontSize: '12px' }} value={analyticsCustomRange.from} max={analyticsCustomRange.to} onChange={e => setAnalyticsCustomRange(r => ({ ...r, from: e.target.value }))} />
+                        to
+                        <input type="date" aria-label="To" className="input-field" style={{ padding: '6px 8px', fontSize: '12px' }} value={analyticsCustomRange.to} min={analyticsCustomRange.from} onChange={e => setAnalyticsCustomRange(r => ({ ...r, to: e.target.value }))} />
+                      </span>
+                    )}
+                    <FilterBar
+                      filters={analyticsFilters}
+                      setFilters={setAnalyticsFilters}
+                      filterViewOptions={[]}
+                      showAddFilterButton={false}
+                      filterOptionsByType={{
+                        [FilterType.DRIVER]: driverFilterOptions,
+                        [FilterType.AGENCY]: agencyFilterOptions,
+                        [FilterType.DEPOT]: depotFilterOptions,
+                        [FilterType.PERIOD]: periodFilterOptions,
+                        [FilterType.CARRIER]: carrierFilterOptions,
+                      }}
+                      typeIcons={{
+                        [FilterType.DRIVER]: <IdCard className="size-3.5" />,
+                        [FilterType.AGENCY]: <Building2 className="size-3.5" />,
+                        [FilterType.DEPOT]: <Warehouse className="size-3.5" />,
+                        [FilterType.PERIOD]: <Calendar className="size-3.5" />,
+                        [FilterType.CARRIER]: <Building2 className="size-3.5" />,
+                      }}
+                    />
+                  </>
+                )}
                 {/* Import Carrier Load Files lives on Shipments now (it's
                     load data entry, not an Analytics stat). Fuel Receipts
                     / Overnight Parking review moved to the Alert Panel
                     (Alert Monitors consolidation) — this tab only ever
                     shows the already-approved totals now, so there's no
                     review entry point left to render here. */}
+                {activeTab === 'shipments' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsDispatchOpen(true)}
+                    className="flex items-center text-xs font-bold"
+                    style={{ gap: '6px', padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: 'pointer' }}
+                  >
+                    <Truck size={14} />
+                    Assign Load
+                  </button>
+                )}
                 {activeTab === 'shipments' && (
                   <button
                     type="button"
@@ -8075,321 +8375,224 @@ export default function App() {
               </div>
             </div>
 
-            {activeTab === 'analytics' && (
+            {activeTab === 'analytics' && (() => {
+              const money = (v: number) => `${v < 0 ? '−' : ''}£${Math.abs(v).toLocaleString('en-GB', { maximumFractionDigits: 0 })}`;
+              const moneyAxis = (v: number) => (Math.abs(v) >= 1000 ? `£${(v / 1000).toFixed(1)}k` : `£${Math.round(v)}`);
+              const percent = (v: number) => `${v.toFixed(1)}%`;
+              const tileDelta = (key: keyof typeof KPI_GOOD_DIRECTION) => {
+                const delta = kpiDeltas[key];
+                return delta ? { ...delta, tone: kpiDeltaTone(delta.direction, key) } : null;
+              };
+              const comparing = Boolean(periodWeeks);
+              const overviewMetrics: MetricTile[] = [
+                {
+                  key: 'profit', label: 'Net fleet profit', value: grossProfit, previous: comparing ? prevProfit : null,
+                  format: money, axisFormat: moneyAxis, color: '#10B981', delta: tileDelta('profit'),
+                  hint: grossMarginPct === null ? 'No rated loads yet' : `${grossMarginPct.toFixed(1)}% margin`,
+                },
+                {
+                  key: 'revenue', label: 'Revenue', value: totalRevenue, previous: comparing ? prevRevenue : null,
+                  format: money, axisFormat: moneyAxis, color: '#333333', delta: tileDelta('revenue'),
+                  hint: `${shiftsWithRevenue.length} of ${completedShiftsForAnalytics.length} shifts rated`,
+                },
+                {
+                  key: 'cost', label: 'Payroll', value: totalDriverCost, previous: comparing ? prevCost : null,
+                  format: money, axisFormat: moneyAxis, color: '#CC0000', delta: tileDelta('cost'),
+                  hint: `${formatHoursMinutes(totalHours)} logged`,
+                },
+                {
+                  key: 'fuel', label: 'Fuel & AdBlue', value: totalFuelCost, previous: comparing ? prevFuelCost : null,
+                  format: money, axisFormat: moneyAxis, color: '#F59E0B', delta: tileDelta('fuel'),
+                  hint: `${totalFuelLiters.toFixed(0)} litres approved`,
+                },
+                {
+                  key: 'margin', label: 'Margin', value: grossMarginPct ?? 0, previous: comparing ? prevMargin : null,
+                  format: percent, color: '#64748B', delta: tileDelta('margin'),
+                  hint: `Target >${TARGET_MARGIN_PCT}%${marginBenchmarkLabel ? ` · ${marginBenchmarkLabel}` : ''}`,
+                },
+              ];
+
+              // ── True profit (analytics brief: true cost first) ─────────
+              const trueCostShifts = shifts.filter(s => s.status === 'completed' && (s.total_hours ?? 0) >= 0.25 && matchesNonPeriodFilters(s));
+              const earliestShift = trueCostShifts.reduce((min, s) => Math.min(min, new Date(s.start_time).getTime()), Date.now());
+              const windowStart = new Date(periodCutoff ?? earliestShift);
+              const windowEnd = new Date(periodEnd ?? Date.now());
+              const trueCostFor = (start: Date, end: Date) => computeTrueCost({
+                start, end, shifts: trueCostShifts, fuelReceipts, costs: orgCosts, settings: analyticsSettings, vatMode: analyticsVatMode,
+              });
+              const trueCurrent = trueCostFor(windowStart, windowEnd);
+              const bounded = Boolean(periodCutoff);
+              const spanMs = windowEnd.getTime() - windowStart.getTime();
+              const truePrevious = bounded ? trueCostFor(new Date(windowStart.getTime() - spanMs), windowStart) : null;
+              const shiftYear = (d: Date) => { const c = new Date(d); c.setFullYear(c.getFullYear() - 1); return c; };
+              const trueLastYear = bounded ? trueCostFor(shiftYear(windowStart), shiftYear(windowEnd)) : null;
+              const monthStart = new Date(startOfTodayForPeriod.getFullYear(), startOfTodayForPeriod.getMonth(), 1);
+              const daysInMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0).getDate();
+              const monthToDate = trueCostFor(monthStart, new Date());
+              const elapsedDays = Math.max(1, (Date.now() - monthStart.getTime()) / 86_400_000);
+              const monthForecast = {
+                projected: (monthToDate.profit / elapsedDays) * daysInMonth,
+                monthLabel: monthStart.toLocaleDateString('en-GB', { month: 'long' }),
+                daysLeft: Math.max(0, Math.ceil(daysInMonth - elapsedDays)),
+              };
+              const truePeriodLabel = periodFilter?.value[0] === 'Custom range'
+                ? `${analyticsCustomRange.from} → ${analyticsCustomRange.to}`
+                : (periodFilter?.value[0] ?? 'All time');
+
+              return (
             <>
+            {/* Sections stack with one consistent gap — no stray
+                Tailwind mb-12 (48px) gaps between them. */}
+            <div className="analytics-stack">
             {/* ============================================================
-                ZONE 1 — STATUS. The 3-second answer: is the business
-                healthy right now, and does anything need a decision
-                today. Net Profit + Margin get real visual weight as the
-                hero instead of reading as one of six equal tiles;
-                Revenue/Payroll/Fuel/Live drop to a smaller supporting
-                row. The "needs attention" line surfaces the same kind of
-                thing Compensation Summary's own Flags & Reviews bell
-                tracks (pending fuel receipts, flagged long shifts, a
-                genuine loss-making shift) so this tab actually answers
-                "is anything wrong" instead of requiring you to already
-                know to check a different tab.
+                OVERVIEW (first on the page) — the period's headline figures as clickable
+                tiles (21st.dev line-charts-6); the selected one is
+                plotted day by day below. Replaces both the old status
+                strip and the separate Trend zone (margin line + revenue
+                vs cost bars): every one of those series is a tile here.
                ============================================================ */}
             <div className="analytics-container">
               <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
                 Overview
               </p>
-              <RevealOnMount index={0} className="analytics-chart-card">
-                <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                  <span className="text-xs font-medium text-muted">Filtered period: {periodFilter ? periodFilter.value[0] : 'All time'}</span>
-                </div>
-
-                <div className="flex items-end" style={{ gap: '32px', flexWrap: 'wrap', borderBottom: '1px solid var(--border-color)', paddingBottom: '20px', marginBottom: '16px' }}>
-                  <div>
-                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Net fleet profit</p>
-                    <p className="font-mono font-bold" style={{ fontSize: '38px', margin: 0, lineHeight: 1, color: grossProfit >= 0 ? '#10B981' : '#DC2626' }}>
-                      £{grossProfit.toLocaleString('en-GB', { maximumFractionDigits: 0 })}
-                    </p>
-                    <div className="flex items-center" style={{ gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
-                      <span
-                        className="font-mono font-bold"
-                        style={{
-                          fontSize: '12px', padding: '3px 9px', borderRadius: '999px',
-                          background: marginBenchmarkLabel === 'Healthy' ? '#D1FAE5' : marginBenchmarkLabel === 'Caution' ? '#FEF3C7' : marginBenchmarkLabel ? '#FEE2E2' : 'var(--card-bg-hover)',
-                          color: marginBenchmarkLabel === 'Healthy' ? '#065F46' : marginBenchmarkLabel === 'Caution' ? '#92400E' : marginBenchmarkLabel ? '#991B1B' : 'var(--charcoal-light)',
-                        }}
-                      >
-                        {grossMarginPct === null ? '—' : `${grossMarginPct.toFixed(1)}%`} margin
-                      </span>
-                      {kpiDeltas.profit && <BadgeDelta label={kpiDeltas.profit.label} direction={kpiDeltas.profit.direction} tone={kpiDeltaTone(kpiDeltas.profit.direction, 'profit')} />}
-                      <span className="text-xs text-muted">Target &gt;{TARGET_MARGIN_PCT}%{marginBenchmarkLabel ? ` [${marginBenchmarkLabel}]` : ''}</span>
-                    </div>
-                  </div>
-
-                  <div className="flex" style={{ gap: '24px', flexWrap: 'wrap' }}>
-                    <div>
-                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Revenue</p>
-                      <p className="font-mono font-bold" style={{ fontSize: '17px', margin: 0, color: 'var(--charcoal)' }}>£{totalRevenue.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
-                      {/* No schema field distinguishes a CSV-confirmed rate from a
-                          manually-entered spot rate — both write the same
-                          shift_revenue.revenue_amount — so this sub-label is the
-                          honest equivalent: how much of the period's revenue
-                          figure is actually settled vs. still unrated. */}
-                      <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{shiftsWithRevenue.length} of {completedShiftsForAnalytics.length} rated</p>
-                      {kpiDeltas.revenue && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.revenue.label} direction={kpiDeltas.revenue.direction} tone={kpiDeltaTone(kpiDeltas.revenue.direction, 'revenue')} /></div>}
-                    </div>
-                    <div>
-                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Payroll</p>
-                      <p className="font-mono font-bold" style={{ fontSize: '17px', margin: 0, color: '#CC0000' }}>£{totalDriverCost.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
-                      <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{formatHoursMinutes(totalHours)} logged</p>
-                      {kpiDeltas.cost && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.cost.label} direction={kpiDeltas.cost.direction} tone={kpiDeltaTone(kpiDeltas.cost.direction, 'cost')} /></div>}
-                    </div>
-                    <div>
-                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>Fuel &amp; AdBlue</p>
-                      <p className="font-mono font-bold" style={{ fontSize: '17px', margin: 0, color: '#B45309' }}>£{totalFuelCost.toLocaleString('en-GB', { maximumFractionDigits: 0 })}</p>
-                      <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{totalFuelLiters.toFixed(0)} litres</p>
-                      {kpiDeltas.fuel && <div style={{ marginTop: '4px' }}><BadgeDelta label={kpiDeltas.fuel.label} direction={kpiDeltas.fuel.direction} tone={kpiDeltaTone(kpiDeltas.fuel.direction, 'fuel')} /></div>}
-                    </div>
-                    {activeShiftsForAnalytics.length > 0 && (
-                      <div>
-                        <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em', marginBottom: '4px' }}>
-                          <span style={{ display: 'inline-block', width: '6px', height: '6px', borderRadius: '50%', background: '#10B981', marginRight: '5px' }} />
-                          On shift now
-                        </p>
-                        <p className="font-mono font-bold" style={{ fontSize: '17px', margin: 0, color: 'var(--charcoal)' }}>£{liveActiveWages.toLocaleString('en-GB', { maximumFractionDigits: 2 })}</p>
-                        <p className="text-xs text-muted" style={{ marginTop: '2px' }}>{activeShiftsForAnalytics.length} live — not yet in profit</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
-                  {flaggedShiftsCount === 0 && !worstLossShift ? (
-                    <span className="flex items-center text-xs font-semibold" style={{ gap: '6px', color: '#065F46' }}>
-                      <CheckCircle2 size={14} />
-                      Nothing needs attention for this period.
-                    </span>
-                  ) : (
-                    <>
-                      {flaggedShiftsCount > 0 && (
-                        <span className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', background: '#FEE2E2', color: '#991B1B' }}>
-                          {flaggedShiftsCount} shift{flaggedShiftsCount === 1 ? '' : 's'} over {orgAlertSettings.longShiftFlagHours}h
-                        </span>
-                      )}
-                      {worstLossShift && (
-                        <span className="text-xs font-bold" style={{ padding: '4px 10px', borderRadius: '999px', background: '#FEE2E2', color: '#991B1B' }}>
-                          Loss-making shift — {toTitleCase(worstLossShift.name)} (£{worstLossShift.margin.toFixed(0)})
-                        </span>
-                      )}
-                    </>
-                  )}
-                </div>
-              </RevealOnMount>
-            </div>
-
-            {/* ============================================================
-                ZONE 2 — TREND. One chart at a time: Margin (is it going
-                up or down) is the default view; Revenue & Cost is a
-                second tab for the breakdown — instead of forcing
-                revenue, wages, fuel, and a target line into a single
-                chart every time.
-               ============================================================ */}
-            <div className="analytics-container">
-              <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
-                Trend
-              </p>
-              <RevealOnMount index={1} className="analytics-chart-card">
-                <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                  <TextRevealHeader text={analyticsTrendTab === 'margin' ? 'MARGIN TREND' : 'REVENUE VS COST'} className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
-                  <div className="flex" style={{ gap: '4px', background: 'var(--card-bg-hover)', borderRadius: '8px', padding: '3px' }}>
-                    {(['margin', 'revenue'] as const).map(tab => (
-                      <button
-                        key={tab}
-                        type="button"
-                        onClick={() => setAnalyticsTrendTab(tab)}
-                        className="text-xs font-bold"
-                        style={{
-                          padding: '5px 12px', borderRadius: '6px', border: 'none', cursor: 'pointer',
-                          background: analyticsTrendTab === tab ? 'var(--card-bg)' : 'transparent',
-                          color: analyticsTrendTab === tab ? 'var(--charcoal)' : 'var(--charcoal-light)',
-                          boxShadow: analyticsTrendTab === tab ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
-                        }}
-                      >
-                        {tab === 'margin' ? 'Margin' : 'Revenue & cost'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {analyticsTrendTab === 'margin' ? (
-                  <MarginTrendChart data={dailySeries.map(d => ({ label: d.label, margin: d.margin }))} targetPct={TARGET_MARGIN_PCT} lineColor="#0F172A" />
-                ) : (
+              <MetricLineChart
+                metrics={overviewMetrics}
+                data={dailySeries.map(d => ({ label: d.label, profit: d.profit, revenue: d.revenue, cost: d.cost, fuel: d.fuel, margin: Math.round(d.margin * 10) / 10 }))}
+                defaultKey="profit"
+                emptyText="Daily figures appear once there are completed shifts in this period."
+                footer={
                   <>
-                    <div className="flex items-center" style={{ gap: '18px', marginBottom: '14px', flexWrap: 'wrap' }}>
-                      <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
-                        <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#0F172A', display: 'inline-block' }} />
-                        Billed Revenue
-                      </span>
-                      <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
-                        <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#CC0000', display: 'inline-block' }} />
-                        Driver Wages
-                      </span>
-                      <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
-                        <span style={{ width: '9px', height: '9px', borderRadius: '2px', background: '#F59E0B', display: 'inline-block' }} />
-                        Actual Fuel
-                      </span>
-                      <span className="flex items-center text-xs font-bold text-muted" style={{ gap: '6px' }}>
-                        <span style={{ width: '12px', height: '0', borderTop: '1.5px dashed #64748B', display: 'inline-block' }} />
-                        {TARGET_MARGIN_PCT}% Target Margin
-                      </span>
-                    </div>
-                    <AnalyticsGroupedBarChart
-                      data={dailySeries.map(d => ({ label: d.label, revenue: d.revenue, cost: d.cost, fuel: d.fuel, targetCostLine: d.targetCostLine }))}
-                      revenueColor="#0F172A"
-                      costColor="#CC0000"
-                      fuelColor="#F59E0B"
-                      targetLineLabel={`${TARGET_MARGIN_PCT}% Target Margin`}
-                    />
+                    <span className="flex items-center text-xs text-muted" style={{ gap: '12px', flexWrap: 'wrap' }}>
+                      <span>Period: <strong className="text-primary">{periodFilter ? periodFilter.value[0] : 'All time'}</strong></span>
+                      {activeShiftsForAnalytics.length > 0 && (
+                        <span className="flex items-center" style={{ gap: '6px' }}>
+                          <span className="dash-live-dot" />
+                          {activeShiftsForAnalytics.length} on shift now · <strong className="text-primary">£{liveActiveWages.toLocaleString('en-GB', { maximumFractionDigits: 2 })}</strong> wages accruing
+                        </span>
+                      )}
+                    </span>
+                    <span className="flex items-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                      {flaggedShiftsCount === 0 && !worstLossShift ? (
+                        <span className="flex items-center text-xs font-semibold" style={{ gap: '6px', color: '#065F46' }}>
+                          <CheckCircle2 size={14} />
+                          Nothing needs attention for this period.
+                        </span>
+                      ) : (
+                        <>
+                          {flaggedShiftsCount > 0 && (
+                            <span className="badge badge-danger">
+                              {flaggedShiftsCount} shift{flaggedShiftsCount === 1 ? '' : 's'} over {orgAlertSettings.longShiftFlagHours}h
+                            </span>
+                          )}
+                          {worstLossShift && (
+                            <span className="badge badge-danger">
+                              Loss-making shift — {toTitleCase(worstLossShift.name)} (£{worstLossShift.margin.toFixed(0)})
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </span>
                   </>
-                )}
-              </RevealOnMount>
+                }
+              />
             </div>
 
+            {/* True profit sits directly under Overview. */}
+            <TrueProfitSection
+              periodLabel={truePeriodLabel}
+              current={trueCurrent}
+              previous={truePrevious}
+              lastYear={trueLastYear}
+              forecast={monthForecast}
+              settings={analyticsSettings}
+              hasCosts={orgCosts.length > 0}
+              vatMode={analyticsVatMode}
+              onVatModeChange={setAnalyticsVatMode}
+              onManageCosts={userRole === 'payroll_admin' ? () => setIsCostLedgerOpen(true) : undefined}
+            />
+            <AnalyticsBreakdowns
+              organizationId={currentOrgId}
+              companyName={(teamOrgInfo as { name?: string } | null)?.name ?? null}
+              start={windowStart}
+              end={windowEnd}
+              periodLabel={truePeriodLabel}
+              shifts={trueCostShifts}
+              fuel={fuelReceipts}
+              costs={orgCosts}
+              settings={analyticsSettings}
+              vatMode={analyticsVatMode}
+              targetCheckMinutes={orgAlertSettings.walkaroundCheckTargetMinutes}
+              summary={trueCurrent}
+              previousProfit={truePrevious?.profit ?? null}
+              lastYearProfit={trueLastYear?.profit ?? null}
+              canManageReports={userRole === 'payroll_admin'}
+              canExport={hasFeature('report_exports')}
+            />
             {/* ============================================================
-                ZONE 3 — PERFORMANCE BREAKDOWN. Who and what: driver
-                profitability (removed in an earlier pass, with nothing
-                put back in its place — see the old comment this
-                replaced), £/mile unit economics (unchanged), and fuel
-                efficiency. The comparison zone — where a reader actually
-                reasons about cause and effect instead of reading a
-                total.
+                PERFORMANCE BREAKDOWN — who (driver profitability as an
+                activity list, 21st.dev list) and how efficiently (unit
+                economics + fuel efficiency combined in one progress
+                metric card, 21st.dev progress-metric-card).
                ============================================================ */}
             <div className="analytics-container">
               <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
                 Performance breakdown
               </p>
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-16" style={{ alignItems: 'stretch' }}>
-              <div className="lg:col-span-5" style={{ height: '100%' }}>
-                <RevealOnMount index={2} className="analytics-chart-card" style={{ height: '100%', minHeight: '340px' }}>
-                  <span className="flex items-center" style={{ gap: '8px', marginBottom: '4px' }}>
-                    <Users size={14} color="var(--charcoal-light)" />
-                    <TextRevealHeader text="DRIVER PROFITABILITY" className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
-                  </span>
-                  <p className="text-xs font-medium text-muted mb-16">Gross margin contributed, rated shifts this period.</p>
-
-                  {driverLeaderboard.length === 0 ? (
-                    <p className="text-xs text-muted" style={{ padding: '8px 0' }}>No rated shifts yet for this period.</p>
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      {leaderboardTop.map(d => (
-                        <div key={d.name} className="flex items-center" style={{ gap: '10px', padding: '7px 0', borderBottom: '1px solid var(--border-color)' }}>
-                          <span className="text-xs font-semibold" style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(d.name)}</span>
-                          <span className="font-mono font-bold text-xs" style={{ color: d.margin >= 0 ? '#065F46' : '#991B1B', flexShrink: 0 }}>
-                            {d.margin >= 0 ? '+' : ''}£{d.margin.toFixed(0)}
-                          </span>
-                          <div style={{ width: '60px', height: '6px', borderRadius: '3px', background: d.margin >= 0 ? '#D1FAE5' : '#FEE2E2', flexShrink: 0 }}>
-                            <div style={{ width: `${Math.min(100, (Math.abs(d.margin) / leaderboardMaxAbs) * 100)}%`, height: '100%', borderRadius: '3px', background: d.margin >= 0 ? '#10B981' : '#DC2626' }} />
-                          </div>
-                        </div>
-                      ))}
-                      {leaderboardBottom.length > 0 && (
-                        <>
-                          <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.06em', margin: '10px 0 2px' }}>Needs a look</p>
-                          {leaderboardBottom.map(d => (
-                            <div key={d.name} className="flex items-center" style={{ gap: '10px', padding: '7px 0', borderBottom: '1px solid var(--border-color)' }}>
-                              <span className="text-xs font-semibold" style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{toTitleCase(d.name)}</span>
-                              <span className="font-mono font-bold text-xs" style={{ color: d.margin >= 0 ? '#065F46' : '#991B1B', flexShrink: 0 }}>
-                                {d.margin >= 0 ? '+' : ''}£{d.margin.toFixed(0)}
-                              </span>
-                              <div style={{ width: '60px', height: '6px', borderRadius: '3px', background: d.margin >= 0 ? '#D1FAE5' : '#FEE2E2', flexShrink: 0 }}>
-                                <div style={{ width: `${Math.min(100, (Math.abs(d.margin) / leaderboardMaxAbs) * 100)}%`, height: '100%', borderRadius: '3px', background: d.margin >= 0 ? '#10B981' : '#DC2626' }} />
-                              </div>
-                            </div>
-                          ))}
-                        </>
-                      )}
-                    </div>
-                  )}
-                </RevealOnMount>
-              </div>
-
-              <div className="lg:col-span-4" style={{ height: '100%' }}>
-                <RevealOnMount index={3} className="analytics-chart-card" style={{ height: '100%', minHeight: '340px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                  <div>
-                    <span className="flex items-center" style={{ gap: '8px', marginBottom: '4px' }}>
-                      <Gauge size={14} color="var(--charcoal-light)" />
-                      <TextRevealHeader text="FLEET UNIT ECONOMICS" className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
-                    </span>
-                    <p className="text-xs font-medium text-muted mb-16">Per-mile yield, from logged GPS mileage.</p>
-
-                    {validMiles > 0 ? (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.06em' }}>Avg Rate / Mile</span>
-                          <span className="font-mono font-bold tabular-nums" style={{ fontSize: '15px', color: 'var(--charcoal)' }}>£{(ratePerMile ?? 0).toFixed(2)} / mi</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.06em' }}>Operating Cost / Mile</span>
-                          <span className="font-mono font-bold tabular-nums" style={{ fontSize: '15px', color: '#CC0000' }}>£{(costPerMile ?? 0).toFixed(2)} / mi</span>
-                        </div>
-                        <div className="flex items-center justify-between" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '10px' }}>
-                          <span className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.06em' }}>Net Yield / Mile</span>
-                          <span className="font-mono font-bold tabular-nums" style={{ fontSize: '16px', color: (yieldPerMile ?? 0) >= 0 ? '#10B981' : '#DC2626' }}>
-                            {(yieldPerMile ?? 0) >= 0 ? '+' : ''}£{(yieldPerMile ?? 0).toFixed(2)} / mi
-                          </span>
-                        </div>
-                        {usingFleetWideMiles && (
-                          <p className="text-xs text-muted" style={{ margin: 0 }}>(fleet-wide — no rated shift has logged GPS mileage yet)</p>
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-muted" style={{ padding: '8px 0' }}>Pending GPS sync — no mileage logged for this period yet.</p>
-                    )}
-                  </div>
-                </RevealOnMount>
-              </div>
-
-              <div className="lg:col-span-3" style={{ height: '100%' }}>
-                <RevealOnMount index={4} className="analytics-chart-card" style={{ height: '100%', minHeight: '340px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                  <div>
-                    <span className="flex items-center" style={{ gap: '8px', marginBottom: '4px' }}>
-                      <Fuel size={14} color="var(--charcoal-light)" />
-                      <TextRevealHeader text="FUEL EFFICIENCY" className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em' }} />
-                    </span>
-                    <p className="text-xs font-medium text-muted mb-16">Approved litres against logged GPS miles.</p>
-                    {milesPerLitre !== null ? (
-                      <>
-                        <p className="font-mono font-bold" style={{ fontSize: '26px', margin: 0, color: 'var(--charcoal)' }}>
-                          {milesPerLitre.toFixed(2)}<span className="text-sm text-muted" style={{ fontWeight: 600 }}> mi/L</span>
-                        </p>
-                        <p className="text-xs text-muted" style={{ marginTop: '4px' }}>{totalFuelLiters.toFixed(0)}L over {validMiles.toFixed(0)} mi</p>
-                      </>
-                    ) : (
-                      <p className="text-xs text-muted" style={{ padding: '8px 0' }}>Pending fuel or GPS data for this period.</p>
-                    )}
-                  </div>
-
-                  <div style={{ marginTop: '20px' }}>
-                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.06em', marginBottom: '8px' }}>Operating Cost Split</p>
-                    {opCostTotal > 0 ? (
-                      <>
-                        <div className="flex" style={{ height: '10px', borderRadius: '999px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}>
-                          <div style={{ width: `${wagesSharePct}%`, background: '#1E293B' }} />
-                          <div style={{ width: `${fuelSharePct}%`, background: '#F59E0B' }} />
-                        </div>
-                        <div className="flex items-center justify-between" style={{ marginTop: '6px' }}>
-                          <span className="text-xs font-medium text-muted">Wages ({wagesSharePct.toFixed(0)}%)</span>
-                          <span className="text-xs font-medium text-muted">Fuel ({fuelSharePct.toFixed(0)}%)</span>
-                        </div>
-                      </>
-                    ) : (
-                      <p className="text-xs text-muted">No operating cost recorded yet for this period.</p>
-                    )}
-                  </div>
-                </RevealOnMount>
+              <div className="grid grid-cols-1 lg:grid-cols-12" style={{ gap: '16px', alignItems: 'stretch' }}>
+                <div className="lg:col-span-5">
+                  <ActivityList
+                    title="Driver Profitability"
+                    icon={<Users size={14} />}
+                    subtitle="Gross margin contributed by each driver's rated shifts this period."
+                    emptyText="No rated shifts yet for this period."
+                    items={driverLeaderboard.map(d => ({
+                      key: d.id,
+                      title: toTitleCase(d.name),
+                      subtitle: `${d.shifts} rated shift${d.shifts === 1 ? '' : 's'}`,
+                      amount: d.margin,
+                      formatAmount: v => `£${v.toLocaleString('en-GB', { maximumFractionDigits: 0 })}`,
+                      meta: `Last: ${new Date(d.lastShift).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`,
+                    }))}
+                  />
+                </div>
+                <div className="lg:col-span-7">
+                  <ProgressMetricCard
+                    title="Fleet Economics"
+                    subtitle={economicsUsesHours
+                      ? 'Net profit per driver-hour after wages and fuel. Per-mile figures appear once shifts log GPS mileage.'
+                      : 'Net profit per mile after wages and fuel, with fuel efficiency.'}
+                    icon={<Gauge size={15} color="var(--charcoal-light)" />}
+                    data={economicsUsesHours ? hourlyEconomicsSeries : economicsSeries}
+                    periodOptions={[
+                      { label: 'Last 7 days', points: 7 },
+                      { label: 'Last 14 days', points: 14 },
+                      { label: 'Whole period' },
+                    ]}
+                    summarize={economicsUsesHours ? summarizeHourlyEconomics : summarizeEconomics}
+                    valueFormatter={v => `${v < 0 ? '−' : ''}£${Math.abs(v).toFixed(2)}`}
+                    note={economicsUsesHours
+                      ? 'Hours come from each shift\'s clock-in and clock-out.'
+                      : 'Miles come from GPS pings every ~2 minutes, so per-mile and mi/L figures are close estimates.'}
+                    emptyTitle="Not enough mileage yet"
+                    emptyDescription="Needs rated shifts with logged GPS mileage on at least two days."
+                  />
+                </div>
               </div>
             </div>
             </div>
-            </>
+            {isCostLedgerOpen && (
+              <CostLedgerModal
+                costs={orgCosts}
+                settings={analyticsSettings}
+                onClose={() => setIsCostLedgerOpen(false)}
+                onChanged={loadTrueCostData}
+              />
             )}
+            </>
+              );
+            })()}
 
             {/* Fuel Receipts Audit — moved off the main canvas entirely
                 into a modal triggered from the toolbar button. Same data/
@@ -8428,9 +8631,9 @@ export default function App() {
                         <Receipt size={18} color="var(--charcoal)" />
                         <h2 className="text-lg font-black text-primary m-0">Fuel &amp; AdBlue Receipts Audit</h2>
                         {pendingCount > 0 && <span className="badge badge-warning font-mono">{pendingCount} awaiting review</span>}
-                        {Object.values(fuelAnomalyByReceiptId).some(a => a.isAnomaly) && (
+                        {anomalousFuelReceiptCount > 0 && (
                           <span className="badge badge-danger font-mono">
-                            {Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length} anomal{Object.values(fuelAnomalyByReceiptId).filter(a => a.isAnomaly).length === 1 ? 'y' : 'ies'}
+                            {anomalousFuelReceiptCount} anomal{anomalousFuelReceiptCount === 1 ? 'y' : 'ies'}
                           </span>
                         )}
                       </span>
@@ -8520,10 +8723,9 @@ export default function App() {
                             {filteredReceipts.map(r => {
                               const thumbUrl = fuelReceiptThumbUrls[r.receipt_photo_path];
                               const dashboardThumbUrl = r.dashboard_photo_path ? fuelReceiptThumbUrls[r.dashboard_photo_path] : undefined;
-                              const anomaly = fuelAnomalyByReceiptId[r.id];
                               return (
                                 <React.Fragment key={r.id}>
-                                  <tr style={anomaly?.isAnomaly ? { background: 'rgba(204,0,0,0.05)' } : undefined}>
+                                  <tr style={r.theft_flag ? { background: 'rgba(204,0,0,0.05)' } : undefined}>
                                     <td>
                                       <div className="flex items-center" style={{ gap: '4px' }}>
                                         <button
@@ -8589,23 +8791,30 @@ export default function App() {
                                     </td>
                                     <td className="font-mono tabular-nums font-semibold">{r.total_cost === null ? '—' : `£${r.total_cost.toFixed(2)}`}</td>
                                     <td className="whitespace-nowrap">
-                                      {anomaly?.calculatedMpg != null ? (
+                                      {r.calculated_mpg != null ? (
                                         <div className="flex flex-col" style={{ gap: '2px' }}>
-                                          <span className="font-mono tabular-nums text-xs" style={{ color: anomaly.isAnomaly ? '#CC0000' : 'var(--charcoal-mid)', fontWeight: anomaly.isAnomaly ? 800 : 500 }}>
-                                            {anomaly.deltaMiles}mi / {anomaly.calculatedMpg.toFixed(1)} MPG
-                                          </span>
-                                          {anomaly.isAnomaly && (
+                                          <span className="text-xs text-muted">{r.delta_miles}mi</span>
+                                          {r.theft_flag ? (
                                             <span
-                                              className="flex items-center text-xs font-bold"
-                                              style={{ gap: '3px', color: '#CC0000' }}
-                                              title={anomaly.anomalyReason ?? undefined}
+                                              className="font-mono tabular-nums font-black"
+                                              style={{ fontSize: '11px', color: '#fff', background: '#CC0000', padding: '2px 8px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px', width: 'fit-content' }}
+                                              title={r.theft_reason ?? undefined}
                                             >
-                                              <AlertTriangle size={11} /> Fuel Anomaly
+                                              <AlertTriangle size={11} /> Anomaly: {r.calculated_mpg.toFixed(1)} MPG
+                                            </span>
+                                          ) : (
+                                            <span
+                                              className="font-mono tabular-nums font-bold"
+                                              style={{ fontSize: '11px', color: '#10B981', background: 'rgba(16,185,129,0.12)', padding: '2px 8px', borderRadius: '4px', width: 'fit-content' }}
+                                            >
+                                              {r.calculated_mpg.toFixed(1)} MPG
                                             </span>
                                           )}
                                         </div>
                                       ) : (
-                                        <span className="text-xs text-muted">{r.odometer_miles === null ? 'No odometer' : 'First fill logged'}</span>
+                                        <span className="text-xs text-muted">
+                                          {r.odometer_miles === null ? 'No odometer' : !r.is_full_tank ? 'Partial fill — not compared' : 'First full-tank fill logged'}
+                                        </span>
                                       )}
                                     </td>
                                     <td className="text-xs">{r.vendor ?? '—'}</td>
@@ -8626,7 +8835,7 @@ export default function App() {
                                             type="button"
                                             disabled={reviewingFuelReceiptId === r.id}
                                             onClick={() => handleReviewFuelReceipt(r.id, 'approved')}
-                                            title={anomaly?.isAnomaly ? 'Flagged as an anomaly — approve only after checking the photos/GPS' : 'Approve'}
+                                            title={r.theft_flag ? 'Flagged as an anomaly — approve only after checking the photos/GPS' : 'Approve Log'}
                                             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#10B981' }}
                                           >
                                             <CircleCheck size={18} />
@@ -8635,7 +8844,7 @@ export default function App() {
                                             type="button"
                                             disabled={reviewingFuelReceiptId === r.id}
                                             onClick={() => handleReviewFuelReceipt(r.id, 'rejected')}
-                                            title="Reject"
+                                            title={r.theft_flag ? 'Flag for Investigation' : 'Reject'}
                                             style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--brand-red)' }}
                                           >
                                             <CircleX size={18} />
@@ -8928,304 +9137,31 @@ export default function App() {
 
             {activeTab === 'shipments' && (
             <>
-            {/* Shipments — load import, revenue rating, and the itemized
-                shift ledger. Moved out of Analytics entirely (was "Zone 4"
-                there) so Analytics stays pure stats/trends and this stays
-                the operational load-tracking workspace — sharing the same
-                closure (and so the same shiftGrossMargin/mileageByShift/
-                CSV-export helpers, revenue-edit state, etc.) as Analytics
-                since both read the same underlying shift data, just
-                presenting different slices of it. */}
-
-            {/* Active Loads — the board the ledger below can't show: that
-                table only ever lists COMPLETED shifts (revenue can't be
-                rated until a shift finishes), so a driver currently out on
-                the road with a load attached (or without one) had nowhere
-                to show up until now. Same shifts state as everywhere else
-                on this tab — no separate query. */}
-            {(() => {
-              const activeLoadShifts = shifts
-                .filter(s => !s.end_time && s.status !== 'completed')
-                .sort((a, b) => new Date(b.start_time).getTime() - new Date(a.start_time).getTime());
-              return (
-                <div className="mt-16" style={{ maxWidth: '1600px', width: '100%' }}>
-                  <RevealOnMount index={0} className="analytics-chart-card">
-                    <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                      <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em', margin: 0 }}>Active Loads — Live Board</p>
-                      <span className="text-xs text-muted">{activeLoadShifts.length} driver{activeLoadShifts.length === 1 ? '' : 's'} on shift now</span>
-                    </div>
-                    {activeLoadShifts.length === 0 ? (
-                      <Empty className="py-16">
-                        <EmptyHeader>
-                          <EmptyMedia variant="icon"><Truck /></EmptyMedia>
-                          <EmptyTitle>Nobody On Shift Right Now</EmptyTitle>
-                          <EmptyDescription>Active shifts with a load attached will show up here.</EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
-                    ) : (
-                      <div className="table-container">
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>Driver</th>
-                              <th>Assigned Unit</th>
-                              <th>Load Reference</th>
-                              <th>Customer / Carrier</th>
-                              <th>Shift Start</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {activeLoadShifts.map(s => (
-                              <tr key={s.id}>
-                                <td className="font-medium text-primary" style={{ fontSize: '13px' }}>{toTitleCase(s.driver_name ?? '')}</td>
-                                <td>
-                                  {s.vehicle_number ? (
-                                    <span className="font-mono font-bold" style={{ fontSize: '11px', textTransform: 'uppercase', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '2px 8px', borderRadius: '4px' }}>
-                                      {[s.vehicle_number, s.trailer_number].filter(Boolean).join(' / ')}
-                                    </span>
-                                  ) : '—'}
-                                </td>
-                                <td>
-                                  {s.load_reference ? (
-                                    <span className="font-mono font-semibold" style={{ fontSize: '12.5px' }}>{s.load_reference}</span>
-                                  ) : (
-                                    <span className="badge" style={{ background: 'var(--card-bg-hover)', color: 'var(--charcoal-light)', border: '1px solid var(--border-color)' }}>No Load Attached</span>
-                                  )}
-                                </td>
-                                <td className="text-secondary text-xs">{s.carrier_name ?? '—'}</td>
-                                <td className="whitespace-nowrap font-mono tabular-nums text-xs">
-                                  {new Date(s.start_time).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </RevealOnMount>
-                </div>
-              );
-            })()}
-
-            <div className="mt-16" style={{ maxWidth: '1600px', width: '100%' }}>
-              <RevealOnMount index={1} className="analytics-chart-card">
-                <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                  <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.12em', margin: 0 }}>Reconciled Shift &amp; Load Yield</p>
-                  <button
-                    type="button"
-                    onClick={() => { exportLedgerCsv(); flashExported('ledger'); }}
-                    disabled={loadRevenueRowsAll.length === 0}
-                    className="flex items-center text-xs font-bold"
-                    style={{ gap: '6px', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: loadRevenueRowsAll.length === 0 ? 'default' : 'pointer', opacity: loadRevenueRowsAll.length === 0 ? 0.5 : 1 }}
-                  >
-                    <DownloadIcon done={justExported === 'ledger'} />
-                    Export Payroll CSV
-                  </button>
-                </div>
-
-                {revenueSaveError && <div className="login-notice login-notice--error mb-16">{revenueSaveError}</div>}
-
-                {loadRevenueRows.length === 0 ? (
-                  <Empty className="py-24">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon">
-                        <PoundSterling />
-                      </EmptyMedia>
-                      <EmptyTitle>No Completed Shifts Yet</EmptyTitle>
-                      <EmptyDescription>
-                        Completed shifts in this period will show up here once they exist.
-                      </EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
-                ) : (
-                  <div className="table-container">
-                    <table className="data-table data-table--lg">
-                      <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th>Driver</th>
-                          <th>Assigned Vehicle</th>
-                          <th>Customer &amp; Load Ref</th>
-                          <th>Duration &amp; GPS Distance</th>
-                          <th>Driver Wage</th>
-                          <th>Fuel Incurred</th>
-                          <th>Billed Revenue</th>
-                          <th>
-                            <button
-                              type="button"
-                              onClick={() => setLedgerSort(prev => (prev === 'margin' ? 'date' : 'margin'))}
-                              className="flex items-center"
-                              style={{ gap: '4px', background: 'none', border: 'none', padding: 0, font: 'inherit', color: ledgerSort === 'margin' ? 'var(--brand-red)' : 'inherit', cursor: 'pointer' }}
-                              title={ledgerSort === 'margin' ? 'Sorted lowest margin first — click to sort by date' : 'Click to sort lowest margin first'}
-                            >
-                              Gross Margin %
-                              {ledgerSort === 'margin' ? <ChevronUp size={12} /> : <ChevronsUpDown size={12} style={{ opacity: 0.5 }} />}
-                            </button>
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {loadRevenueRows.map(s => {
-                          const edit = revenueEdits[s.id];
-                          const revenueValue = edit ? edit.revenue : (s.revenue_amount === null || s.revenue_amount === undefined ? '' : String(s.revenue_amount));
-                          const isPending = s.revenue_amount === null || s.revenue_amount === undefined;
-                          const shiftMargin = shiftGrossMargin(s);
-                          const marginPct = shiftMargin === null || !s.revenue_amount ? null : (shiftMargin / s.revenue_amount) * 100;
-                          const marginTier: 'green' | 'amber' | 'red' | null = marginPct === null ? null : marginPct >= 35 ? 'green' : marginPct >= 20 ? 'amber' : 'red';
-                          const marginBadgeClass = marginTier === 'green' ? 'badge-success' : marginTier === 'amber' ? 'badge-warning' : marginTier === 'red' ? 'badge-danger' : 'badge-accent';
-                          const driverDisplayName = toTitleCase(s.driver_name ?? '');
-                          const initials = driverDisplayName.split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?';
-                          const miles = mileageByShift[s.id];
-
-                          const setRevenueField = (value: string) => {
-                            setRevenueEdits(prev => ({
-                              ...prev,
-                              [s.id]: {
-                                revenue: value,
-                                loadRef: prev[s.id]?.loadRef ?? (s.load_reference ?? ''),
-                                carrier: prev[s.id]?.carrier ?? (s.carrier_name ?? ''),
-                              },
-                            }));
-                          };
-
-                          return (
-                            <tr key={s.id}>
-                              <td className="whitespace-nowrap">{new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
-                              <td>
-                                <div className="flex items-center" style={{ gap: '8px' }}>
-                                  <span
-                                    className="flex items-center justify-center font-bold"
-                                    style={{ width: '26px', height: '26px', borderRadius: '50%', background: 'var(--charcoal)', color: '#fff', fontSize: '10px', flexShrink: 0 }}
-                                  >
-                                    {initials}
-                                  </span>
-                                  {driverDisplayName || '—'}
-                                </div>
-                              </td>
-                              <td>
-                                {vehicleAssignShiftId === s.id ? (
-                                  <select
-                                    className="select-field"
-                                    style={{ fontSize: '12px', padding: '4px 8px' }}
-                                    autoFocus
-                                    value={s.vehicle_id ?? ''}
-                                    onChange={(e) => { handleAssignVehicle(s.id, e.target.value || null); setVehicleAssignShiftId(null); }}
-                                    onBlur={() => setVehicleAssignShiftId(null)}
-                                  >
-                                    <option value="">Unassigned</option>
-                                    {fleetVehicles.map(v => (
-                                      <option key={v.id} value={v.id}>{v.vehicle_number}</option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => setVehicleAssignShiftId(s.id)}
-                                    className="font-mono font-bold uppercase text-xs"
-                                    style={{ background: 'var(--card-bg-hover)', border: 'none', cursor: 'pointer', padding: '3px 8px', borderRadius: '4px', letterSpacing: '0.02em', color: s.vehicle_number ? 'var(--charcoal)' : 'var(--charcoal-light)' }}
-                                    title="Click to assign a vehicle"
-                                  >
-                                    {s.vehicle_number ?? '— assign —'}
-                                  </button>
-                                )}
-                              </td>
-                              <td>
-                                {s.carrier_name && (
-                                  <span className="badge badge-accent" style={{ marginBottom: '3px', display: 'inline-flex' }}>{s.carrier_name}</span>
-                                )}
-                                <div className="font-mono text-xs text-muted whitespace-nowrap">{s.load_reference ? `#${s.load_reference.replace(/^#/, '')}` : '—'}</div>
-                              </td>
-                              <td className="font-mono tabular-nums text-xs text-muted whitespace-nowrap">
-                                {miles === undefined ? '— mi' : `${miles.toFixed(0)} mi`} • {formatHoursMinutes(s.total_hours ?? 0)}
-                              </td>
-                              <td className="font-mono tabular-nums text-sm text-muted whitespace-nowrap">£{(s.total_pay ?? 0).toFixed(2)}</td>
-                              <td className="font-mono tabular-nums text-sm text-muted whitespace-nowrap">
-                                {approvedFuelCostByShift[s.id] === undefined ? '—' : `£${approvedFuelCostByShift[s.id].toFixed(2)}`}
-                              </td>
-                              <td className="whitespace-nowrap">
-                                <Popover open={revenuePopoverShiftId === s.id} onOpenChange={(open) => setRevenuePopoverShiftId(open ? s.id : null)}>
-                                  <PopoverTrigger asChild>
-                                    {isPending ? (
-                                      <button
-                                        type="button"
-                                        className="font-mono font-medium text-xs"
-                                        style={{ border: '1px solid #FDE68A', background: '#FFFBEB', color: '#92400E', padding: '4px 10px', borderRadius: '6px', cursor: 'pointer', display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: '1px', lineHeight: 1.3 }}
-                                      >
-                                        <span className="flex items-center" style={{ gap: '4px' }}>+ Spot Rate</span>
-                                        <span className="font-mono" style={{ fontSize: '10px', color: '#94A3B8', fontWeight: 500 }}>Awaiting CSV</span>
-                                      </button>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        className="flex items-center"
-                                        style={{ gap: '6px', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
-                                        title="Click to adjust this rate"
-                                      >
-                                        <span className="font-mono font-bold tabular-nums" style={{ color: '#10B981', fontSize: '14px' }}>£{(s.revenue_amount as number).toFixed(2)}</span>
-                                        <span className="text-xs font-bold" style={{ color: '#10B981' }}>Rated</span>
-                                        <Pencil size={11} color="var(--charcoal-light)" />
-                                      </button>
-                                    )}
-                                  </PopoverTrigger>
-                                  <PopoverContent className="w-[290px] p-3" align="start">
-                                    <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.06em', marginBottom: '8px' }}>Billed Amount (£)</p>
-                                    <div className="flex items-center gap-4" style={{ marginBottom: '10px' }}>
-                                      <span className="text-sm text-muted">£</span>
-                                      <input
-                                        type="text"
-                                        inputMode="decimal"
-                                        className="input-field font-mono tabular-nums"
-                                        style={{ padding: '8px 10px', fontSize: '14px', fontWeight: 700, width: '100%' }}
-                                        placeholder="0.00"
-                                        autoFocus
-                                        value={revenueValue}
-                                        disabled={savingRevenueShiftId === s.id}
-                                        onChange={(e) => setRevenueField(e.target.value)}
-                                      />
-                                    </div>
-                                    <div className="flex items-center" style={{ gap: '8px' }}>
-                                      <button
-                                        type="button"
-                                        onClick={async () => { await handleSaveRevenue(s.id); setRevenuePopoverShiftId(null); }}
-                                        disabled={savingRevenueShiftId === s.id}
-                                        className="font-bold"
-                                        style={{ flex: 1, padding: '7px 4px', borderRadius: '6px', border: 'none', background: 'var(--brand-red)', color: '#fff', cursor: 'pointer', fontSize: '11px', lineHeight: 1.25 }}
-                                      >
-                                        {savingRevenueShiftId === s.id ? 'Saving…' : 'Apply & Recalculate Margin'}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setRevenueEdits(prev => {
-                                            const next = { ...prev };
-                                            delete next[s.id];
-                                            return next;
-                                          });
-                                          setRevenuePopoverShiftId(null);
-                                        }}
-                                        className="text-xs font-bold"
-                                        style={{ padding: '7px 10px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: 'pointer' }}
-                                      >
-                                        {isPending ? 'Keep Awaiting CSV' : 'Cancel'}
-                                      </button>
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                              </td>
-                              <td className="whitespace-nowrap">
-                                <span className={`badge ${marginBadgeClass} font-mono tabular-nums font-bold`}>
-                                  {shiftMargin === null || marginPct === null ? '—' : `${shiftMargin >= 0 ? '+' : '−'}£${Math.abs(shiftMargin).toFixed(2)} (${marginPct.toFixed(1)}%)`}
-                                </span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </RevealOnMount>
+            {/* Shipments splits into the live board (active loads, the
+                assign action, and the shift ledger) and the delivery
+                history (completed loads with proof of delivery). */}
+            <div className="telemetry-tabs mt-16" style={{ maxWidth: '1600px' }}>
+              {([['tracking', 'Live Tracking'], ['history', 'Delivery History']] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`telemetry-tab ${shipmentsView === key ? 'telemetry-tab--active' : ''}`}
+                  onClick={() => setShipmentsView(key)}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
+            {shipmentsView === 'tracking' && (
+              <ShipmentsTracking
+                shifts={shifts}
+                liveLocations={liveLocations}
+                depots={depots}
+                employees={employees}
+                onAssign={(driverId) => { setDispatchDriverId(driverId); setIsDispatchOpen(true); }}
+              />
+            )}
+            {shipmentsView === 'history' && <DeliveryHistory />}
             </>
             )}
 
@@ -9234,6 +9170,51 @@ export default function App() {
         })()}
 
         <AnimatePresence>
+        {activationCodeShown && (
+          <div
+            className="modal-overlay"
+            style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}
+            onClick={() => setActivationCodeShown(null)}
+          >
+            <div className="modal-content glass-panel" style={{ width: '440px', maxWidth: '100%', padding: '24px', borderRadius: '16px', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)' }} onClick={e => e.stopPropagation()}>
+              <div className="flex align-center justify-between mb-8">
+                <h3 className="text-md font-bold text-primary m-0">
+                  {activationCodeShown.reason === 'created' ? 'Employee created' : 'New activation code'}
+                </h3>
+                <button type="button" onClick={() => setActivationCodeShown(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}>
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="text-xs text-secondary m-0 mb-16">
+                Give <strong className="text-primary">{activationCodeShown.name}</strong> this one-time activation code.
+                In the Tachyo app they'll enter their Driver ID <strong className="text-primary font-mono">{activationCodeShown.driverId.toUpperCase()}</strong> and this code, then pick their own 6-digit PIN. The code works once and expires in 48 hours.
+              </p>
+              <div style={{ background: 'var(--card-bg-hover)', border: '2px dashed var(--brand-red)', borderRadius: '10px', padding: '18px', textAlign: 'center', marginBottom: '14px' }}>
+                <p className="font-mono font-black" style={{ fontSize: '30px', letterSpacing: '0.12em', margin: 0, color: 'var(--brand-red)' }}>{activationCodeShown.code}</p>
+              </div>
+              <div className="flex" style={{ gap: '8px' }}>
+                <button
+                  type="button"
+                  className="btn flex align-center"
+                  style={{ flex: 1, justifyContent: 'center', gap: '6px', padding: '10px', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 800 }}
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(activationCodeShown.code);
+                      showToast('Activation code copied.', 'success');
+                    } catch (_) {
+                      // Clipboard blocked — value is still visible on screen.
+                    }
+                  }}
+                >
+                  Copy code
+                </button>
+                <button type="button" className="btn btn-secondary" style={{ padding: '10px 16px' }} onClick={() => setActivationCodeShown(null)}>Done</button>
+              </div>
+              <p className="text-xs text-muted m-0 mt-12">Save the code before closing — we can't show it again. If it's lost, issue a new one from the row menu.</p>
+            </div>
+          </div>
+        )}
+
         {settingsModalOpen && (
           <motion.div
             className="modal-overlay"
@@ -9281,12 +9262,15 @@ export default function App() {
               <nav className="settings-nav">
                 {([
                   { id: 'company' as const, label: 'Company', icon: Building2 },
+                  { id: 'plan' as const, label: 'Your plan', icon: CreditCard },
                   ...(userRole === 'payroll_admin' ? [
                     { id: 'access-codes' as const, label: 'Access Codes', icon: KeyRound },
                     { id: 'depots' as const, label: 'Depots', icon: MapPinned },
                     { id: 'alerts' as const, label: 'Alerts', icon: Bell },
+                    { id: 'fuel-bonus' as const, label: 'Fuel Bonus', icon: Fuel },
                   ] : []),
                   { id: 'appearance' as const, label: 'Appearance', icon: Palette },
+                  { id: 'security' as const, label: 'Security', icon: ShieldCheck },
                   { id: 'legal' as const, label: 'Legal', icon: Scale },
                 ]).map(({ id, label, icon: Icon }) => (
                   <button
@@ -9672,7 +9656,18 @@ export default function App() {
                     </div>
 
                     <div className="input-group">
-                      <label className="input-label" htmlFor="idle-alert-minutes">IDLE ALERT (MINUTES)</label>
+                      <div className="flex align-center justify-between" style={{ gap: '10px', marginBottom: '6px' }}>
+                        <label className="input-label" htmlFor="idle-alert-minutes" style={{ margin: 0 }}>IDLE DETECTION</label>
+                        <label className="flex align-center text-xs font-bold" style={{ gap: '8px', cursor: isSavingIdleToggle ? 'default' : 'pointer', color: 'var(--charcoal)' }}>
+                          <span>{orgAlertSettings.idleDetectionEnabled ? 'On' : 'Off'}</span>
+                          <input
+                            type="checkbox"
+                            checked={orgAlertSettings.idleDetectionEnabled}
+                            disabled={isSavingIdleToggle}
+                            onChange={handleToggleIdleDetection}
+                          />
+                        </label>
+                      </div>
                       <input
                         id="idle-alert-minutes"
                         type="number"
@@ -9680,10 +9675,13 @@ export default function App() {
                         step="1"
                         className="input-field"
                         value={alertSettingsForm.idleAlertMinutes}
+                        disabled={!orgAlertSettings.idleDetectionEnabled}
                         onChange={(e) => setAlertSettingsForm(f => ({ ...f, idleAlertMinutes: e.target.value }))}
                       />
                       <p className="text-xs text-muted mt-4">
-                        How long a driver can be stationary on an active shift before an idle alert fires.
+                        {orgAlertSettings.idleDetectionEnabled
+                          ? 'How long any employee on shift can be stationary before an idle alert fires. Covers drivers, mechanics and logistics staff.'
+                          : 'Idle alerts are turned off for the whole company. Dashboard and Alert Panel will hide the idle section.'}
                       </p>
                     </div>
 
@@ -9750,36 +9748,12 @@ export default function App() {
                       </p>
                     </div>
 
-                    <div className="flex" style={{ gap: '12px' }}>
-                      <div className="input-group" style={{ flex: 1 }}>
-                        <label className="input-label" htmlFor="fuel-anomaly-min-mpg">FUEL ANOMALY FLOOR (MPG)</label>
-                        <input
-                          id="fuel-anomaly-min-mpg"
-                          type="number"
-                          min="0.1"
-                          step="0.1"
-                          className="input-field"
-                          value={alertSettingsForm.fuelAnomalyMinMpg}
-                          onChange={(e) => setAlertSettingsForm(f => ({ ...f, fuelAnomalyMinMpg: e.target.value }))}
-                        />
-                      </div>
-                      <div className="input-group" style={{ flex: 1 }}>
-                        <label className="input-label" htmlFor="fuel-anomaly-drop-percent">ROLLING-AVERAGE DROP (%)</label>
-                        <input
-                          id="fuel-anomaly-drop-percent"
-                          type="number"
-                          min="1"
-                          max="99"
-                          step="1"
-                          className="input-field"
-                          value={alertSettingsForm.fuelAnomalyRollingDropPercent}
-                          onChange={(e) => setAlertSettingsForm(f => ({ ...f, fuelAnomalyRollingDropPercent: e.target.value }))}
-                        />
-                      </div>
+                    <div className="input-group mb-16">
+                      <span className="input-label">FUEL THEFT DETECTION</span>
+                      <p className="text-xs text-muted m-0">
+                        Fixed fleet-wide rule, not configurable per company: every truck is refuelled to the brim, so any full-tank-to-full-tank fill below <strong>7.0 UK MPG</strong> (worse than 40 L/100km) is flagged as a fuel anomaly in the Fuel &amp; AdBlue Receipts Audit. Computed automatically the moment a fuel log is submitted.
+                      </p>
                     </div>
-                    <p className="text-xs text-muted mb-16">
-                      A fuel log gets flagged as a Fuel Anomaly if its calculated MPG is below the floor, or drops this many percent below that specific vehicle's own recent average — either one is enough to flag it. Drives the Fuel &amp; AdBlue Receipts Audit.
-                    </p>
 
                     <div className="input-group">
                       <label className="input-label" htmlFor="load-reminder-minutes">LOAD REMINDER (MINUTES STATIONARY)</label>
@@ -9826,6 +9800,9 @@ export default function App() {
                   </div>
                 )}
 
+                {activeSettingsSection === 'plan' && <PlanSettings entitlements={entitlements} companyName={teamOrgInfo?.name} />}
+                {userRole === 'payroll_admin' && activeSettingsSection === 'fuel-bonus' && <FuelBonusSettings />}
+                {activeSettingsSection === 'security' && <SecuritySettings />}
                 {activeSettingsSection === 'legal' && (
                   <div>
                     <div className="settings-panel-header">
@@ -9863,271 +9840,6 @@ export default function App() {
         </AnimatePresence>
 
       </div>
-
-      {/* ── Billing modal — opened from the sidebar's Billing button, not a
-           tab. Each paid plan carries its own Monthly/Annual switch. ────── */}
-      {billingModalOpen && userRole === 'payroll_admin' && (
-        <div
-          className="modal-overlay"
-          style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '20px' }}
-          onClick={() => { setBillingModalOpen(false); setCheckoutPlan(null); }}
-        >
-          <div
-            className="modal-content glass-panel"
-            style={{ width: '1000px', maxWidth: '100%', maxHeight: '88vh', display: 'flex', flexDirection: 'column', borderRadius: '18px', backgroundColor: 'var(--card-bg)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.3)', border: '1px solid var(--border-color)', overflow: 'hidden' }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 24px', borderBottom: '1px solid #E5E7EB' }}>
-              <div>
-                <span className="font-black text-primary" style={{ fontSize: '16px' }}>Billing</span>
-                <p className="text-xs text-muted" style={{ margin: '4px 0 0' }}>
-                  {teamOrgInfo
-                    ? <>{teamOrgInfo.name} is currently on the <b>{PLAN_LABELS[teamOrgInfo.plan]}</b> plan.</>
-                    : 'Loading your current plan…'}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => { setBillingModalOpen(false); setCheckoutPlan(null); }}
-                aria-label="Close"
-                style={{ background: 'none', border: 0, cursor: 'pointer', color: 'var(--charcoal-light)', display: 'flex' }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div style={{ padding: '24px', overflowY: 'auto' }}>
-              {teamError && <div className="login-notice login-notice--error mb-16">{teamError}</div>}
-
-              {checkoutPlan ? (() => {
-                // Payment step — replaces the pricing grid in-place once a
-                // paid plan's CTA is clicked. There's no live payment
-                // gateway wired into this app yet (see the buyNowPlan
-                // comment above), so submitting a valid card here reuses
-                // the exact same "we'll be in touch" confirmation Free
-                // already used, rather than silently pretending to charge
-                // a card that goes nowhere.
-                const plan = BILLING_PLANS.find(p => p.id === checkoutPlan)!;
-                const units = pricingUnitsByPlan[checkoutPlan];
-                const pricePerUnit = billingCycle === 'monthly'
-                  ? plan.monthlyPrice!
-                  : Math.round((plan.annualPrice! / 12) * 100) / 100;
-                const monthlyTotal = Math.round(pricePerUnit * units * 100) / 100;
-                return (
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => setCheckoutPlan(null)}
-                      className="flex align-center gap-4 text-sm font-bold text-muted"
-                      style={{ background: 'none', border: 0, cursor: 'pointer', padding: 0, marginBottom: '20px' }}
-                    >
-                      <ChevronLeft size={14} /> Back to plans
-                    </button>
-
-                    <div className="text-center" style={{ marginBottom: '24px' }}>
-                      <h2 className="text-2xl font-black text-primary" style={{ margin: '0 0 6px', letterSpacing: '-0.01em' }}>
-                        Upgrade to {plan.label}
-                      </h2>
-                      <p className="text-sm text-muted" style={{ margin: 0 }}>
-                        {units} driver{units === 1 ? '' : 's'} · £{pricePerUnit.toFixed(2)}/driver/mo
-                        {billingCycle === 'annual' ? ' (billed annually)' : ''} ·{' '}
-                        <b className="text-primary">£{monthlyTotal.toFixed(2)}/mo</b>
-                      </p>
-                    </div>
-
-                    <CreditCardForm
-                      submitLabel={`Pay £${monthlyTotal.toFixed(2)}`}
-                      onSubmit={(_state: CardState, validity: CardValidity) => {
-                        if (!validity.allValid) return;
-                        setBuyNowPlan(checkoutPlan);
-                        setCheckoutPlan(null);
-                      }}
-                    />
-
-                    <p className="text-xs text-muted text-center" style={{ marginTop: '18px', maxWidth: '480px', marginLeft: 'auto', marginRight: 'auto' }}>
-                      No card is charged here yet — this confirms {teamOrgInfo?.name ?? 'your company'}'s upgrade request and our team will follow up to complete it.
-                    </p>
-                  </div>
-                );
-              })() : (
-              <>
-              <div className="text-center" style={{ marginBottom: '24px' }}>
-                <h2 className="text-2xl font-black text-primary" style={{ margin: '0 0 6px', letterSpacing: '-0.01em' }}>
-                  Pricing That Scales With Your Fleet
-                </h2>
-                <p className="text-sm text-muted" style={{ margin: 0 }}>
-                  Drag the slider to see exactly what your team costs today — and what it'll cost as you grow. No hidden per-seat surprises.
-                </p>
-              </div>
-
-              {/* Single global Annual switch + confetti burst — literal
-                  structure of the 21st.dev "Pricing" reference (Codehagen),
-                  not the segmented per-card toggle this replaces. The
-                  reference's own confetti colours (`hsl(var(--primary))`
-                  etc.) never resolve outside a stylesheet context — canvas
-                  fillStyle needs a literal colour string — so real Tachyo
-                  hex values are used here instead of reproducing that bug. */}
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px', marginBottom: '28px' }}>
-                <BillingCycleSwitch
-                  ref={billingSwitchRef}
-                  checked={billingCycle === 'annual'}
-                  onCheckedChange={(checked: boolean) => {
-                    setBillingCycle(checked ? 'annual' : 'monthly');
-                    if (checked && billingSwitchRef.current) {
-                      const rect = billingSwitchRef.current.getBoundingClientRect();
-                      confetti({
-                        particleCount: 50,
-                        spread: 60,
-                        origin: { x: (rect.left + rect.width / 2) / window.innerWidth, y: (rect.top + rect.height / 2) / window.innerHeight },
-                        colors: ['#CC0000', '#FFFFFF', '#1a1a1a'],
-                        ticks: 200,
-                        gravity: 1.2,
-                        decay: 0.94,
-                        startVelocity: 30,
-                        shapes: ['circle'],
-                      });
-                    }
-                  }}
-                />
-                <span className="text-sm font-bold text-primary">
-                  Annual billing{BILLING_HEADLINE_SAVINGS_PERCENT != null && <> (<span style={{ color: '#CC0000' }}>Save {BILLING_HEADLINE_SAVINGS_PERCENT}%</span>)</>}
-                </span>
-              </div>
-
-              <div style={{ position: 'relative' }}>
-                {/* Soft ambient glow behind the whole row — ties the three
-                    cards together visually and gives the row some depth
-                    instead of sitting flat on the modal background. */}
-                <div
-                  aria-hidden
-                  style={{
-                    position: 'absolute',
-                    top: '-40px',
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    width: '90%',
-                    height: '260px',
-                    background: 'radial-gradient(ellipse at center, rgba(204,0,0,0.14) 0%, rgba(204,0,0,0.05) 45%, transparent 75%)',
-                    filter: 'blur(30px)',
-                    pointerEvents: 'none',
-                    zIndex: 0,
-                  }}
-                />
-                <div style={{ position: 'relative', zIndex: 1, display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '20px', alignItems: 'stretch', justifyItems: 'center' }}>
-                {/* Free — flat-rate and capped, not per-driver, so it keeps
-                    the same Card shell but skips the slider entirely rather
-                    than forcing it into a mechanic that doesn't apply to it. */}
-                {(() => {
-                  const freePlan = BILLING_PLANS.find(p => p.id === 'free')!;
-                  const isCurrent = teamOrgInfo?.plan === 'free';
-                  return (
-                    <PricingCard
-                      className="flex w-full max-w-[280px] flex-col"
-                      style={{
-                        ...(isCurrent ? { borderColor: '#CC0000', borderWidth: '2px' } : {}),
-                        boxShadow: isCurrent
-                          ? '0 12px 28px -8px rgba(204, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.12)'
-                          : '0 6px 18px -6px rgba(0, 0, 0, 0.14)',
-                      }}
-                    >
-                      <PricingCardHeader className="pb-2 pt-4 px-4">
-                        <div className="flex items-center justify-between">
-                          <PricingCardTitle className="text-lg">{freePlan.label}</PricingCardTitle>
-                          {isCurrent && <PricingBadge variant="default">Current Plan</PricingBadge>}
-                        </div>
-                        <PricingCardDescription className="text-xs">For small fleets just getting started with dispatch and payroll.</PricingCardDescription>
-                      </PricingCardHeader>
-                      <PricingCardContent className="flex-1 px-4">
-                        <div className="mb-3 text-center">
-                          <span className="text-3xl font-bold">£0</span>
-                          <span className="text-xs text-muted-foreground">/month</span>
-                        </div>
-                        <p className="mb-3 text-center text-xs text-muted-foreground">{freePlan.freeNote}</p>
-                        <ul className="space-y-2 text-xs">
-                          {freePlan.features.map((feature) => (
-                            <li key={feature} className="flex items-center gap-2">
-                              <Check className="h-3.5 w-3.5 text-primary flex-shrink-0" />
-                              <span className="text-muted-foreground">{feature}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      </PricingCardContent>
-                      <PricingCardFooter className="flex-col items-stretch gap-2 px-4 pb-4">
-                        <PricingButton
-                          className="w-full"
-                          size="default"
-                          variant="outline"
-                          disabled={isCurrent}
-                          onClick={() => setBuyNowPlan('free')}
-                        >
-                          {isCurrent ? 'Current Plan' : 'Switch to Free'}
-                        </PricingButton>
-                        {!isCurrent && buyNowPlan === 'free' && (
-                          <div className="login-notice login-notice--success text-xs" style={{ margin: 0 }}>
-                            Thanks! We'll be in touch to get {teamOrgInfo?.name ?? 'your company'} switched to Free.
-                          </div>
-                        )}
-                      </PricingCardFooter>
-                    </PricingCard>
-                  );
-                })()}
-
-                {/* Standard / Premium — literal InteractivePricingCard from
-                    the 21st.dev reference (@lavikatiyar/pricing): a per-driver
-                    slider drives the price live, real feature lists, a
-                    "Popular"-style badge only for the highlighted plan. */}
-                {(['standard', 'premium'] as const).map((planId) => {
-                  const plan = BILLING_PLANS.find(p => p.id === planId)!;
-                  const isCurrent = teamOrgInfo?.plan === planId;
-                  const pricePerUnit = billingCycle === 'monthly'
-                    ? plan.monthlyPrice!
-                    : Math.round((plan.annualPrice! / 12) * 100) / 100;
-                  return (
-                    <InteractivePricingCard
-                      key={planId}
-                      planName={plan.label}
-                      planDescription={
-                        planId === 'standard'
-                          ? 'For fleets ready for live alerts, idle detection, and multi-admin access.'
-                          : 'For fleets that need full payroll automation and multi-depot control.'
-                      }
-                      pricePerUnit={pricePerUnit}
-                      unitName="driver"
-                      minUnits={1}
-                      maxUnits={100}
-                      initialUnits={pricingUnitsByPlan[planId]}
-                      units={pricingUnitsByPlan[planId]}
-                      onUnitsChange={(nextUnits) => setPricingUnitsByPlan((prev) => ({ ...prev, [planId]: nextUnits }))}
-                      features={plan.features}
-                      currency="£"
-                      highlighted={isCurrent || !!plan.badge}
-                      badgeLabel={isCurrent ? 'Current Plan' : plan.badge}
-                      priceCaption={
-                        billingCycle === 'annual'
-                          ? `billed annually · £${plan.annualPrice}/driver/year`
-                          : undefined
-                      }
-                      ctaText={isCurrent ? 'Current Plan' : plan.badge ? `Subscribe to ${plan.label}` : `Get Started with ${plan.label}`}
-                      ctaDisabled={isCurrent}
-                      onCtaClick={() => setCheckoutPlan(planId)}
-                      footerNote={
-                        !isCurrent && buyNowPlan === planId ? (
-                          <div className="login-notice login-notice--success text-xs" style={{ margin: 0 }}>
-                            Thanks! We'll be in touch to get {teamOrgInfo?.name ?? 'your company'} switched to {plan.label}.
-                          </div>
-                        ) : null
-                      }
-                    />
-                  );
-                })}
-                </div>
-              </div>
-              </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Edit Payroll — right-edge slide-over drawer (migration 048).
           Single mode carries the full shift so the drawer can show its

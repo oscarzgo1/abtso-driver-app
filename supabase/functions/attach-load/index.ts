@@ -1,24 +1,23 @@
 // ============================================================
-// Edge Function: Driver Load Attachment
+// Edge Function: Driver Loads (attach / status / deliver)
 // ============================================================
-// Lets a driver tag their own active shift with a load reference /
-// customer name — nothing else. This exists ONLY because of the hard
-// wall migration 035 built on purpose: public.shift_revenue has NO
-// driver-facing RLS policy at all, specifically so a driver's own
-// select-star queries can never return revenue_amount (the company's
-// billed rate) to their device. That wall must stay intact.
+// Drivers never touch shift_loads / shift_revenue directly: both hold
+// revenue_amount, the company's billed rate, which must never reach a
+// driver's device (migration 035's wall). This function uses the service
+// role, verifies the shift belongs to the caller, and only ever reads or
+// writes non-financial columns — every select names its columns, never
+// "*", so revenue can't come back through it.
 //
-// This function uses the service-role client to write JUST
-// load_reference/carrier_name for the caller's own shift — it never
-// accepts a revenue_amount from the request body (even if one is
-// sent, it's ignored), and never selects/returns the row back to the
-// caller, so revenue_amount can never transit through this endpoint
-// in either direction. An admin still rates the load's £ value
-// afterward from the Shipments ledger, exactly as today.
-//
-// Also serves "status" (the shift's load + delivery state and the
-// org's load_reminder_minutes, for the app's stationary reminder) and
-// "deliver" (stamps shift_revenue.delivered_at, migration 059).
+// Since migration 063 a shift can carry several loads (shift_loads);
+// shift_revenue is a trigger-maintained per-shift roll-up.
+//   attach  — adds a load (reference + customer/carrier required)
+//   status  — the shift's loads, the current (undelivered) one, and the
+//             org's load_reminder_minutes. Also returns the older flat
+//             fields (load_reference/carrier_name/delivered_at) for app
+//             builds from before multi-load.
+//   deliver — confirms a load (load_id, or the latest undelivered one)
+//             with at least ONE typed proof photo (migration 077:
+//             solo_departure / empty_trailer / paper_pod) plus notes.
 // ============================================================
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
@@ -37,6 +36,8 @@ function json(body: unknown, status = 200) {
   });
 }
 
+const LOAD_COLUMNS = "id, load_reference, carrier_name, delivered_at, created_at";
+
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -48,13 +49,10 @@ serve(async (req: Request) => {
       return json({ error: "Missing Authorization header" }, 401);
     }
 
-    // Verify the caller's own session — this is the driver's JWT, not
-    // an admin's; auth.uid() for a driver equals drivers.id directly
-    // (see create-driver, which sets id: authUser.user.id on insert).
     const userClient = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: authHeader } } }
+      { global: { headers: { Authorization: authHeader } } },
     );
     const { data: { user }, error: authError } = await userClient.auth.getUser();
     if (authError || !user) {
@@ -62,15 +60,12 @@ serve(async (req: Request) => {
     }
     const callerId = user.id;
 
-    const supabaseAdmin = createClient(
+    const admin = createClient(
       Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
     const body = await req.json();
-    // "attach" (default, the original behaviour), "status" (read the
-    // shift's load + the org's reminder setting) or "deliver" (confirm
-    // the attached load was delivered).
     const action = typeof body.action === "string" ? body.action : "attach";
     const shiftId = typeof body.shift_id === "string" ? body.shift_id.trim() : "";
     const loadReference = typeof body.load_reference === "string" ? body.load_reference.trim() : "";
@@ -82,19 +77,13 @@ serve(async (req: Request) => {
     if (!shiftId) {
       return json({ error: "shift_id is required." }, 400);
     }
-    if (action === "attach" && !loadReference) {
-      return json({ error: "A load reference is required." }, 400);
-    }
 
-    // Confirm this shift actually belongs to the calling driver — never
-    // trust shift_id alone, or any driver could tag any shift.
-    const { data: shift, error: shiftError } = await supabaseAdmin
+    const { data: shift, error: shiftError } = await admin
       .from("shifts")
       .select("id, driver_id, organization_id")
       .eq("id", shiftId)
       .eq("driver_id", callerId)
       .maybeSingle();
-
     if (shiftError) {
       return json({ error: `Could not verify shift: ${shiftError.message}` }, 500);
     }
@@ -102,61 +91,170 @@ serve(async (req: Request) => {
       return json({ error: "That shift doesn't belong to you, or doesn't exist." }, 404);
     }
 
-    // Every select below names its columns explicitly — never "*" —
-    // so revenue_amount can't come back through this endpoint.
+    // Loads & proof of delivery is a plan feature (migration 067). The
+    // status read stays open so the app can show what already exists;
+    // attaching and delivering need the feature.
+    if (action !== "status") {
+      const { data: allowed } = await admin.rpc("org_has_feature", {
+        p_org: shift.organization_id,
+        p_key: "loads_pod",
+      });
+      if (allowed === false) {
+        return json({ error: "Loads and proof of delivery are not included in your plan." }, 403);
+      }
+    }
+
+    const listLoads = async () => {
+      const { data } = await admin
+        .from("shift_loads")
+        .select(LOAD_COLUMNS)
+        .eq("shift_id", shiftId)
+        .order("created_at", { ascending: true });
+      return data ?? [];
+    };
+
     if (action === "status") {
-      const [{ data: load }, { data: org }] = await Promise.all([
-        supabaseAdmin.from("shift_revenue").select("load_reference, carrier_name, delivered_at").eq("shift_id", shiftId).maybeSingle(),
-        supabaseAdmin.from("organizations").select("load_reminder_minutes").eq("id", shift.organization_id).maybeSingle(),
+      const [loads, { data: org }] = await Promise.all([
+        listLoads(),
+        admin.from("organizations").select("load_reminder_minutes").eq("id", shift.organization_id).maybeSingle(),
       ]);
+      const current = [...loads].reverse().find((l) => !l.delivered_at) ?? null;
+      const latest = loads[loads.length - 1] ?? null;
+      const flat = current ?? latest;
       return json({
         success: true,
-        load_reference: load?.load_reference ?? null,
-        carrier_name: load?.carrier_name ?? null,
-        delivered_at: load?.delivered_at ?? null,
+        loads,
+        current_load_id: current?.id ?? null,
+        load_reference: flat?.load_reference ?? null,
+        carrier_name: flat?.carrier_name ?? null,
+        delivered_at: current ? null : latest?.delivered_at ?? null,
         reminder_minutes: org?.load_reminder_minutes ?? 30,
       });
     }
 
     if (action === "deliver") {
-      const { data: delivered, error: deliverError } = await supabaseAdmin
-        .from("shift_revenue")
-        .update({ delivered_at: new Date().toISOString() })
+      const ownPrefix = `${shift.organization_id}/${callerId}/`;
+      const POD_TYPES = ["solo_departure", "empty_trailer", "paper_pod"];
+      type Proof = { pod_type: string; path: string; lat: number | null; lng: number | null; taken_at: string | null };
+      let proofs: Proof[] = [];
+      if (Array.isArray(body.proofs)) {
+        proofs = body.proofs.map((p: Record<string, unknown>) => ({
+          pod_type: String(p.pod_type ?? ""),
+          path: String(p.path ?? "").trim(),
+          lat: typeof p.lat === "number" ? p.lat : null,
+          lng: typeof p.lng === "number" ? p.lng : null,
+          taken_at: typeof p.taken_at === "string" ? p.taken_at : null,
+        }));
+      } else if (typeof body.paperwork_path === "string" && typeof body.evidence_path === "string") {
+        // App builds from before migration 077 send the old two fixed photos.
+        proofs = [
+          { pod_type: "paper_pod", path: body.paperwork_path.trim(), lat: null, lng: null, taken_at: null },
+          { pod_type: "empty_trailer", path: body.evidence_path.trim(), lat: null, lng: null, taken_at: null },
+        ];
+      }
+      if (proofs.length < 1) {
+        return json({ error: "Take at least one proof photo to confirm delivery." }, 400);
+      }
+      if (proofs.length > 12) {
+        return json({ error: "Too many photos." }, 400);
+      }
+      for (const p of proofs) {
+        if (!POD_TYPES.includes(p.pod_type)) return json({ error: "Unknown proof type." }, 400);
+        if (!p.path || !p.path.startsWith(ownPrefix)) return json({ error: "Invalid delivery photo path." }, 400);
+      }
+      const notes = typeof body.notes === "string" ? body.notes.trim().slice(0, 1000) : "";
+
+      let loadId = typeof body.load_id === "string" ? body.load_id : "";
+      if (!loadId) {
+        const loads = await listLoads();
+        loadId = [...loads].reverse().find((l) => !l.delivered_at)?.id ?? "";
+      }
+      if (!loadId) {
+        return json({ error: "Attach a load before confirming delivery." }, 400);
+      }
+
+      // The two older columns stay filled so existing admin readers keep
+      // working: the paper POD → paperwork, any other photo → evidence.
+      const paper = proofs.find((p) => p.pod_type === "paper_pod")?.path ?? null;
+      const other = proofs.find((p) => p.pod_type !== "paper_pod")?.path ?? null;
+      const { data: delivered, error: deliverError } = await admin
+        .from("shift_loads")
+        .update({
+          delivered_at: new Date().toISOString(),
+          delivery_paperwork_path: paper,
+          delivery_evidence_path: other,
+          delivery_notes: notes || null,
+        })
+        .eq("id", loadId)
         .eq("shift_id", shiftId)
-        .not("load_reference", "is", null)
-        .select("delivered_at")
+        .is("delivered_at", null)
+        .select("id, delivered_at")
         .maybeSingle();
       if (deliverError) {
         return json({ error: `Could not confirm delivery: ${deliverError.message}` }, 500);
       }
       if (!delivered) {
-        return json({ error: "Attach a load before confirming delivery." }, 400);
+        return json({ error: "That load is already confirmed as delivered." }, 400);
       }
-      return json({ success: true, delivered_at: delivered.delivered_at });
-    }
-
-    // Upsert ONLY load_reference/carrier_name (and reset delivered_at —
-    // a newly attached load hasn't been delivered yet). organization_id
-    // is filled by the table's own sync_shift_revenue_fields trigger;
-    // revenue_amount is deliberately never referenced here, so an
-    // existing admin-set figure (or lack of one) is left untouched.
-    const { error: upsertError } = await supabaseAdmin
-      .from("shift_revenue")
-      .upsert(
-        {
-          shift_id: shiftId,
-          load_reference: loadReference,
-          delivered_at: null,
-          ...(carrierName ? { carrier_name: carrierName } : {}),
-        },
-        { onConflict: "shift_id" }
+      const { error: proofError } = await admin.from("shipment_proofs").insert(
+        proofs.map((p) => ({
+          organization_id: shift.organization_id,
+          driver_id: callerId,
+          shift_load_id: delivered.id,
+          pod_type: p.pod_type,
+          photo_path: p.path,
+          taken_at: p.taken_at ?? new Date().toISOString(),
+          gps_lat: p.lat,
+          gps_lng: p.lng,
+        })),
       );
-
-    if (upsertError) {
-      return json({ error: `Could not attach the load: ${upsertError.message}` }, 500);
+      if (proofError) {
+        console.error("attach-load: proof insert failed:", proofError.message);
+      }
+      return json({ success: true, load_id: delivered.id, delivered_at: delivered.delivered_at });
     }
 
-    return json({ success: true });
+    // attach
+    if (!loadReference) {
+      return json({ error: "A load reference is required." }, 400);
+    }
+    if (!carrierName) {
+      return json({ error: "The customer / carrier is required." }, 400);
+    }
+    // Optional booked times entered by the driver (migration 065).
+    // Ignored if unparsable rather than refused, so the load still
+    // saves even if the driver mistyped a date.
+    const parseIso = (v: unknown): string | null => {
+      if (typeof v !== "string" || !v.trim()) return null;
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? null : d.toISOString();
+    };
+    // Optional evidence at load start (migration 077): a cargo photo, or the
+    // trailer-sealed tick when a photo isn't possible.
+    const ownPrefix = `${shift.organization_id}/${callerId}/`;
+    const cargoPath = typeof body.cargo_photo_path === "string" && body.cargo_photo_path.startsWith(ownPrefix)
+      ? body.cargo_photo_path
+      : null;
+    const trailerSealed = body.trailer_sealed === true;
+    const bookedDeparture = parseIso(body.booked_departure_at);
+    const bookedArrival = parseIso(body.booked_delivery_at);
+    const { data: created, error: insertError } = await admin
+      .from("shift_loads")
+      .insert({
+        shift_id: shiftId,
+        load_reference: loadReference,
+        carrier_name: carrierName,
+        booked_departure_at: bookedDeparture,
+        booked_delivery_at: bookedArrival,
+        cargo_photo_path: cargoPath,
+        trailer_sealed: trailerSealed,
+      })
+      .select("id")
+      .single();
+    if (insertError) {
+      return json({ error: `Could not attach the load: ${insertError.message}` }, 500);
+    }
+    return json({ success: true, load_id: created.id });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("attach-load error:", message);

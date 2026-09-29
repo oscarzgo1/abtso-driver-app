@@ -17,7 +17,7 @@ export function SectionHeader({
 }: SectionHeaderProps) {
   const alignClass = align === "center" ? "text-center items-center mx-auto" : "text-left items-start";
   const subtitleColor = tone === "dark" ? "text-white/70" : "text-charcoal-light";
-  const kickerColor = tone === "dark" ? "text-white/80" : "text-brand-red";
+  const kickerColor = "text-brand-red";
 
   return (
     <div className={`flex max-w-2xl flex-col gap-3 ${alignClass}`}>

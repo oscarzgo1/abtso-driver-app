@@ -44,6 +44,22 @@ interface VehicleRow {
   is_vor: boolean;
   is_active: boolean;
   notes: string | null;
+  mot_due_date?: string | null;
+  tax_due_date?: string | null;
+  insurance_expiry_date?: string | null;
+}
+
+type LegalDates = Pick<VehicleRow, 'mot_due_date' | 'tax_due_date' | 'insurance_expiry_date'>;
+
+/** Expired MOT / tax / insurance (migration 063) — what makes the driver
+ *  app demand a signed acceptance before the unit is taken. */
+function expiredLegalItems(v: VehicleRow): string[] {
+  const today = new Date().toISOString().slice(0, 10);
+  const out: string[] = [];
+  if (v.mot_due_date && v.mot_due_date < today) out.push('MOT');
+  if (v.tax_due_date && v.tax_due_date < today) out.push('Road tax');
+  if (v.insurance_expiry_date && v.insurance_expiry_date < today) out.push('Insurance');
+  return out;
 }
 
 const INSPECTION_TYPE_LABELS: Record<string, string> = {
@@ -176,9 +192,20 @@ interface AssetRowProps {
   defect: CriticalDefectInfo | undefined;
   expanded: boolean;
   onToggle: () => void;
+  onSaveLegalDates: (vehicleId: string, dates: LegalDates) => Promise<void>;
 }
 
-function AssetRow({ vehicle, status, defect, expanded, onToggle }: AssetRowProps) {
+function AssetRow({ vehicle, status, defect, expanded, onToggle, onSaveLegalDates }: AssetRowProps) {
+  const expiredLegal = expiredLegalItems(vehicle);
+  const [legal, setLegal] = useState<LegalDates>({
+    mot_due_date: vehicle.mot_due_date ?? null,
+    tax_due_date: vehicle.tax_due_date ?? null,
+    insurance_expiry_date: vehicle.insurance_expiry_date ?? null,
+  });
+  const [savingLegal, setSavingLegal] = useState(false);
+  const legalChanged = legal.mot_due_date !== (vehicle.mot_due_date ?? null)
+    || legal.tax_due_date !== (vehicle.tax_due_date ?? null)
+    || legal.insurance_expiry_date !== (vehicle.insurance_expiry_date ?? null);
   const dueLabel = vehicle.inspection_due_date ? new Date(vehicle.inspection_due_date).toLocaleDateString('en-GB') : '—';
   const registration = vehicle.vehicle_number.toUpperCase();
   const operational = operationalStatusDisplay(vehicle, status, defect);
@@ -214,6 +241,11 @@ function AssetRow({ vehicle, status, defect, expanded, onToggle }: AssetRowProps
             </span>
             {operational.secondary && (
               <span className="text-xs text-muted" style={{ display: 'block', marginTop: '2px' }}>{operational.secondary}</span>
+            )}
+            {expiredLegal.length > 0 && (
+              <span className="text-xs font-bold" style={{ display: 'block', marginTop: '2px', color: '#CC0000' }}>
+                {expiredLegal.join(', ')} expired — not road legal
+              </span>
             )}
           </span>
 
@@ -265,6 +297,39 @@ function AssetRow({ vehicle, status, defect, expanded, onToggle }: AssetRowProps
                 <p className="text-xs font-bold text-muted mb-4" style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>Due Date</p>
                 <p className="font-mono text-primary m-0">{dueLabel}</p>
               </div>
+              {([
+                ['mot_due_date', 'MOT due'],
+                ['tax_due_date', 'Road tax due'],
+                ['insurance_expiry_date', 'Insurance expires'],
+              ] as const).map(([key, label]) => (
+                <div key={key}>
+                  <p className="text-xs font-bold text-muted mb-4" style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</p>
+                  <input
+                    type="date"
+                    className="input-field"
+                    style={{ width: '100%', padding: '6px 8px', fontSize: '12.5px' }}
+                    value={legal[key] ?? ''}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => setLegal(l => ({ ...l, [key]: e.target.value || null }))}
+                  />
+                </div>
+              ))}
+              {legalChanged && (
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={savingLegal}
+                    style={{ padding: '7px 14px', fontSize: '12px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }}
+                    onClick={async () => {
+                      setSavingLegal(true);
+                      try { await onSaveLegalDates(vehicle.id, legal); } finally { setSavingLegal(false); }
+                    }}
+                  >
+                    {savingLegal ? 'Saving…' : 'Save road-legal dates'}
+                  </button>
+                </div>
+              )}
               <div style={{ gridColumn: '1 / -1' }}>
                 <p className="text-xs font-bold text-muted mb-4" style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>Notes</p>
                 <p className="text-secondary m-0">{vehicle.notes || 'No notes on this asset.'}</p>
@@ -295,6 +360,16 @@ export default function FleetRoadworthiness({ organizationId, onAlertCountChange
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isAssetModalOpen, setIsAssetModalOpen] = useState(false);
+
+  const saveLegalDates = async (vehicleId: string, dates: LegalDates) => {
+    if (isMockMode || !supabase) return;
+    const { error: updateError } = await supabase.from('vehicles').update(dates).eq('id', vehicleId);
+    if (updateError) {
+      setError(updateError.message);
+      return;
+    }
+    setVehicles(prev => prev.map(v => (v.id === vehicleId ? { ...v, ...dates } : v)));
+  };
 
   const loadVehicles = useCallback(async () => {
     if (isMockMode || !supabase || !organizationId) return;
@@ -607,6 +682,7 @@ export default function FleetRoadworthiness({ organizationId, onAlertCountChange
                   defect={defect}
                   expanded={expandedId === v.id}
                   onToggle={() => setExpandedId(prev => (prev === v.id ? null : v.id))}
+                  onSaveLegalDates={saveLegalDates}
                 />
               </div>
             ))}

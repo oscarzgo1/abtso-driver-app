@@ -41,4 +41,4 @@ You can ask to see, correct, or ask about deleting your data — start with your
 
 ## Questions about the app itself
 
-**[INSERT contact email]**
+**privacy@tachyo.co.uk**

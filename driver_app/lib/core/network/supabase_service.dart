@@ -86,14 +86,76 @@ class SupabaseService {
 
     try {
       final cleanCompanyCode = companyCode.trim().toLowerCase();
+      final cleanDriverIdUpper = driverId.trim().toUpperCase();
       final email = '${driverId.trim().toLowerCase()}@$cleanCompanyCode.driver.internal';
+
+      // Lock-out gate (migration 065). Refuse to try the password when
+      // the account is locked so a stubborn attacker can't count wrong
+      // PINs by pressing sign-in in a loop.
+      try {
+        final lock = await client.rpc('driver_lock_state', params: {'p_driver_id': cleanDriverIdUpper});
+        final rows = (lock is List) ? lock : const [];
+        if (rows.isNotEmpty) {
+          final untilStr = rows.first['locked_until']?.toString();
+          if (untilStr != null && untilStr.isNotEmpty) {
+            final until = DateTime.tryParse(untilStr);
+            if (until != null && until.isAfter(DateTime.now())) {
+              final mins = ((until.difference(DateTime.now()).inSeconds + 59) ~/ 60).clamp(1, 999);
+              return {'success': false, 'error': 'Too many wrong PINs. Try again in $mins minute${mins == 1 ? '' : 's'}. If you\'ve forgotten it, tap "Forgot PIN".'};
+            }
+          }
+        }
+      } catch (_) {
+        // Non-fatal: fall through, the real auth call still guards.
+      }
+
       final response = await client.auth.signInWithPassword(
         email: email,
         password: pin.trim(),
-      );
+      ).catchError((e) {
+        return AuthResponse();
+      });
 
       final session = response.session;
-      if (session != null) {
+      if (session == null) {
+        // Wrong PIN — record the failure and return a shaped lock-out
+        // response, then keep the "wrong id or PIN" wording for the app.
+        try {
+          final driverRow = await client
+              .from('drivers')
+              .select('id, pin_status')
+              .eq('driver_id', cleanDriverIdUpper)
+              .maybeSingle();
+          if (driverRow != null && driverRow['pin_status'] == 'pending') {
+            return {'success': false, 'pin_pending': true, 'error': "Your PIN isn't set up yet. Tap \"I have an activation code\" below."};
+          }
+          if (driverRow != null) {
+            final state = await client.rpc('register_pin_failure', params: {'p_driver_id': driverRow['id']});
+            final rows = (state is List) ? state : const [];
+            final row = rows.isNotEmpty ? rows.first as Map : {};
+            final untilStr = row['locked_until']?.toString();
+            if (untilStr != null && untilStr.isNotEmpty) {
+              final until = DateTime.tryParse(untilStr);
+              if (until != null) {
+                final mins = ((until.difference(DateTime.now()).inSeconds + 59) ~/ 60).clamp(1, 999);
+                return {'success': false, 'error': 'Too many wrong PINs. Try again in $mins minute${mins == 1 ? '' : 's'}. If you\'ve forgotten it, tap "Forgot PIN".'};
+              }
+            }
+            final remaining = row['attempts_remaining'];
+            if (remaining is int && remaining > 0 && remaining <= 3) {
+              return {'success': false, 'error': 'Wrong PIN. $remaining attempt${remaining == 1 ? '' : 's'} before this account is locked.'};
+            }
+          }
+        } catch (_) {}
+        return {'success': false, 'error': 'Wrong Driver ID or PIN.'};
+      }
+
+      // Successful sign-in — clear the lock-out counter.
+      try {
+        await client.rpc('clear_pin_failures', params: {'p_driver_id': session.user.id});
+      } catch (_) {}
+
+      {
         final driverUuid = session.user.id;
 
         // Fetch driver profile
@@ -153,10 +215,6 @@ class SupabaseService {
           },
         };
       }
-      return {
-        'success': false,
-        'error': 'Authentication failed.',
-      };
     } on AuthException catch (e) {
       debugPrint('AUTH EXCEPTION: ${e.message}');
       return {
@@ -172,6 +230,88 @@ class SupabaseService {
     }
   }
 
+  /// Checks an activation code (migration 065). Returns
+  /// `{success: true}` when the code is currently valid, so the app can
+  /// show the "Choose your PIN" screen without using the code up.
+  static Future<Map<String, dynamic>> verifyActivationCode({
+    required String driverId,
+    required String code,
+  }) async {
+    if (isMockMode) return {'success': true};
+    try {
+      final response = await client.functions.invoke('driver-activate', body: {
+        'action': 'verify',
+        'driver_id': driverId,
+        'code': code,
+      });
+      final data = response.data;
+      if (data is Map && data['error'] != null) return {'success': false, 'error': data['error']};
+      return {'success': true};
+    } on FunctionException catch (e) {
+      final details = e.details;
+      final message = (details is Map && details['error'] != null) ? details['error'].toString() : (e.reasonPhrase ?? 'That activation code isn\'t valid.');
+      return {'success': false, 'error': message};
+    } catch (e) {
+      return {'success': false, 'error': 'Could not check the code — try again.'};
+    }
+  }
+
+  /// Consumes the activation code and sets the driver's chosen PIN.
+  static Future<Map<String, dynamic>> setPinFromActivationCode({
+    required String driverId,
+    required String code,
+    required String pin,
+  }) async {
+    if (isMockMode) return {'success': true};
+    try {
+      final response = await client.functions.invoke('driver-activate', body: {
+        'action': 'set_pin',
+        'driver_id': driverId,
+        'code': code,
+        'pin': pin,
+      });
+      final data = response.data;
+      if (data is Map && data['error'] != null) return {'success': false, 'error': data['error']};
+      return {'success': true};
+    } on FunctionException catch (e) {
+      final details = e.details;
+      final message = (details is Map && details['error'] != null) ? details['error'].toString() : (e.reasonPhrase ?? 'Could not save your PIN.');
+      return {'success': false, 'error': message};
+    } catch (e) {
+      return {'success': false, 'error': 'Could not save your PIN — check your signal and try again.'};
+    }
+  }
+
+  /// Driver's own "I forgot my PIN". Just files a request in the admin
+  /// Alert Panel — the driver still needs a fresh activation code before
+  /// they can sign in. Requires a temporary auth session, so we sign in
+  /// with a special anonymous handshake first. In practice we call this
+  /// from the PIN entry / activate screen when the driver isn't signed
+  /// in, so we fall back to writing directly through the anon key when
+  /// there's no session.
+  static Future<Map<String, dynamic>> requestPinReset({required String driverId}) async {
+    if (isMockMode) return {'success': true};
+    try {
+      // Uses driver-activate as a stateless entry: it doesn't need a
+      // valid activation code to receive a "forgot" ping (see the
+      // function's `forgot` action). Falls back to a direct write only
+      // if the driver already has a session.
+      final response = await client.functions.invoke('driver-activate', body: {
+        'action': 'forgot',
+        'driver_id': driverId,
+      });
+      final data = response.data;
+      if (data is Map && data['error'] != null) return {'success': false, 'error': data['error']};
+      return {'success': true};
+    } on FunctionException catch (e) {
+      final details = e.details;
+      final message = (details is Map && details['error'] != null) ? details['error'].toString() : (e.reasonPhrase ?? 'Could not send the reset request.');
+      return {'success': false, 'error': message};
+    } catch (e) {
+      return {'success': false, 'error': 'Could not send the reset request — check your signal.'};
+    }
+  }
+
   /// Sign out the current driver
   static Future<void> signOut() async {
     if (isMockMode) {
@@ -183,50 +323,48 @@ class SupabaseService {
     await client.auth.signOut();
   }
 
-  /// Update driver's PIN in Supabase Auth & drivers table
+  /// Change PIN — used by the driver's own Settings screen. Signed-in
+  /// drivers only, no activation code needed. Runs the same easy-PIN
+  /// check as the server so 123456 / 111111 / 121212 etc. are refused
+  /// consistently (migration 065).
   static Future<Map<String, dynamic>> updateDriverPin({
     required String driverIdOrUuid,
     required String newPin,
   }) async {
-    if (isMockMode) {
-      return {'success': true};
+    if (isMockMode) return {'success': true};
+
+    final cleanPin = newPin.trim();
+    if (!RegExp(r'^\d{6}$').hasMatch(cleanPin)) {
+      return {'success': false, 'error': 'Your PIN must be 6 digits.'};
+    }
+    try {
+      final easy = await client.rpc('is_pin_easy', params: {'p_pin': cleanPin});
+      if (easy == true) {
+        return {'success': false, 'error': 'That PIN is too easy to guess. Pick a mix of digits.'};
+      }
+    } catch (_) {
+      // If the check can't run, fall through — the server enforces on
+      // write anyway.
     }
 
     try {
-      final cleanPin = newPin.trim();
-
-      // 1. Update Supabase Auth user password directly (used for login)
       final user = client.auth.currentUser;
-      if (user != null) {
-        await client.auth.updateUser(
-          UserAttributes(password: cleanPin),
-        );
-      }
+      if (user == null) return {'success': false, 'error': 'You need to sign in again before changing your PIN.'};
 
-      // 2. Also sync with backend edge function / pin_hash column if present
-      try {
-        await client.functions.invoke('create-driver', body: {
-          'action': 'update',
-          'id': driverIdOrUuid,
-          'pin': cleanPin,
-        });
-      } catch (fnErr) {
-        debugPrint('create-driver edge function update (non-fatal): $fnErr');
-      }
+      // Supabase Auth password — used by signInWithPassword.
+      await client.auth.updateUser(UserAttributes(password: cleanPin));
 
-      try {
-        await client
-            .from('drivers')
-            .update({'pin_hash': cleanPin})
-            .or('id.eq.$driverIdOrUuid,driver_id.ilike.$driverIdOrUuid');
-      } catch (dbErr) {
-        debugPrint('pin_hash table update (non-fatal): $dbErr');
-      }
+      // pin_hash is behind RLS admins own, so the driver's own change
+      // goes through a SECURITY DEFINER function that writes the row
+      // and clears any lock-out state (migration 065).
+      await client.rpc('change_own_pin', params: {'p_new_pin': cleanPin});
 
       return {'success': true};
+    } on PostgrestException catch (e) {
+      return {'success': false, 'error': e.message};
     } catch (e) {
       debugPrint('updateDriverPin error: $e');
-      return {'success': false, 'error': e.toString()};
+      return {'success': false, 'error': 'Could not save your PIN. Try again.'};
     }
   }
 
@@ -401,6 +539,7 @@ class SupabaseService {
           'sat_rate': 17.00,
           'sun_rate': 18.00,
           'rate_profile': _mockRateProfile,
+          'profession': 'driver',
         },
       };
     }
@@ -444,6 +583,7 @@ class SupabaseService {
             'agency_name': response['agency_name'],
             'rate_profile': response['rate_profile'] ?? 'LWR',
             'organization_id': response['organization_id'],
+            'profession': response['profession'],
           },
         };
       }
@@ -577,7 +717,7 @@ class SupabaseService {
     try {
       final response = await client
           .from('vehicles')
-          .select('id, vehicle_number, vehicle_type, fuel_tank_capacity_litres')
+          .select('id, vehicle_number, vehicle_type, fuel_tank_capacity_litres, is_vor, inspection_due_date, mot_due_date, tax_due_date, insurance_expiry_date')
           .eq('organization_id', organizationId)
           .eq('is_active', true)
           .order('vehicle_type')
@@ -645,6 +785,7 @@ class SupabaseService {
     required String driverId,
     required String vehicleId,
     String? trailerId,
+    String? customTrailerNumber,
     String? shiftId,
     required String checkType, // 'start_of_shift' | 'end_of_shift'
     required DateTime startedAt,
@@ -664,6 +805,8 @@ class SupabaseService {
             'driver_id': driverId,
             'vehicle_id': vehicleId,
             if (trailerId != null) 'trailer_id': trailerId,
+            if (trailerId == null && customTrailerNumber != null && customTrailerNumber.trim().isNotEmpty)
+              'custom_trailer_number': customTrailerNumber.trim().toUpperCase(),
             if (shiftId != null) 'shift_id': shiftId,
             'check_type': checkType,
             'started_at': startedAt.toUtc().toIso8601String(),
@@ -728,6 +871,228 @@ class SupabaseService {
     }
   }
 
+  /// The signed-in driver's own walk-around checks, newest first —
+  /// submitted checks and saved drafts — for their in-app history.
+  static Future<List<Map<String, dynamic>>> fetchMyWalkaroundChecks({int limit = 60}) async {
+    final driverId = currentDriverId;
+    if (isMockMode || driverId == null) return [];
+    try {
+      final rows = await client
+          .from('walkaround_checks')
+          .select('id, shift_id, check_type, started_at, completed_at, duration_seconds, overall_result, defect_note, items, custom_trailer_number, vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number)')
+          .eq('driver_id', driverId)
+          .order('started_at', ascending: false)
+          .limit(limit);
+      return List<Map<String, dynamic>>.from(rows as List);
+    } catch (e) {
+      debugPrint('fetchMyWalkaroundChecks failed: $e');
+      rethrow;
+    }
+  }
+
+  /// Dispatched loads (migration 073) for the signed-in driver. Throws on a
+  /// network/server failure so the caller can fall back to its offline
+  /// cache instead of silently showing "no loads".
+  static Future<List<Map<String, dynamic>>> fetchDispatchLoads({required List<String> statuses, int limit = 100}) async {
+    final driverId = currentDriverId;
+    if (isMockMode || driverId == null) return [];
+    final rows = await client
+        .from('dispatch_loads')
+        .select('id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at')
+        .eq('driver_id', driverId)
+        .inFilter('status', statuses)
+        .order('created_at', ascending: false)
+        .limit(limit);
+    return List<Map<String, dynamic>>.from(rows as List);
+  }
+
+  /// Accepts an assigned load (assigned → in_progress) with the odometer
+  /// at coupling and the optional cargo photo / trailer-sealed tick
+  /// (migration 077). Returns null on success, or the server's message.
+  static Future<String?> acceptDispatchLoad(String id, int odometer, {String? cargoPhotoPath, bool trailerSealed = false}) async {
+    if (isMockMode) return null;
+    try {
+      await client.rpc('accept_dispatch_load', params: {
+        'p_id': id,
+        'p_odometer': odometer,
+        'p_cargo_photo_path': cargoPhotoPath,
+        'p_trailer_sealed': trailerSealed,
+      });
+      return null;
+    } on PostgrestException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'No connection — try again when you have signal.';
+    }
+  }
+
+  /// Completes an in-progress load with the ending odometer and one or
+  /// more typed proof photos (migration 077). The server refuses without
+  /// at least one.
+  static Future<String?> completeDispatchLoad(
+    String id,
+    int odometer, {
+    required List<Map<String, dynamic>> proofs,
+    String? notes,
+  }) async {
+    if (isMockMode) return null;
+    try {
+      await client.rpc('complete_dispatch_load', params: {
+        'p_id': id,
+        'p_odometer': odometer,
+        'p_proofs': proofs,
+        'p_notes': notes,
+      });
+      return null;
+    } on PostgrestException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'No connection — try again when you have signal.';
+    }
+  }
+
+  /// The signed-in driver's own fuel/AdBlue receipts since [since] —
+  /// used by the History tab's fuel progress ring. RLS already limits a
+  /// driver to their own rows (fuel_receipts_driver_select), same as
+  /// walkaround checks above.
+  static Future<List<Map<String, dynamic>>> fetchMyFuelReceipts({required DateTime since}) async {
+    final driverId = currentDriverId;
+    if (isMockMode || driverId == null) return [];
+    try {
+      final rows = await client
+          .from('fuel_receipts')
+          .select('id, liters, created_at, is_full_tank, calculated_mpg, theft_flag')
+          .eq('driver_id', driverId)
+          .gte('created_at', since.toIso8601String())
+          .order('created_at', ascending: false);
+      return List<Map<String, dynamic>>.from(rows as List);
+    } catch (e) {
+      debugPrint('fetchMyFuelReceipts failed: $e');
+      return [];
+    }
+  }
+
+  /// Driver's signed acceptance of responsibility for taking a unit or
+  /// trailer that isn't roadworthy (migration 063).
+  static Future<bool> recordVehicleRiskAcknowledgement({
+    required String vehicleId,
+    required List<String> issues,
+    required String signOffContext,
+    required String signerName,
+    required String signatureSvg,
+    String? shiftId,
+  }) async {
+    final driverId = currentDriverId;
+    if (isMockMode) return true;
+    if (driverId == null) return false;
+    try {
+      await client.from('vehicle_risk_acknowledgements').insert({
+        'driver_id': driverId,
+        'vehicle_id': vehicleId,
+        if (shiftId != null) 'shift_id': shiftId,
+        'issues': issues,
+        'context': signOffContext,
+        'signer_name': signerName,
+        'signature_svg': signatureSvg,
+      });
+      return true;
+    } catch (e) {
+      debugPrint('recordVehicleRiskAcknowledgement failed: $e');
+      return false;
+    }
+  }
+
+  /// Feature keys the employee's company plan includes (migration 067),
+  /// or null if they can't be fetched — callers then show everything and
+  /// let the server enforce the plan.
+  static Future<Set<String>?> fetchFeatureKeys() async {
+    if (isMockMode) return null;
+    try {
+      final data = await client.rpc('my_entitlements');
+      if (data is Map && data['features'] is List) {
+        return {for (final f in data['features'] as List) f.toString()};
+      }
+      return null;
+    } catch (e) {
+      debugPrint('fetchFeatureKeys failed: $e');
+      return null;
+    }
+  }
+
+  /// The signed-in employee's own holidays and holiday requests
+  /// (migration 061) — pending, approved, declined and cancelled.
+  static Future<List<Map<String, dynamic>>> fetchMyHolidays() async {
+    final driverId = currentDriverId;
+    if (isMockMode || driverId == null) return [];
+    final rows = await client
+        .from('employee_holidays')
+        .select('id, start_date, end_date, note, status, leave_type, review_note, reviewed_at, created_at, requested_by_driver')
+        .eq('driver_id', driverId)
+        .order('start_date', ascending: false)
+        .limit(120);
+    return List<Map<String, dynamic>>.from(rows as List);
+  }
+
+  static String _isoDate(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  /// Sends a holiday request for admin approval. Validation (past dates,
+  /// overlaps, length) happens server-side in request_holiday().
+  static Future<Map<String, dynamic>> requestHoliday({
+    required DateTime start,
+    required DateTime end,
+    required String leaveType,
+    String? note,
+  }) async {
+    if (isMockMode) return {'success': true};
+    try {
+      await client.rpc('request_holiday', params: {
+        'p_start': _isoDate(start),
+        'p_end': _isoDate(end),
+        'p_leave_type': leaveType,
+        'p_note': (note == null || note.trim().isEmpty) ? null : note.trim(),
+      });
+      return {'success': true};
+    } on PostgrestException catch (e) {
+      return {'success': false, 'error': e.message};
+    } catch (e) {
+      debugPrint('requestHoliday failed: $e');
+      return {'success': false, 'error': 'Could not send your request — check your connection and try again.'};
+    }
+  }
+
+  /// Withdraws a request that hasn't been decided yet.
+  static Future<Map<String, dynamic>> cancelHolidayRequest(String id) async {
+    if (isMockMode) return {'success': true};
+    try {
+      await client.rpc('cancel_holiday_request', params: {'p_id': id});
+      return {'success': true};
+    } on PostgrestException catch (e) {
+      return {'success': false, 'error': e.message};
+    } catch (e) {
+      debugPrint('cancelHolidayRequest failed: $e');
+      return {'success': false, 'error': 'Could not cancel the request — check your connection and try again.'};
+    }
+  }
+
+  /// Which walk-around checks ('start_of_shift' / 'end_of_shift') have
+  /// been fully submitted (not just saved as a draft) for this shift —
+  /// drives the "complete your skipped check" quick action.
+  static Future<Set<String>> fetchCompletedWalkaroundTypes(String shiftId) async {
+    if (isMockMode) return <String>{};
+    try {
+      final rows = await client
+          .from('walkaround_checks')
+          .select('check_type')
+          .eq('shift_id', shiftId)
+          .not('completed_at', 'is', null);
+      return {for (final r in rows as List) r['check_type'] as String};
+    } catch (e) {
+      debugPrint('fetchCompletedWalkaroundTypes failed: $e');
+      return <String>{};
+    }
+  }
+
   /// Uploads one fuel-receipt photo to the private "fuel-receipts"
   /// bucket (migration 047) — same private-bucket-with-signed-URL shape
   /// as uploadDefectPhoto above, not a public link.
@@ -767,6 +1132,11 @@ class SupabaseService {
   /// here never silently inflates anyone's numbers. liters is required
   /// by the caller (the mobile form enforces this before calling), cost
   /// is genuinely optional now that migration 049 dropped its NOT NULL.
+  ///
+  /// isFullTank (migration 070, defaults true — this fleet always brims)
+  /// tells the server-side calc_fuel_theft_flag trigger whether this row
+  /// is a valid comparison anchor: calculated_mpg/theft_flag/theft_reason
+  /// are computed and stored by that trigger, not here.
   static Future<bool> submitFuelReceipt({
     required String driverId,
     required String receiptPhotoPath,
@@ -781,9 +1151,10 @@ class SupabaseService {
     String? dashboardPhotoPath,
     double? gpsLat,
     double? gpsLng,
+    bool isFullTank = true,
   }) async {
     if (isMockMode) {
-      debugPrint('MOCK fuel receipt: $fuelType, ${liters}L, ${totalCost != null ? '£$totalCost' : 'no cost entered'} at ${vendor ?? 'unknown vendor'} for shift $shiftId, odometer $odometerMiles mi, GPS ($gpsLat, $gpsLng)');
+      debugPrint('MOCK fuel receipt: $fuelType, ${liters}L, ${totalCost != null ? '£$totalCost' : 'no cost entered'} at ${vendor ?? 'unknown vendor'} for shift $shiftId, odometer $odometerMiles mi, full tank: $isFullTank, GPS ($gpsLat, $gpsLng)');
       return true;
     }
 
@@ -802,11 +1173,38 @@ class SupabaseService {
         if (dashboardPhotoPath != null) 'dashboard_photo_path': dashboardPhotoPath,
         if (gpsLat != null) 'gps_lat': gpsLat,
         if (gpsLng != null) 'gps_lng': gpsLng,
+        'is_full_tank': isFullTank,
       });
       return true;
     } catch (e) {
       debugPrint('submitFuelReceipt failed: $e');
       return false;
+    }
+  }
+
+  /// The most recent logged odometer reading for this vehicle, across
+  /// any driver's fuel receipts (full-tank or not — the odometer itself
+  /// must still be monotonic regardless). Used by the fuel log form to
+  /// reject a reading that's gone backwards before it's even submitted,
+  /// rather than only catching it later in the admin audit view. Returns
+  /// null if the vehicle has no prior receipt with an odometer reading,
+  /// or on any error — callers treat null as "nothing to compare against"
+  /// rather than blocking the submission.
+  static Future<int?> fetchLastOdometerForVehicle(String vehicleId) async {
+    if (isMockMode) return null;
+    try {
+      final rows = await client
+          .from('fuel_receipts')
+          .select('odometer_miles')
+          .eq('vehicle_id', vehicleId)
+          .not('odometer_miles', 'is', null)
+          .order('odometer_miles', ascending: false)
+          .limit(1);
+      if (rows.isEmpty) return null;
+      return rows.first['odometer_miles'] as int?;
+    } catch (e) {
+      debugPrint('fetchLastOdometerForVehicle failed: $e');
+      return null;
     }
   }
 
@@ -887,6 +1285,10 @@ class SupabaseService {
     required String shiftId,
     required String loadReference,
     String? carrierName,
+    DateTime? bookedDepartureAt,
+    DateTime? bookedDeliveryAt,
+    String? cargoPhotoPath,
+    bool trailerSealed = false,
   }) async {
     if (isMockMode) {
       debugPrint('MOCK load attached: $loadReference (${carrierName ?? 'no carrier'}) to shift $shiftId');
@@ -897,12 +1299,16 @@ class SupabaseService {
         'shift_id': shiftId,
         'load_reference': loadReference,
         if (carrierName != null && carrierName.trim().isNotEmpty) 'carrier_name': carrierName.trim(),
+        if (bookedDepartureAt != null) 'booked_departure_at': bookedDepartureAt.toUtc().toIso8601String(),
+        if (bookedDeliveryAt != null) 'booked_delivery_at': bookedDeliveryAt.toUtc().toIso8601String(),
+        if (cargoPhotoPath != null) 'cargo_photo_path': cargoPhotoPath,
+        'trailer_sealed': trailerSealed,
       });
       final data = response.data;
       if (data is Map && data['error'] != null) {
         return {'success': false, 'error': data['error'].toString()};
       }
-      return {'success': true};
+      return {'success': true, 'load_id': data is Map ? data['load_id'] : null};
     } on FunctionException catch (e) {
       final details = e.details;
       final message = (details is Map && details['error'] != null) ? details['error'].toString() : e.reasonPhrase ?? 'Could not attach the load.';
@@ -911,6 +1317,87 @@ class SupabaseService {
     } catch (e) {
       debugPrint('attachLoadReference failed: $e');
       return {'success': false, 'error': 'Could not attach the load — check your connection and try again.'};
+    }
+  }
+
+  /// The shift's load + delivery state and the org's load reminder
+  /// threshold, via the same attach-load function (never a direct read
+  /// of shift_revenue). Returns null when it can't be fetched.
+  static Future<Map<String, dynamic>?> fetchLoadStatus(String shiftId) async {
+    if (isMockMode) {
+      return {'load_reference': null, 'carrier_name': null, 'delivered_at': null, 'reminder_minutes': 30};
+    }
+    try {
+      final response = await client.functions.invoke('attach-load', body: {'action': 'status', 'shift_id': shiftId});
+      final data = response.data;
+      if (data is Map && data['success'] == true) return Map<String, dynamic>.from(data);
+      return null;
+    } catch (e) {
+      debugPrint('fetchLoadStatus failed: $e');
+      return null;
+    }
+  }
+
+  /// Uploads one delivery photo (paperwork or load evidence) to the
+  /// private "delivery-photos" bucket (migration 060) — same
+  /// `<org>/<driver>/<file>` shape as uploadWalkaroundPhoto.
+  static Future<String?> uploadDeliveryPhoto({
+    required String organizationId,
+    required String driverId,
+    required Uint8List bytes,
+    required String fileName,
+    required String kind, // 'paperwork' | 'evidence'
+  }) async {
+    if (isMockMode) {
+      debugPrint('MOCK delivery photo upload ($kind): $fileName');
+      return 'mock/$fileName';
+    }
+    try {
+      final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : 'jpg';
+      final path = '$organizationId/$driverId/${DateTime.now().millisecondsSinceEpoch}_$kind.$ext';
+      await client.storage.from('delivery-photos').uploadBinary(
+            path,
+            bytes,
+            fileOptions: FileOptions(contentType: _imageMimeType(ext)),
+          );
+      lastUploadError = null;
+      return path;
+    } catch (e) {
+      debugPrint('uploadDeliveryPhoto failed: $e');
+      lastUploadError = e.toString();
+      return null;
+    }
+  }
+
+  /// Confirms the shift's attached load was delivered (migration 059),
+  /// with one or more typed proof photos and optional notes (migration 077).
+  static Future<Map<String, dynamic>> confirmLoadDelivered(
+    String shiftId, {
+    String? loadId,
+    required List<Map<String, dynamic>> proofs,
+    String? notes,
+  }) async {
+    if (isMockMode) return {'success': true, 'delivered_at': DateTime.now().toIso8601String()};
+    try {
+      final response = await client.functions.invoke('attach-load', body: {
+        'action': 'deliver',
+        'shift_id': shiftId,
+        if (loadId != null) 'load_id': loadId,
+        'proofs': proofs,
+        if (notes != null && notes.isNotEmpty) 'notes': notes,
+      });
+      final data = response.data;
+      if (data is Map && data['error'] != null) {
+        return {'success': false, 'error': data['error'].toString()};
+      }
+      return {'success': true, 'delivered_at': data is Map ? data['delivered_at'] : null};
+    } on FunctionException catch (e) {
+      final details = e.details;
+      final message = (details is Map && details['error'] != null) ? details['error'].toString() : e.reasonPhrase ?? 'Could not confirm delivery.';
+      return {'success': false, 'error': message};
+    } catch (e) {
+      debugPrint('confirmLoadDelivered failed: $e');
+      return {'success': false, 'error': 'Could not confirm delivery — check your connection and try again.'};
     }
   }
 
@@ -925,6 +1412,7 @@ class SupabaseService {
     String? vehicleId,
     bool clearVehicle = false,
     String? trailerId,
+    String? customTrailerNumber,
     bool clearTrailer = false,
   }) async {
     if (isMockMode) {
@@ -937,10 +1425,17 @@ class SupabaseService {
     } else if (vehicleId != null) {
       update['vehicle_id'] = vehicleId;
     }
+    // A fleet trailer and a typed (non-fleet) trailer number are
+    // mutually exclusive — setting one always clears the other.
     if (clearTrailer) {
       update['trailer_id'] = null;
+      update['custom_trailer_number'] = null;
     } else if (trailerId != null) {
       update['trailer_id'] = trailerId;
+      update['custom_trailer_number'] = null;
+    } else if (customTrailerNumber != null && customTrailerNumber.trim().isNotEmpty) {
+      update['trailer_id'] = null;
+      update['custom_trailer_number'] = customTrailerNumber.trim().toUpperCase();
     }
     if (update.isEmpty) return true;
     try {
@@ -1007,6 +1502,38 @@ class SupabaseService {
       return List<Map<String, dynamic>>.from(response);
     } catch (e) {
       debugPrint('Error fetching driver shifts: $e');
+      return [];
+    }
+  }
+
+  /// Raw GPS pings (shift_id, speed, recorded_at) for this driver over a
+  /// date range — the same telemetry source the admin dashboard's Driver
+  /// Hours page classifies into driving/stationary time. The History
+  /// tab's Hours table groups these by shift, then by calendar day, to
+  /// work out actual telemetry-derived driving time, as distinct from a
+  /// shift's total logged (on-duty) hours.
+  static Future<List<Map<String, dynamic>>> fetchDriverGpsPings({
+    required String driverId,
+    required DateTime startDate,
+    required DateTime endDate,
+  }) async {
+    final startRange = DateTime(startDate.year, startDate.month, startDate.day, 0, 0, 0);
+    final endRange = DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59);
+
+    if (isMockMode) return [];
+
+    try {
+      final response = await client
+          .from('gps_locations')
+          .select('shift_id, speed, recorded_at')
+          .eq('driver_id', driverId)
+          .gte('recorded_at', startRange.toUtc().toIso8601String())
+          .lte('recorded_at', endRange.toUtc().toIso8601String())
+          .order('recorded_at', ascending: true);
+
+      return List<Map<String, dynamic>>.from(response);
+    } catch (e) {
+      debugPrint('Error fetching driver GPS pings: $e');
       return [];
     }
   }

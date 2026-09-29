@@ -22,7 +22,7 @@ If you are a driver using the Tachyo Driver App, **your employer or engager is t
 
 ### A1. Who we are
 
-**[INSERT REGISTERED COMPANY NAME] Ltd**, company number **[INSERT COMPANY NUMBER]**, registered office **[INSERT REGISTERED OFFICE ADDRESS]**, trading as Tachyo. Contact: **[INSERT: privacy@tachyo.co.uk or equivalent real inbox]**.
+**[INSERT REGISTERED COMPANY NAME] Ltd**, company number **[INSERT COMPANY NUMBER]**, registered office **[INSERT REGISTERED OFFICE ADDRESS]**, trading as Tachyo. Contact: **privacy@tachyo.co.uk**.
 
 ### A2. What we collect, and why
 
@@ -43,13 +43,13 @@ We use the following processors to run our own website and communications; each 
 
 - **Vercel** — website and application hosting.
 - **Supabase** — database, authentication, and hosting (EU West / London region).
-- **[INSERT: email delivery provider, e.g. Resend]** — delivering contact-form emails, once configured.
+- **Resend** — delivering contact-form emails, account invitations and weekly reports.
 
 We do not sell personal data, and do not share it with anyone for their own marketing purposes.
 
 ### A5. Your rights
 
-You can ask us to access, correct, delete, or restrict the personal data we hold about you as controller, or object to how we use it, by contacting **[INSERT contact email]**. You also have the right to complain to the UK Information Commissioner's Office (ico.org.uk) if you believe we have not handled your data properly.
+You can ask us to access, correct, delete, or restrict the personal data we hold about you as controller, or object to how we use it, by contacting **privacy@tachyo.co.uk**. You also have the right to complain to the UK Information Commissioner's Office (ico.org.uk) if you believe we have not handled your data properly.
 
 ---
 
@@ -98,4 +98,4 @@ We'll update this policy as the Services change, and will highlight material cha
 
 ## Contact
 
-**[INSERT: privacy@tachyo.co.uk or equivalent real inbox]**
+**privacy@tachyo.co.uk**
