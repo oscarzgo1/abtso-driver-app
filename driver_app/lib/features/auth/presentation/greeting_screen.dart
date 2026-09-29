@@ -18,7 +18,7 @@ import '../../../config/theme.dart';
 ///   0.36–0.50  suspension settle
 ///   0.36–0.64  "tachyo" letters rise in, red full stop drops
 ///   0.58–0.80  "Good morning, John" rises in
-///   0.84–1.00  composition lifts away, ink turns to the home background
+///   0.84–1.00  composition lifts away and fades into the home screen
 class GreetingScreen extends ConsumerStatefulWidget {
   const GreetingScreen({super.key});
 
@@ -92,7 +92,7 @@ class _GreetingScreenState extends ConsumerState<GreetingScreen> with SingleTick
     return PopScope(
       canPop: false,
       child: Scaffold(
-        backgroundColor: TachyoTheme.ink,
+        backgroundColor: Colors.white,
         body: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: _finish,
@@ -103,9 +103,9 @@ class _GreetingScreenState extends ConsumerState<GreetingScreen> with SingleTick
               final exit = _phase(t, 0.84, 1.0, Curves.easeInCubic);
 
               return AnnotatedRegion<SystemUiOverlayStyle>(
-                value: exit > 0.5 ? SystemUiOverlayStyle.dark : SystemUiOverlayStyle.light,
+                value: SystemUiOverlayStyle.dark,
                 child: ColoredBox(
-                  color: Color.lerp(TachyoTheme.ink, TachyoTheme.white, exit)!,
+                  color: Colors.white,
                   child: SizedBox.expand(
                     child: Opacity(
                       opacity: 1 - exit,
@@ -184,7 +184,7 @@ class _GreetingScreenState extends ConsumerState<GreetingScreen> with SingleTick
                 style: GoogleFonts.outfit(
                   fontSize: 21,
                   fontWeight: FontWeight.w500,
-                  color: Colors.white.withValues(alpha: 0.85),
+                  color: TachyoTheme.charcoal,
                   letterSpacing: -0.2,
                 ),
               ),

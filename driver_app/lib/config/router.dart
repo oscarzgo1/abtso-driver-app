@@ -16,7 +16,7 @@ final appRouter = GoRouter(
     GoRoute(
       path: '/greeting',
       name: 'greeting',
-      // The login screen's ink reveal / splash already matches the
+      // The login screen's reveal / splash already matches the
       // cinematic's first frame — a route transition would only add a seam.
       pageBuilder: (context, state) => NoTransitionPage(
         key: state.pageKey,

@@ -15,8 +15,10 @@ class TachyoTheme {
   static const Color surface     = Color(0xFFF5F5F5);   // card / input backgrounds
   static const Color border      = Color(0xFFE0E0E0);   // dividers / borders
   static const Color success     = brandRed;            // active shift / clocked-in (brand is red/white/black only)
-  static const Color ink         = Color(0xFF1A1A1A);   // deep brand surface — login header, entrance cinematic
-  static const Color inkLine     = Color(0xFF3A3A3A);   // road markings / hairlines drawn on [ink]
+  // Brand surfaces — login header, splash and entrance cinematic
+  static const Color brandSurfaceEdge = Color(0xFFF2F2F2); // header vignette edge / backdrop behind the login sheet
+  static const Color roadLine         = Color(0xFFD6D6D6); // road markings drawn on white
+  static const Color wordmark         = Color(0xFF111111); // "tachyo" letters, matching the logo's black
 
   // Legacy aliases (referenced in home_screen / main_layout)
   static const Color lightBg             = white;

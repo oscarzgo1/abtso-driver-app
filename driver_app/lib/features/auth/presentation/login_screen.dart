@@ -60,7 +60,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
   late final Animation<double> _shakeAnimation;
   late final AnimationController _introController; // header + sheet entrance
   late final AnimationController _roadController; // header lane markings
-  late final AnimationController _revealController; // ink circle after success
+  late final AnimationController _revealController; // red wash after success
 
   @override
   void initState() {
@@ -204,7 +204,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
   }
 
   /// The driver just signed in here: ✓ on the button, the button's circle
-  /// floods the screen in brand ink, and the cinematic picks up from there.
+  /// washes over the screen, fading to white, and the cinematic picks up from there.
   Future<void> _onSignedIn() async {
     if (_navigating) return;
     _navigating = true;
@@ -286,9 +286,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
         : (media.size.height * 0.34).clamp(230.0, 330.0);
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light,
+      value: SystemUiOverlayStyle.dark,
       child: Scaffold(
-        backgroundColor: TachyoTheme.ink,
+        backgroundColor: TachyoTheme.brandSurfaceEdge,
         body: Stack(
           children: [
             Column(
@@ -348,9 +348,18 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
           constraints: const BoxConstraints(maxWidth: 480),
           child: Container(
             constraints: const BoxConstraints.expand(),
-            decoration: const BoxDecoration(
+            // White on white: a soft upward shadow keeps the sheet's
+            // rounded edge readable against the header.
+            decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.07),
+                  blurRadius: 24,
+                  offset: const Offset(0, -6),
+                ),
+              ],
             ),
             child: SafeArea(
               top: false,
@@ -385,11 +394,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                       // Company Code — namespaces every driver ID by
                       // employer, since driver IDs are only unique within a
                       // single company.
-                      const _FieldLabel('Company code'),
+                      const _FieldLabel('Your company'),
                       TextFormField(
                         controller: _companyCodeController,
                         style: _fieldTextStyle,
-                        decoration: _inputDecoration(icon: Icons.apartment_outlined, hint: 'Your company code'),
+                        decoration: _inputDecoration(icon: Icons.apartment_outlined, hint: 'Company code'),
                         textCapitalization: TextCapitalization.none,
                         textInputAction: TextInputAction.next,
                         autocorrect: false,
@@ -397,7 +406,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                         onChanged: (_) => _clearAuthError(),
                         validator: (value) {
                           if (value == null || value.trim().isEmpty) {
-                            return 'Enter your company code';
+                            return 'Enter your company';
                           }
                           return null;
                         },
@@ -631,7 +640,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
   }
 
   /// Full-width red button that shrinks to a 56dp circle while signing in
-  /// (spinner), shows ✓ on success, and is the origin of the ink reveal.
+  /// (spinner), shows ✓ on success, and is the origin of the reveal.
   /// Until the terms are ticked it reads as a neutral hint, not a broken
   /// pale-red button.
   Widget _buildLoginButton(AuthState authState) {
@@ -792,7 +801,7 @@ class _ErrorBanner extends StatelessWidget {
   }
 }
 
-/// Dark brand band: lockup centred over slowly moving lane markings.
+/// Brand band: lockup centred over slowly moving lane markings.
 /// Collapses to a single-row lockup while the keyboard is open.
 class _LoginHeader extends StatelessWidget {
   final Animation<double> road;
@@ -812,7 +821,7 @@ class _LoginHeader extends StatelessWidget {
               gradient: RadialGradient(
                 center: Alignment(0, -0.1),
                 radius: 1.1,
-                colors: [Color(0xFF2A2A2A), TachyoTheme.ink],
+                colors: [Colors.white, TachyoTheme.brandSurfaceEdge],
               ),
             ),
           ),
@@ -861,9 +870,9 @@ class _BrandSplash extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.light,
+      value: SystemUiOverlayStyle.dark,
       child: Scaffold(
-        backgroundColor: TachyoTheme.ink,
+        backgroundColor: Colors.white,
         body: Center(
           child: ClipRRect(
             borderRadius: BorderRadius.circular(2),
@@ -871,7 +880,7 @@ class _BrandSplash extends StatelessWidget {
               width: 120,
               child: LinearProgressIndicator(
                 minHeight: 3,
-                backgroundColor: TachyoTheme.inkLine,
+                backgroundColor: TachyoTheme.roadLine,
                 valueColor: AlwaysStoppedAnimation<Color>(TachyoTheme.brandRed),
               ),
             ),
@@ -883,7 +892,7 @@ class _BrandSplash extends StatelessWidget {
 }
 
 /// Circle growing from the login button until it covers the screen, shifting
-/// from brand red (the button) to ink (the cinematic's first frame).
+/// from brand red (the button) to white (the cinematic's first frame).
 class _RevealPainter extends CustomPainter {
   final Offset origin;
   final double progress;
@@ -904,7 +913,7 @@ class _RevealPainter extends CustomPainter {
     final radius = 28 + (maxRadius - 28) * eased;
     final color = Color.lerp(
       TachyoTheme.brandRed,
-      TachyoTheme.ink,
+      Colors.white,
       Curves.easeOut.transform((progress * 2).clamp(0.0, 1.0)),
     )!;
     canvas.drawCircle(origin, radius, Paint()..color = color);

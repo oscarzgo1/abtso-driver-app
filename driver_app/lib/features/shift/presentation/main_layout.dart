@@ -7,14 +7,17 @@ import 'package:intl/intl.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import 'package:table_calendar/table_calendar.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../../config/theme.dart';
 import '../../../core/network/supabase_service.dart';
 import '../../../core/services/entrance_gate.dart';
+import 'earnings_export.dart';
 import 'home_screen.dart';
 import 'shift_provider.dart';
 import 'widgets/progress_ring.dart';
 import '../../dispatch/load_history_screen.dart';
 import '../../auth/presentation/auth_provider.dart';
 import '../../legal/presentation/legal_compliance_screen.dart';
+import 'dvsa_compliance.dart' as dvsa;
 
 class MainLayout extends ConsumerStatefulWidget {
   const MainLayout({super.key});
@@ -302,7 +305,8 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
   // pick a day, a week, or a whole month on the calendar and the rings
   // recompute for exactly that period, rather than being pinned to a
   // fixed "this week".
-  List<Map<String, dynamic>> _ringPeriodShifts = [];
+  // The period's own shifts are _shifts (same query) — only the baseline
+  // period and fuel receipts need fetching separately.
   List<Map<String, dynamic>> _ringBaselineShifts = [];
   List<Map<String, dynamic>> _ringPeriodFuel = [];
   bool _ringsLoading = false;
@@ -315,6 +319,15 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
   List<Map<String, dynamic>> _hoursGpsPings = [];
   bool _hoursLoading = false;
 
+  // ── DVSA compliance (regulatory standing, not the browsed range) ───
+  // Always a fixed rolling ~15-day window ending today, independent of
+  // whatever the calendar picker above is set to — "am I legal to keep
+  // driving" is a question about now, not about a historical range the
+  // driver happens to be browsing.
+  List<Map<String, dynamic>> _complianceShifts = [];
+  List<Map<String, dynamic>> _complianceGpsPings = [];
+  bool _complianceLoading = false;
+
   static DateTime _sundayOf(DateTime d) => DateTime(d.year, d.month, d.day).subtract(Duration(days: d.weekday % 7));
 
   @override
@@ -326,23 +339,58 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
     _startDate = DateTime(now.year, now.month, now.day).subtract(Duration(days: daysToSubtract));
     _endDate = _startDate.add(const Duration(days: 6));
     _reloadForCurrentRange();
+    _loadComplianceData();
     _setupHistoryRealtime();
+  }
+
+  /// Fixed rolling window (last 15 days, ending today) for the DVSA
+  /// section — deliberately not tied to _startDate/_endDate, so changing
+  /// the calendar picker for the Shifts/simple-Hours view never shifts
+  /// what "am I compliant right now" is being measured against. 15 days
+  /// covers this week and last week in full even when today is a Monday.
+  Future<void> _loadComplianceData({bool silent = false}) async {
+    final driverId = SupabaseService.currentDriverId;
+    if (driverId == null) return;
+    if (!silent) setState(() => _complianceLoading = true);
+    final end = DateTime.now();
+    final start = end.subtract(const Duration(days: 15));
+    try {
+      final results = await Future.wait([
+        SupabaseService.fetchDriverShifts(driverId: driverId, startDate: start, endDate: end),
+        SupabaseService.fetchDriverGpsPings(driverId: driverId, startDate: start, endDate: end),
+      ]);
+      if (mounted) {
+        setState(() {
+          _complianceShifts = results[0];
+          _complianceGpsPings = results[1];
+          _complianceLoading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _complianceLoading = false);
+    }
   }
 
   /// The single place that reloads everything driven by _startDate.._endDate
   /// — the shift list/summary card AND the progress rings — so the two
-  /// can never drift out of sync with each other.
-  Future<void> _reloadForCurrentRange() async {
-    await Future.wait([_loadShifts(), _loadRingsData(), _loadHoursGps()]);
+  /// can never drift out of sync with each other. [silent] refreshes keep
+  /// the current content on screen (realtime updates, pull-to-refresh)
+  /// instead of flashing loading states.
+  Future<void> _reloadForCurrentRange({bool silent = false}) async {
+    await Future.wait([
+      _loadShifts(silent: silent),
+      _loadRingsData(silent: silent),
+      _loadHoursGps(silent: silent),
+    ]);
   }
 
   /// Raw GPS pings for the selected range — the Hours table's telemetry
   /// source. Fetched alongside the shift list (not derived from it) since
   /// it only needs the driver id and date range, same as _loadShifts.
-  Future<void> _loadHoursGps() async {
+  Future<void> _loadHoursGps({bool silent = false}) async {
     final driverId = SupabaseService.currentDriverId;
     if (driverId == null) return;
-    setState(() => _hoursLoading = true);
+    if (!silent) setState(() => _hoursLoading = true);
     try {
       final pings = await SupabaseService.fetchDriverGpsPings(
         driverId: driverId,
@@ -361,27 +409,25 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
   /// the schema, so the driver's own recent period of the same length is
   /// the honest, always-available comparison), and the period's fuel
   /// receipts (for the fuel ring).
-  Future<void> _loadRingsData() async {
+  Future<void> _loadRingsData({bool silent = false}) async {
     final driverId = SupabaseService.currentDriverId;
     if (driverId == null) return;
-    setState(() => _ringsLoading = true);
+    if (!silent) setState(() => _ringsLoading = true);
     final periodDays = _endDate.difference(_startDate).inDays + 1;
     final baselineEnd = _startDate.subtract(const Duration(days: 1));
     final baselineStart = baselineEnd.subtract(Duration(days: periodDays - 1));
     try {
       final results = await Future.wait([
-        SupabaseService.fetchDriverShifts(driverId: driverId, startDate: _startDate, endDate: _endDate),
         SupabaseService.fetchDriverShifts(driverId: driverId, startDate: baselineStart, endDate: baselineEnd),
         SupabaseService.fetchMyFuelReceipts(since: _startDate),
       ]);
       if (mounted) {
         setState(() {
-          _ringPeriodShifts = results[0];
-          _ringBaselineShifts = results[1];
+          _ringBaselineShifts = results[0];
           // fetchMyFuelReceipts is "since" only (no upper bound) — trim
           // to the selected period's end here so a range in the past
           // doesn't pick up fuel logged after it.
-          _ringPeriodFuel = (results[2]).where((r) {
+          _ringPeriodFuel = (results[1]).where((r) {
             final created = DateTime.tryParse(r['created_at']?.toString() ?? '')?.toLocal();
             return created != null && !created.isAfter(DateTime(_endDate.year, _endDate.month, _endDate.day, 23, 59, 59));
           }).toList();
@@ -412,7 +458,7 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
             callback: (_) {
               debugPrint('⚡ Shifts updated via Realtime in HistoryTab. Refreshing...');
               if (mounted) {
-                _reloadForCurrentRange();
+                _reloadForCurrentRange(silent: true);
                 ref.read(authProvider.notifier).refreshProfile();
               }
             },
@@ -430,13 +476,15 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
     super.dispose();
   }
 
-  Future<void> _loadShifts() async {
+  Future<void> _loadShifts({bool silent = false}) async {
     final driverId = SupabaseService.currentDriverId;
     if (driverId == null) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+    if (!silent) {
+      setState(() {
+        _isLoading = true;
+      });
+    }
 
     try {
       final data = await SupabaseService.fetchDriverShifts(
@@ -609,17 +657,99 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
     );
   }
 
+  // ── Range navigation ──────────────────────────────────────────────
+  // Calendar-day arithmetic (DateTime(y, m, d + n)) rather than adding
+  // Durations, so stepping across a clock change never lands on 23:00 of
+  // the previous day.
+
+  bool get _isFullMonth =>
+      _startDate.day == 1 && _endDate == DateTime(_startDate.year, _startDate.month + 1, 0);
+
+  int get _periodDays =>
+      DateTime.utc(_endDate.year, _endDate.month, _endDate.day)
+          .difference(DateTime.utc(_startDate.year, _startDate.month, _startDate.day))
+          .inDays +
+      1;
+
+  bool get _isThisWeek {
+    final weekStart = _sundayOf(DateTime.now());
+    return _startDate == weekStart && _periodDays == 7;
+  }
+
+  /// Can't page past the range that contains today.
+  bool get _canStepForward {
+    final now = DateTime.now();
+    return _endDate.isBefore(DateTime(now.year, now.month, now.day));
+  }
+
+  void _stepRange(int direction) {
+    if (_isFullMonth) {
+      final start = DateTime(_startDate.year, _startDate.month + direction, 1);
+      _applyRange(start, DateTime(start.year, start.month + 1, 0));
+    } else {
+      final days = _periodDays * direction;
+      _applyRange(
+        DateTime(_startDate.year, _startDate.month, _startDate.day + days),
+        DateTime(_endDate.year, _endDate.month, _endDate.day + days),
+      );
+    }
+  }
+
+  String get _rangeText {
+    if (_periodDays == 1) return DateFormat('EEE d MMM yyyy').format(_startDate);
+    if (_isFullMonth) return DateFormat('MMMM yyyy').format(_startDate);
+    final sameYear = _startDate.year == _endDate.year;
+    final startFmt = DateFormat(sameYear ? 'd MMM' : 'd MMM yyyy');
+    return '${startFmt.format(_startDate)} – ${DateFormat('d MMM yyyy').format(_endDate)}';
+  }
+
+  String get _periodLabel {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    if (_periodDays == 1) return _startDate == today ? 'Today' : DateFormat('EEEE').format(_startDate);
+    if (_isThisWeek) return 'This week';
+    if (_isFullMonth) return DateFormat('MMMM').format(_startDate);
+    if (_periodDays == 7) return 'Week of ${DateFormat('d MMM').format(_startDate)}';
+    return '$_periodDays days';
+  }
+
+  bool _isExporting = false;
+
+  Future<void> _exportPeriod({required bool isFixed, required double rateValue}) async {
+    if (_isExporting) return;
+    final driver = ref.read(authProvider).driver;
+    final name = (driver?['full_name'] as String?)?.trim();
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _isExporting = true);
+    try {
+      await shareEarningsSummary(
+        driverName: (name != null && name.isNotEmpty) ? name : 'Driver',
+        driverCode: driver?['driver_id']?.toString(),
+        start: _startDate,
+        end: _endDate,
+        shifts: _shifts.map((s) => ShiftPayBreakdown.fromShift(s, isFixed: isFixed, rateValue: rateValue)).toList(),
+        isFixed: isFixed,
+        rateValue: rateValue,
+      );
+    } catch (_) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('Could not create the earnings summary. Please try again.'),
+        backgroundColor: Color(0xFFCC0000),
+        behavior: SnackBarBehavior.floating,
+      ));
+    } finally {
+      if (mounted) setState(() => _isExporting = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final dateFormat = DateFormat('d MMM yyyy');
-    final shiftDateFormat = DateFormat('d MMM');
-    final rangeText = '${dateFormat.format(_startDate)} – ${dateFormat.format(_endDate)}';
 
     // Aggregate metrics
     final double totalHours = _shifts.fold(0.0, (sum, s) => sum + ((s['total_hours'] as num?)?.toDouble() ?? 0.0));
     final double totalPay = _shifts.fold(0.0, (sum, s) => sum + ((s['total_pay'] as num?)?.toDouble() ?? 0.0));
-    
+
     // Derive dynamic rate from driver profile
     final authState = ref.watch(authProvider);
     final driverMap = authState.driver;
@@ -634,383 +764,336 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
         .toList();
     rates.sort();
     final ratesString = isFixed
-        ? '£${rateValue.toStringAsFixed(2)}/SHIFT'
-        : (rates.isNotEmpty ? rates.map((r) => '£${r.toStringAsFixed(2)}/HR').join(', ') : '£${rateValue.toStringAsFixed(2)}/HR');
+        ? '£${rateValue.toStringAsFixed(2)} / shift'
+        : (rates.isNotEmpty ? rates.map((r) => '£${r.toStringAsFixed(2)} / hr').join(', ') : '£${rateValue.toStringAsFixed(2)} / hr');
+    final rateLabel = isFixed ? 'Day rate' : (rates.length > 1 ? 'Hourly rates' : 'Hourly rate');
+
+    final breakdowns = _shifts.map((s) => ShiftPayBreakdown.fromShift(s, isFixed: isFixed, rateValue: rateValue)).toList();
 
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: Colors.white,
         elevation: 0,
-        centerTitle: true,
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Image.asset('assets/images/tachyo_logo.png', height: 24, fit: BoxFit.contain),
-          ],
-        ),
+        centerTitle: false,
+        titleSpacing: 20,
+        title: Image.asset('assets/images/tachyo_logo.png', height: 24, fit: BoxFit.contain),
         actions: [
           IconButton(
-            icon: const Icon(Icons.local_shipping_outlined, size: 20, color: Color(0xFF333333)),
-            tooltip: 'Load history',
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoadHistoryScreen())),
+            tooltip: 'Export earnings summary (PDF)',
+            onPressed: _shifts.isEmpty || _isExporting ? null : () => _exportPeriod(isFixed: isFixed, rateValue: rateValue),
+            icon: _isExporting
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: TachyoTheme.brandRed))
+                : Icon(Icons.picture_as_pdf_outlined, size: 22, color: _shifts.isEmpty ? const Color(0xFFCCCCCC) : TachyoTheme.charcoal),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: TextButton.icon(
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoadHistoryScreen())),
+              icon: const Icon(Icons.local_shipping_outlined, size: 20),
+              label: const Text('Loads'),
+              style: TextButton.styleFrom(
+                foregroundColor: TachyoTheme.charcoal,
+                textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+            ),
           ),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
-          child: Container(height: 1, color: const Color(0xFFE0E0E0)),
+          child: Container(height: 1, color: TachyoTheme.border),
         ),
       ),
       body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Period Range — minimized to just an icon + the date range
-            // it represents. The calendar itself is unchanged (same
-            // TableCalendar, same markers, same range selection); tapping
-            // this chip opens it in a bottom sheet instead of taking up
-            // space inline on the page.
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+        child: RefreshIndicator(
+          color: TachyoTheme.brandRed,
+          onRefresh: () => Future.wait([
+            _reloadForCurrentRange(silent: true),
+            _loadComplianceData(silent: true),
+          ]),
+          child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              // Range bar — pinned while the rest of the page scrolls. The
+              // calendar sheet is unchanged; the arrows just step the same
+              // range backwards/forwards by its own length.
+              SliverPersistentHeader(
+                pinned: true,
+                delegate: _PinnedBarDelegate(
+                  height: 64,
+                  child: _buildRangeBar(),
+                ),
+              ),
+
+              SliverToBoxAdapter(
+                child: _buildSummaryCard(
+                  theme,
+                  totalPay: totalPay,
+                  totalHours: totalHours,
+                  rateLabel: rateLabel,
+                  ratesString: ratesString,
+                ),
+              ),
+
+              // ── Shifts / Hours toggle ─────────────────────────────────
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: _viewToggleButton(theme, label: 'Logged shifts', selected: !_showHoursTable, onTap: () => setState(() => _showHoursTable = false)),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: _viewToggleButton(theme, label: 'Hours', selected: _showHoursTable, onTap: () => setState(() => _showHoursTable = true)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              if (_showHoursTable)
+                SliverToBoxAdapter(child: _buildHoursTable(theme))
+              else if (_isLoading)
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  sliver: SliverList.builder(
+                    itemCount: 3,
+                    itemBuilder: (context, _) => Container(
+                      height: 82,
+                      margin: const EdgeInsets.only(bottom: 10),
+                      decoration: BoxDecoration(color: TachyoTheme.surface, borderRadius: BorderRadius.circular(16)),
+                    ),
+                  ),
+                )
+              else if (_shifts.isEmpty)
+                SliverToBoxAdapter(child: _buildEmptyState())
+              else
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  sliver: SliverList.builder(
+                    itemCount: breakdowns.length,
+                    itemBuilder: (context, index) => _ShiftRow(
+                      key: ValueKey(_shifts[index]['id'] ?? index),
+                      shift: breakdowns[index],
+                      isFixed: isFixed,
+                    ),
+                  ),
+                ),
+
+              const SliverToBoxAdapter(child: SizedBox(height: 28)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRangeBar() {
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: 'Previous period',
+            onPressed: () => _stepRange(-1),
+            icon: const Icon(Icons.chevron_left_rounded, size: 28, color: TachyoTheme.charcoal),
+          ),
+          Expanded(
+            child: Material(
+              color: TachyoTheme.surface,
+              borderRadius: BorderRadius.circular(24),
               child: InkWell(
                 onTap: _openCalendarSheet,
                 borderRadius: BorderRadius.circular(24),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(24),
-                    border: Border.all(color: const Color(0xFFBBBBBB), width: 1.5),
-                  ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   child: Row(
-                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.calendar_today_outlined, size: 15, color: Color(0xFFCC0000)),
+                      const Icon(Icons.calendar_today_outlined, size: 16, color: TachyoTheme.brandRed),
                       const SizedBox(width: 10),
-                      Text(
-                        rangeText.toUpperCase(),
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontSize: 11.5,
-                          fontWeight: FontWeight.w900,
-                          color: const Color(0xFF333333),
+                      Flexible(
+                        child: Text(
+                          _rangeText,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700, color: TachyoTheme.charcoal),
                         ),
                       ),
-                      const SizedBox(width: 6),
-                      const Icon(Icons.expand_more, size: 16, color: Color(0xFF888888)),
+                      const SizedBox(width: 4),
+                      const Icon(Icons.expand_more_rounded, size: 20, color: TachyoTheme.charcoalLight),
                     ],
                   ),
                 ),
               ),
             ),
+          ),
+          IconButton(
+            tooltip: 'Next period',
+            onPressed: _canStepForward ? () => _stepRange(1) : null,
+            icon: Icon(
+              Icons.chevron_right_rounded,
+              size: 28,
+              color: _canStepForward ? TachyoTheme.charcoal : const Color(0xFFCCCCCC),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-            // Summary Metrics Card
-            Container(
-              margin: const EdgeInsets.fromLTRB(20, 8, 20, 12),
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF5F5F5),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
+  Widget _buildSummaryCard(
+    ThemeData theme, {
+    required double totalPay,
+    required double totalHours,
+    required String rateLabel,
+    required String ratesString,
+  }) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: TachyoTheme.surface,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Text(
+                _periodLabel,
+                style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: TachyoTheme.charcoalMid),
               ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'PERIOD EARNINGS',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontSize: 9,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 1.0,
-                              color: const Color(0xFF888888),
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            '£${totalPay.toStringAsFixed(2)}',
-                            style: theme.textTheme.displayMedium?.copyWith(
-                              fontSize: 26,
-                              fontWeight: FontWeight.w900,
-                              color: const Color(0xFFCC0000),
-                            ),
-                          ),
-                        ],
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
-                        ),
-                        child: Column(
-                          children: [
-                            Text(
-                              totalHours.toStringAsFixed(1),
-                              style: theme.textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.w900,
-                                color: const Color(0xFF333333),
-                              ),
-                            ),
-                            Text(
-                              'HOURS',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                fontSize: 8,
-                                fontWeight: FontWeight.w900,
-                                color: const Color(0xFF888888),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
+              const Spacer(),
+              if (_ringsLoading || _isLoading)
+                const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: TachyoTheme.brandRed)),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '£${totalPay.toStringAsFixed(2)}',
+                    style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w800, color: TachyoTheme.brandRed, letterSpacing: -0.8),
                   ),
-                  const SizedBox(height: 12),
-                  const Divider(color: Color(0xFFE0E0E0), thickness: 1),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        'WEEKLY RATE',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w900,
-                          color: const Color(0xFF888888),
-                        ),
-                      ),
-                      Text(
-                        ratesString,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w900,
-                          color: const Color(0xFF333333),
-                        ),
-                      ),
-                    ],
+                ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '${totalHours.toStringAsFixed(1)} h',
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: TachyoTheme.charcoal),
+                  ),
+                  Text(
+                    '${_shifts.length} shift${_shifts.length == 1 ? '' : 's'}',
+                    style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: TachyoTheme.charcoalLight),
                   ),
                 ],
               ),
-            ),
-
-            // ── Shifts / Hours toggle — grouped with the period chip and
-            // the earnings card right above it (not buried below the
-            // rings), since switching between them is really "what am I
-            // looking at for this period" — the same question the period
-            // chip and earnings card above already answer.
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _viewToggleButton(theme, label: 'LOGGED SHIFTS', selected: !_showHoursTable, onTap: () => setState(() => _showHoursTable = false)),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: _viewToggleButton(theme, label: 'HOURS', selected: _showHoursTable, onTap: () => setState(() => _showHoursTable = true)),
-                  ),
-                ],
+            ],
+          ),
+          const SizedBox(height: 14),
+          const Divider(height: 1, color: TachyoTheme.border),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                rateLabel,
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: TachyoTheme.charcoalLight),
               ),
-            ),
-            const SizedBox(height: 4),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  ratesString,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: TachyoTheme.charcoal),
+                ),
+              ),
+            ],
+          ),
+          // Progress rings — Shifts view only; the Hours view has its own
+          // dense DVSA compliance content and doesn't need these too.
+          if (!_showHoursTable) ...[
+            const SizedBox(height: 18),
+            _buildProgressRings(theme),
+          ],
+        ],
+      ),
+    );
+  }
 
-            // ── Progress rings (item 3) — only for the Shifts view; the
-            // Hours view has its own dense DVSA compliance content and
-            // doesn't need these too.
-            if (!_showHoursTable) _buildProgressRings(theme),
-
-            Expanded(
-              child: _showHoursTable
-                  ? _buildHoursTable(theme)
-                  : _isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(
-                        color: Color(0xFFCC0000),
-                      ),
-                    )
-                  : _shifts.isEmpty
-                      ? Center(
-                          child: Text(
-                            'NO SHIFTS LOGGED IN THIS PERIOD',
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w800,
-                              color: const Color(0xFF888888),
-                            ),
-                          ),
-                        )
-                      : ListView.builder(
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                          itemCount: _shifts.length,
-                          itemBuilder: (context, index) {
-                            final s = _shifts[index];
-                            final startTime = DateTime.parse(s['start_time']).toLocal();
-                            final endTime = s['end_time'] != null ? DateTime.parse(s['end_time']).toLocal() : null;
-                            final dayName = DateFormat('EEEE').format(startTime);
-
-                            final startTimeStr = DateFormat('HH:mm').format(startTime);
-                            final endTimeStr = endTime != null ? DateFormat('HH:mm').format(endTime) : 'Ongoing';
-                            final timeRangeStr = '$startTimeStr - $endTimeStr';
-
-                            final pay = (s['total_pay'] as num?)?.toDouble() ?? 0.0;
-                            final hours = (s['total_hours'] as num?)?.toDouble() ?? (endTime != null ? (endTime.difference(startTime).inMinutes / 60.0) : 0.0);
-                            final hasOverride = s['override_rate'] != null;
-
-                            // Financial breakdown calculation
-                            final double shiftEffRate = (s['effective_rate'] as num?)?.toDouble() 
-                                ?? (s['base_hourly_rate'] as num?)?.toDouble() 
-                                ?? rateValue;
-
-                            final double nightOut = (s['night_out_amount'] as num?)?.toDouble() 
-                                ?? (s['night_out_allowance'] as num?)?.toDouble() 
-                                ?? (s['night_out_status'] == 'approved' ? 25.0 : 0.0);
-
-                            final double extraAmt = (s['extra_amount'] as num?)?.toDouble() 
-                                ?? (s['extras_amount'] as num?)?.toDouble() 
-                                ?? (s['extras'] as num?)?.toDouble() 
-                                ?? 0.0;
-
-                            final double extraPay = nightOut + extraAmt;
-                            final double basePay = isFixed 
-                                ? rateValue 
-                                : (extraPay > 0 ? (pay - extraPay) : (hours * shiftEffRate));
-
-                            return Container(
-                              margin: const EdgeInsets.only(bottom: 10),
-                              padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
-                              ),
-                              child: Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                crossAxisAlignment: CrossAxisAlignment.center,
-                                children: [
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          dayName.toUpperCase(),
-                                          style: theme.textTheme.titleMedium?.copyWith(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w900,
-                                            color: const Color(0xFF333333),
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          shiftDateFormat.format(startTime),
-                                          style: theme.textTheme.bodyMedium?.copyWith(
-                                            fontSize: 11,
-                                            color: const Color(0xFF666666),
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          timeRangeStr,
-                                          style: theme.textTheme.bodyMedium?.copyWith(
-                                            fontSize: 11,
-                                            color: const Color(0xFF888888),
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                        if (hasOverride) ...[
-                                          const SizedBox(height: 6),
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                            decoration: BoxDecoration(
-                                              border: Border.all(color: const Color(0xFFCC0000), width: 1),
-                                              borderRadius: BorderRadius.circular(6),
-                                            ),
-                                            child: const Text(
-                                              'RATE OVERRIDE',
-                                              style: TextStyle(
-                                                color: Color(0xFFCC0000),
-                                                fontSize: 8,
-                                                fontWeight: FontWeight.w900,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ],
-                                    ),
-                                  ),
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.end,
-                                    children: [
-                                      Text(
-                                        '£${pay.toStringAsFixed(2)}',
-                                        style: theme.textTheme.titleLarge?.copyWith(
-                                          fontSize: 16,
-                                          fontWeight: FontWeight.w900,
-                                          color: const Color(0xFFCC0000),
-                                        ),
-                                      ),
-                                      if (extraPay > 0) ...[
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          '(£${basePay.toStringAsFixed(2)} Base + £${extraPay.toStringAsFixed(2)} Extra)',
-                                          style: theme.textTheme.bodySmall?.copyWith(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w700,
-                                            color: const Color(0xFF666666),
-                                          ),
-                                        ),
-                                      ],
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        '${hours.toStringAsFixed(1)} Hrs',
-                                        style: theme.textTheme.bodyMedium?.copyWith(
-                                          fontSize: 11,
-                                          color: const Color(0xFF888888),
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
+  Widget _buildEmptyState() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(32, 32, 32, 16),
+      child: Column(
+        children: [
+          const Icon(Icons.event_busy_outlined, size: 40, color: Color(0xFFCCCCCC)),
+          const SizedBox(height: 12),
+          const Text(
+            'No shifts in this period',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: TachyoTheme.charcoal),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Use the arrows or the calendar above to pick another range.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: TachyoTheme.charcoalLight),
+          ),
+          if (!_isThisWeek) ...[
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: _jumpToThisWeek,
+              style: TextButton.styleFrom(
+                foregroundColor: TachyoTheme.brandRed,
+                minimumSize: const Size(48, 48),
+                textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+              ),
+              child: const Text('Go to this week'),
             ),
           ],
-        ),
+        ],
       ),
     );
   }
 
   Widget _viewToggleButton(ThemeData theme, {required String label, required bool selected, required VoidCallback onTap}) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 9),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? const Color(0xFF333333) : Colors.white,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: selected ? const Color(0xFF333333) : const Color(0xFFDDDDDD), width: 1),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w900,
-            letterSpacing: 1.0,
-            color: selected ? Colors.white : const Color(0xFF888888),
+    return Material(
+      color: selected ? TachyoTheme.charcoal : Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          height: 46,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: selected ? TachyoTheme.charcoal : const Color(0xFFDDDDDD), width: 1),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: selected ? Colors.white : TachyoTheme.charcoalMid,
+            ),
           ),
         ),
       ),
     );
   }
+
 
   /// Three rings for "how's this period going" — they now follow
   /// whatever range is selected above (_startDate.._endDate), recomputed
@@ -1033,12 +1116,7 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
   ///   as WTD/tachograph legal compliance, which the app's own privacy
   ///   policy already disclaims as advisory-only elsewhere.
   Widget _buildProgressRings(ThemeData theme) {
-    final periodDays = _endDate.difference(_startDate).inDays + 1;
-    final periodLabel = periodDays <= 1
-        ? 'THIS DAY\'S PROGRESS'
-        : periodDays <= 7
-            ? 'THIS PERIOD\'S PROGRESS'
-            : 'THIS MONTH\'S PROGRESS';
+    final periodDays = _periodDays;
 
     // Fuel
     final fullTankLogs = _ringPeriodFuel.where((r) => r['is_full_tank'] == true && r['calculated_mpg'] != null).toList();
@@ -1052,41 +1130,21 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
 
     // Earnings
     double sumPay(List<Map<String, dynamic>> shifts) => shifts.fold(0.0, (sum, s) => sum + ((s['total_pay'] as num?)?.toDouble() ?? 0.0));
-    final periodPay = sumPay(_ringPeriodShifts);
+    final periodPay = sumPay(_shifts);
     final baselinePay = sumPay(_ringBaselineShifts);
     final hasEarningsBaseline = baselinePay > 0;
     final earningsProgress = hasEarningsBaseline ? (periodPay / baselinePay).clamp(0.0, 1.0) : (periodPay > 0 ? 1.0 : 0.0);
 
     // Rest
-    final hoursWorked = _ringPeriodShifts.fold(0.0, (sum, s) => sum + ((s['total_hours'] as num?)?.toDouble() ?? 0.0));
+    final hoursWorked = _shifts.fold(0.0, (sum, s) => sum + ((s['total_hours'] as num?)?.toDouble() ?? 0.0));
     final periodHours = periodDays * 24.0;
     final restReferenceHours = (120.0 / 7.0) * periodDays;
     final restHours = (periodHours - hoursWorked).clamp(0.0, periodHours);
     final restProgress = restReferenceHours > 0 ? (restHours / restReferenceHours).clamp(0.0, 1.0) : 0.0;
 
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF5F5F5),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE0E0E0), width: 1),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                periodLabel,
-                style: theme.textTheme.bodyMedium?.copyWith(fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 1.0, color: const Color(0xFF888888)),
-              ),
-              if (_ringsLoading) const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFFCC0000))),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Row(
+    // Sits inside the summary card, which already carries the period label
+    // and loading indicator.
+    return Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
               ProgressRing(
@@ -1120,9 +1178,6 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
                 color: const Color(0xFF3B82F6),
               ),
             ],
-          ),
-        ],
-      ),
     );
   }
 
@@ -1156,6 +1211,31 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
       if (speed >= _drivingSpeedThresholdMps) minutes += gap;
     }
     return minutes;
+  }
+
+  /// The longest stretch of continuous driving in a shift, for the 4h30
+  /// break rule — the accumulator only resets on a stop of at least
+  /// requiredBreakMin (45 min), the actual qualifying-break length,
+  /// unlike the simple "still driving right now" heuristics elsewhere
+  /// that reset on much shorter stops.
+  static double _shiftLongestContinuousDrivingMinutes(List<Map<String, dynamic>> pings) {
+    double current = 0;
+    double stationaryRun = 0;
+    double longest = 0;
+    for (int i = 1; i < pings.length; i++) {
+      final gap = _minutesBetween(pings[i - 1]['recorded_at'] as String, pings[i]['recorded_at'] as String);
+      if (gap <= 0 || gap > _maxPingGapMinutes) continue;
+      final speed = (pings[i]['speed'] as num?)?.toDouble() ?? 0.0;
+      if (speed >= _drivingSpeedThresholdMps) {
+        current += gap;
+        stationaryRun = 0;
+        if (current > longest) longest = current;
+      } else {
+        stationaryRun += gap;
+        if (stationaryRun >= dvsa.requiredBreakMin) current = 0;
+      }
+    }
+    return longest;
   }
 
   /// One row per calendar day in the selected range that actually has a
@@ -1214,42 +1294,56 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
         child: Center(child: CircularProgressIndicator(color: Color(0xFFCC0000))),
       );
     }
-    if (rows.isEmpty) {
-      return Center(
-        child: Text(
-          'NO SHIFTS LOGGED IN THIS PERIOD',
-          style: theme.textTheme.bodyMedium?.copyWith(fontSize: 11, fontWeight: FontWeight.w800, color: const Color(0xFF888888)),
-        ),
-      );
-    }
+    // Lives inside the History page's single scroll view, so this builds a
+    // plain column — no scroll view of its own.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+      child: rows.isEmpty
+          ? Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Text(
+                    'No shifts logged in this period.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: TachyoTheme.charcoalLight),
+                  ),
+                ),
+                _buildDvsaSection(theme),
+              ],
+            )
+          : _buildHoursTableBody(theme, rows, dayFormat),
+    );
+  }
 
+  Widget _buildHoursTableBody(ThemeData theme, List<_DayHoursRow> rows, DateFormat dayFormat) {
     Widget headerCell(String text, {bool alignEnd = true}) => Text(
           text,
           textAlign: alignEnd ? TextAlign.right : TextAlign.left,
-          style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 0.4, color: Color(0xFF888888)),
+          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: TachyoTheme.charcoalLight, height: 1.2),
         );
 
-    Widget valueCell(String text, {Color color = const Color(0xFF333333)}) => Text(
+    Widget valueCell(String text, {Color color = TachyoTheme.charcoal}) => Text(
           text,
           textAlign: TextAlign.right,
-          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w800, color: color),
+          style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: color),
         );
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-      child: Column(
+    return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
             margin: const EdgeInsets.only(bottom: 4),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                const Expanded(flex: 3, child: Text('DAY', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w900, letterSpacing: 0.4, color: Color(0xFF888888)))),
-                Expanded(flex: 3, child: headerCell('DRIVING')),
-                Expanded(flex: 3, child: headerCell('DRV. AVAIL.')),
-                Expanded(flex: 3, child: headerCell('WORKING')),
-                Expanded(flex: 3, child: headerCell('WRK. AVAIL.')),
+                Expanded(flex: 4, child: headerCell('Day', alignEnd: false)),
+                Expanded(flex: 3, child: headerCell('Driving')),
+                Expanded(flex: 3, child: headerCell('Driving left')),
+                Expanded(flex: 3, child: headerCell('Working')),
+                Expanded(flex: 3, child: headerCell('Working left')),
               ],
             ),
           ),
@@ -1260,15 +1354,15 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
             final drivingOver = r.drivingMinutes > _dailyDrivingLimitMinutes;
             final workingOver = r.workingMinutes > _dailyWorkingLimitMinutes;
             return Container(
-              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
               decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFFF0F0F0), width: 1))),
               child: Row(
                 children: [
                   Expanded(
-                    flex: 3,
+                    flex: 4,
                     child: Text(
                       dayFormat.format(r.day),
-                      style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w900, color: Color(0xFF333333)),
+                      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: TachyoTheme.charcoal),
                     ),
                   ),
                   Expanded(flex: 3, child: valueCell(_formatHM(r.drivingMinutes), color: drivingOver ? const Color(0xFFCC0000) : const Color(0xFF333333))),
@@ -1280,12 +1374,458 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
             );
           }),
           const SizedBox(height: 12),
-          Text(
+          const Text(
             'Driving hours are from GPS telemetry (speed readings), not a certified tachograph. '
-            'Available = ${_dailyDrivingLimitMinutes ~/ 60}h daily driving / ${_dailyWorkingLimitMinutes ~/ 60}h daily working, minus what was logged that day — advisory only.',
-            style: const TextStyle(fontSize: 9.5, fontWeight: FontWeight.w600, color: Color(0xFF999999), height: 1.4),
+            '"Left" = ${_dailyDrivingLimitMinutes ~/ 60}h daily driving / ${_dailyWorkingLimitMinutes ~/ 60}h daily working, minus what was logged that day — advisory only.',
+            style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500, color: TachyoTheme.charcoalLight, height: 1.4),
           ),
+          const SizedBox(height: 28),
+          _buildDvsaSection(theme),
         ],
+    );
+  }
+
+  /// Builds the ShiftHoursInput list the DVSA engine needs from
+  /// _complianceShifts (the fixed 15-day rolling window) plus, if one is
+  /// running right now, the live active shift from shiftProvider — a
+  /// driver mid-shift needs today's in-progress driving counted, not
+  /// just yesterday's completed ones.
+  dvsa.DvsaResult? _buildDvsaResult() {
+    final pingsByShift = <String, List<Map<String, dynamic>>>{};
+    for (final p in _complianceGpsPings) {
+      final sid = p['shift_id']?.toString();
+      if (sid == null) continue;
+      (pingsByShift[sid] ??= []).add(p);
+    }
+
+    final inputs = <dvsa.ShiftHoursInput>[];
+    for (final s in _complianceShifts) {
+      final start = DateTime.tryParse(s['start_time']?.toString() ?? '')?.toLocal();
+      final end = DateTime.tryParse(s['end_time']?.toString() ?? '')?.toLocal();
+      if (start == null) continue;
+      final pings = pingsByShift[s['id']?.toString()] ?? const <Map<String, dynamic>>[];
+      inputs.add(dvsa.ShiftHoursInput(
+        start: start,
+        end: end,
+        drivingMinutes: _shiftDrivingMinutes(pings),
+        workingMinutes: (((s['total_hours'] as num?)?.toDouble() ?? 0.0)) * 60.0,
+        longestContinuousDrivingMinutes: _shiftLongestContinuousDrivingMinutes(pings),
+      ));
+    }
+
+    final active = ref.read(shiftProvider).activeShift;
+    if (active != null && !_complianceShifts.any((s) => s['id']?.toString() == active.id)) {
+      final now = DateTime.now();
+      final pings = pingsByShift[active.id] ?? const <Map<String, dynamic>>[];
+      inputs.add(dvsa.ShiftHoursInput(
+        start: active.startTime.toLocal(),
+        end: null,
+        drivingMinutes: _shiftDrivingMinutes(pings),
+        workingMinutes: now.difference(active.startTime.toLocal()).inMinutes.toDouble(),
+        longestContinuousDrivingMinutes: _shiftLongestContinuousDrivingMinutes(pings),
+      ));
+    }
+
+    if (inputs.isEmpty) return null;
+    return dvsa.computeDvsaCompliance(inputs, DateTime.now());
+  }
+
+  Widget _dvsaStatusChip(String label, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(999), border: Border.all(color: color.withValues(alpha: 0.4))),
+        child: Text(label, style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: color)),
+      );
+
+  Widget _dvsaMetricTile(String label, String value, {Color? color}) => Expanded(
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+          margin: const EdgeInsets.symmetric(horizontal: 3),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE0E0E0))),
+          child: Column(
+            children: [
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: color ?? TachyoTheme.charcoal)),
+              ),
+              const SizedBox(height: 3),
+              Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: TachyoTheme.charcoalLight, height: 1.25)),
+            ],
+          ),
+        ),
+      );
+
+  Widget _buildDvsaSection(ThemeData theme) {
+    if (_complianceLoading) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Center(child: CircularProgressIndicator(color: Color(0xFFCC0000), strokeWidth: 2)),
+      );
+    }
+    final result = _buildDvsaResult();
+    final week = result?.thisWeek;
+    final dayFormat = DateFormat('EEE d MMM');
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Row(
+          children: [
+            Icon(Icons.gavel_rounded, size: 18, color: Color(0xFFCC0000)),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text('DVSA drivers\' hours compliance', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: TachyoTheme.charcoal)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        const Text(
+          'Monitors the assimilated (EU) drivers\' hours rules DVSA enforces: daily/weekly/fortnightly driving limits, '
+          'daily and weekly rest, the 4h30 break, and the 60h weekly Working Time cap — from GPS telemetry, advisory '
+          'only. Not a certified tachograph record; DVSA roadside checks use the vehicle\'s actual tachograph.',
+          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w500, color: TachyoTheme.charcoalLight, height: 1.4),
+        ),
+        const SizedBox(height: 14),
+        if (result == null || week == null)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Text('No shifts in the last 15 days to assess.', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: TachyoTheme.charcoalLight)),
+          )
+        else ...[
+          // This week / fortnight summary tiles.
+          Row(
+            children: [
+              _dvsaMetricTile(
+                'Week driving\n/ 56h',
+                dvsa.formatDvsaMinutes(week.drivingMinutes),
+                color: week.weeklyDrivingBreach ? dvsa.dvsaRed : (week.drivingMinutes > dvsa.weeklyDrivingLimitMin * 0.9 ? dvsa.dvsaAmber : dvsa.dvsaGreen),
+              ),
+              _dvsaMetricTile('Extensions\nused', '${week.extensionsUsed}/${dvsa.maxExtensionsPerWeek}', color: week.extensionsUsed >= dvsa.maxExtensionsPerWeek ? dvsa.dvsaAmber : const Color(0xFF333333)),
+              _dvsaMetricTile('Reduced rests\nused', '${week.reducedRestsUsed}/${dvsa.maxReducedRestsPerWeek}', color: week.reducedRestsUsed >= dvsa.maxReducedRestsPerWeek ? dvsa.dvsaAmber : const Color(0xFF333333)),
+              _dvsaMetricTile(
+                'Week working\n/ 60h',
+                dvsa.formatDvsaMinutes(week.workingMinutes),
+                color: week.weeklyWorkingBreach ? dvsa.dvsaRed : (week.workingMinutes > dvsa.wtdWeeklyAbsoluteMaxMin * 0.9 ? dvsa.dvsaAmber : dvsa.dvsaGreen),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              _dvsaMetricTile(
+                'Fortnight\ndriving / 90h',
+                dvsa.formatDvsaMinutes(result.fortnightDrivingMinutes),
+                color: result.fortnightBreach ? dvsa.dvsaRed : (result.fortnightDrivingMinutes > dvsa.fortnightlyDrivingLimitMin * 0.9 ? dvsa.dvsaAmber : dvsa.dvsaGreen),
+              ),
+              _dvsaMetricTile(
+                'Weekly rest',
+                week.weeklyRestMinutes != null ? dvsa.formatDvsaMinutes(week.weeklyRestMinutes!) : '—',
+                color: dvsa.colorForRestStatus(week.weeklyRestStatus),
+              ),
+              _dvsaMetricTile(
+                'Last week\ndriving',
+                result.lastWeek != null ? dvsa.formatDvsaMinutes(result.lastWeek!.drivingMinutes) : '—',
+              ),
+              const Expanded(child: SizedBox()),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 3),
+              child: _dvsaStatusChip(
+                week.weeklyRestStatus == dvsa.RestStatus.unknown
+                    ? 'Weekly rest: not yet taken this week'
+                    : week.weeklyRestStatus == dvsa.RestStatus.reduced
+                        ? 'Reduced weekly rest — must be topped up by ${DateFormat('d MMM').format(week.weekStart.add(Duration(days: 7 * (dvsa.weeklyRestCompensationWeeks + 1))))}'
+                        : dvsa.labelForRestStatus(week.weeklyRestStatus),
+                dvsa.colorForRestStatus(week.weeklyRestStatus),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // Per-day breakdown, most recent first.
+          const Text('Day by day', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: TachyoTheme.charcoalMid)),
+          const SizedBox(height: 8),
+          ...result.days.reversed.map((d) {
+            return Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: const Color(0xFFE0E0E0))),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(dayFormat.format(d.day), style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800, color: TachyoTheme.charcoal)),
+                      _dvsaStatusChip(dvsa.labelForDrivingStatus(d.drivingStatus), dvsa.colorForDrivingStatus(d.drivingStatus)),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(child: _dvsaFactRow('Driving', dvsa.formatDvsaMinutes(d.drivingMinutes))),
+                      Expanded(child: _dvsaFactRow('Working', dvsa.formatDvsaMinutes(d.workingMinutes))),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Expanded(child: _dvsaFactRow('Rest before', d.restBeforeMinutes != null ? dvsa.formatDvsaMinutes(d.restBeforeMinutes!) : 'No data')),
+                      Expanded(child: _dvsaFactRow('4h30 break', d.breakSatisfied ? 'Taken' : 'Overdue')),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  // Wrap, not Row: at readable sizes three chips no longer
+                  // fit on one line on a narrow phone.
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      _dvsaStatusChip(dvsa.labelForRestStatus(d.restStatus), dvsa.colorForRestStatus(d.restStatus)),
+                      _dvsaStatusChip(
+                        d.canExtendToday ? 'Can extend to 10h' : 'No extension available',
+                        d.canExtendToday ? dvsa.dvsaGreen : dvsa.dvsaMuted,
+                      ),
+                      if (!d.breakSatisfied) _dvsaStatusChip('Break needed', dvsa.dvsaRed),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ],
+    );
+  }
+
+  Widget _dvsaFactRow(String label, String value) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 1),
+        child: Row(
+          children: [
+            Text('$label  ', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w500, color: TachyoTheme.charcoalLight)),
+            Flexible(
+              child: Text(value, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: TachyoTheme.charcoal)),
+            ),
+          ],
+        ),
+      );
+}
+
+/// Keeps the History range bar pinned under the app bar while the page
+/// scrolls.
+class _PinnedBarDelegate extends SliverPersistentHeaderDelegate {
+  final double height;
+  final Widget child;
+
+  const _PinnedBarDelegate({required this.height, required this.child});
+
+  @override
+  double get minExtent => height;
+
+  @override
+  double get maxExtent => height;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: overlapsContent || shrinkOffset > 0
+            ? const Border(bottom: BorderSide(color: TachyoTheme.border))
+            : null,
+      ),
+      child: child,
+    );
+  }
+
+  @override
+  bool shouldRebuild(_PinnedBarDelegate old) => old.child != child || old.height != height;
+}
+
+/// One logged shift: date badge, times and duration, pay, and tags for
+/// anything unusual. Tapping expands the pay breakdown the old card showed
+/// inline as "(£x Base + £y Extra)".
+class _ShiftRow extends StatefulWidget {
+  final ShiftPayBreakdown shift;
+  final bool isFixed;
+
+  const _ShiftRow({super.key, required this.shift, required this.isFixed});
+
+  @override
+  State<_ShiftRow> createState() => _ShiftRowState();
+}
+
+class _ShiftRowState extends State<_ShiftRow> {
+  bool _expanded = false;
+
+  static String _money(double v) => '£${v.toStringAsFixed(2)}';
+
+  Widget _tag(String text, {bool filled = false, Color color = TachyoTheme.charcoalMid}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: filled ? color : color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          color: filled ? Colors.white : color,
+        ),
+      ),
+    );
+  }
+
+  Widget _breakdownLine(String label, String value, {bool bold = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Text(label, style: TextStyle(fontSize: 13.5, fontWeight: bold ? FontWeight.w700 : FontWeight.w500, color: bold ? TachyoTheme.charcoal : TachyoTheme.charcoalMid)),
+          const Spacer(),
+          Text(value, style: TextStyle(fontSize: 13.5, fontWeight: bold ? FontWeight.w800 : FontWeight.w600, color: TachyoTheme.charcoal)),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.shift;
+    final timeFmt = DateFormat('HH:mm');
+    final durationMinutes = s.isLive
+        ? DateTime.now().difference(s.start).inMinutes.toDouble()
+        : s.hours * 60;
+    final times = '${timeFmt.format(s.start)} – ${s.isLive ? 'now' : timeFmt.format(s.end!)}';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => setState(() => _expanded = !_expanded),
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: s.isLive ? TachyoTheme.brandRed.withValues(alpha: 0.4) : const Color(0xFFE8E8E8)),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    // Date badge
+                    Container(
+                      width: 52,
+                      height: 58,
+                      decoration: BoxDecoration(
+                        color: s.isLive ? TachyoTheme.brandRed : TachyoTheme.surface,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            DateFormat('EEE').format(s.start).toUpperCase(),
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.6,
+                              color: s.isLive ? Colors.white.withValues(alpha: 0.85) : TachyoTheme.brandRed,
+                            ),
+                          ),
+                          Text(
+                            '${s.start.day}',
+                            style: TextStyle(
+                              fontSize: 21,
+                              height: 1.1,
+                              fontWeight: FontWeight.w800,
+                              color: s.isLive ? Colors.white : TachyoTheme.charcoal,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            times,
+                            style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w700, color: TachyoTheme.charcoal),
+                          ),
+                          const SizedBox(height: 5),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text(
+                                _HistoryTabState._formatHM(durationMinutes),
+                                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: TachyoTheme.charcoalMid),
+                              ),
+                              if (s.isLive) _tag('Live', filled: true, color: TachyoTheme.brandRed),
+                              if (s.nightOut > 0) _tag('Night out +${_money(s.nightOut)}'),
+                              if (s.extras > 0) _tag('Extras +${_money(s.extras)}'),
+                              if (s.hasOverride) _tag('Rate override', color: TachyoTheme.brandRed),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Text(
+                          _money(s.pay),
+                          style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: TachyoTheme.brandRed),
+                        ),
+                        AnimatedRotation(
+                          turns: _expanded ? 0.5 : 0,
+                          duration: const Duration(milliseconds: 200),
+                          child: const Icon(Icons.expand_more_rounded, size: 22, color: TachyoTheme.charcoalLight),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  alignment: Alignment.topCenter,
+                  child: !_expanded
+                      ? const SizedBox(width: double.infinity)
+                      : Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 12, 4, 2),
+                          child: Column(
+                            children: [
+                              const Divider(height: 1, color: TachyoTheme.border),
+                              const SizedBox(height: 8),
+                              _breakdownLine(
+                                widget.isFixed ? 'Day rate' : 'Rate',
+                                widget.isFixed ? '${_money(s.basePay)} / shift' : '${_money(s.rate)} / hr',
+                              ),
+                              _breakdownLine('Base pay', _money(s.basePay)),
+                              if (s.nightOut > 0) _breakdownLine('Night out', _money(s.nightOut)),
+                              if (s.extras > 0) _breakdownLine('Extras', _money(s.extras)),
+                              _breakdownLine('Total', _money(s.pay), bold: true),
+                            ],
+                          ),
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

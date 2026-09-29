@@ -3,7 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../../../config/theme.dart';
 
 /// The red truck mark on its own (keyed out of the launcher icon), so it can
-/// sit on the dark brand surface — the full logo PNG has a black wordmark.
+/// be animated separately from the wordmark.
 class TachyoMark extends StatelessWidget {
   final double height;
   const TachyoMark({super.key, this.height = 64});
@@ -31,7 +31,7 @@ class TachyoWordmark extends StatelessWidget {
     super.key,
     this.fontSize = 40,
     this.progress = 1,
-    this.color = Colors.white,
+    this.color = TachyoTheme.wordmark,
   });
 
   static const _letters = ['t', 'a', 'c', 'h', 'y', 'o'];
@@ -111,7 +111,7 @@ class TachyoLockup extends StatelessWidget {
                     fontSize: 11,
                     fontWeight: FontWeight.w600,
                     letterSpacing: 2.4,
-                    color: Colors.white.withValues(alpha: 0.5),
+                    color: TachyoTheme.charcoalLight,
                   ),
                 ),
               ],
@@ -136,7 +136,7 @@ class RoadPainter extends CustomPainter {
     this.reveal = 1,
     this.trailX,
     this.trailOpacity = 0,
-    this.color = TachyoTheme.inkLine,
+    this.color = TachyoTheme.roadLine,
   });
 
   static const double _dash = 22;
