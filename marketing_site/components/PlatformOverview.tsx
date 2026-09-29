@@ -42,7 +42,7 @@ const ITEMS: Item[] = [
     icon: MapPinned,
     title: "Live Dispatch Board",
     body: "Every driver, vehicle and load on one map in real time, with depot geofencing and shift KPIs — not a spreadsheet refreshed every hour.",
-    image: "/features/dispatch.jpg",
+    image: "/features/dashboard-screenshot.png",
   },
   {
     id: "compliance",

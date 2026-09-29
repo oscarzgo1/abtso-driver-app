@@ -224,13 +224,15 @@ DvsaResult computeDvsaCompliance(List<ShiftHoursInput> shifts, DateTime now) {
       });
       if (next == null) continue;
       final gap = _minutesBetween(end, next.start);
-      if (longestGap == null || gap > longestGap!) longestGap = gap;
+      final currentLongest = longestGap;
+      if (currentLongest == null || gap > currentLongest) longestGap = gap;
     }
-    final weeklyRestStatus = longestGap == null
+    final capturedGap = longestGap;
+    final weeklyRestStatus = capturedGap == null
         ? RestStatus.unknown
-        : longestGap! >= weeklyRestRegularMin
+        : capturedGap >= weeklyRestRegularMin
             ? RestStatus.regular
-            : longestGap! >= weeklyRestReducedMin
+            : capturedGap >= weeklyRestReducedMin
                 ? RestStatus.reduced
                 : RestStatus.breach;
 
@@ -240,7 +242,7 @@ DvsaResult computeDvsaCompliance(List<ShiftHoursInput> shifts, DateTime now) {
       workingMinutes: workingMinutes,
       extensionsUsed: extensionsUsed,
       reducedRestsUsed: reducedRestsUsed,
-      weeklyRestStatus: longestGap == null ? RestStatus.unknown : weeklyRestStatus,
+      weeklyRestStatus: weeklyRestStatus,
       weeklyRestMinutes: longestGap,
     );
   }

@@ -17,20 +17,22 @@ import { supabase, isMockMode } from '../App';
 // names per field, so "Name" / "Full Name" / "Employee Name" all
 // resolve to the same thing without the admin picking a preset.
 //
-// IMPORTANT — PIN visibility: a driver's PIN is bcrypt-hashed the
-// moment it's saved (same trigger the single Add Employee form
-// relies on) and can never be read back afterward. The only PINs
-// this modal can ever show or export are the ones it generates
-// itself, in this browser session, for the rows it just created —
-// shown once on the results screen, exactly like the existing
-// single-driver "Reset PIN" flow.
+// IMPORTANT — activation codes, not PINs: since migration 065,
+// admins can no longer set a driver's PIN directly (bulk import
+// included — any PIN/password column in the uploaded file is
+// ignored). create-driver instead issues a one-time activation
+// code per row, exactly like the single Add Employee flow; the
+// driver enters it in the app and picks their own 6-digit PIN.
+// Codes are only ever returned once, in this response, so the
+// results screen is the only place to see or export them —
+// downloadable as a CSV and openable as a printable list in a new
+// tab to hand to drivers.
 // ============================================================
 
 interface FieldAliases {
   full_name: string[];
   phone: string[];
   driver_id: string[];
-  pin: string[];
   profession: string[];
   rate_type: string[];
   base_rate: string[];
@@ -41,7 +43,6 @@ const ALIASES: FieldAliases = {
   full_name: ['full name', 'name', 'employee name', 'driver name'],
   phone: ['phone', 'phone number', 'mobile', 'mobile number', 'contact number'],
   driver_id: ['driver id', 'driver_id', 'username', 'employee id', 'employee code', 'id', 'code'],
-  pin: ['pin', 'password', 'default pin', 'pin code'],
   profession: ['role', 'profession', 'position', 'job title'],
   rate_type: ['rate type'],
   base_rate: ['rate', 'base rate', 'hourly rate', 'pay rate', 'day rate'],
@@ -55,7 +56,6 @@ interface ParsedDriverRow {
   full_name: string;
   phone: string;
   driver_id: string;
-  pin: string;
   profession: string;
   rate_type: 'Hourly' | 'Fixed Shift Rate (Day Rate)';
   base_rate: number;
@@ -66,9 +66,13 @@ interface ImportOutcome {
   driver_id: string;
   full_name: string;
   phone: string;
-  pin: string;
+  activation_code: string | null;
   ok: boolean;
   reason?: string;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }
 
 function normalizeHeader(h: string): string {
@@ -97,14 +101,10 @@ function slugifyDriverId(name: string): string {
     .replace(/[^a-z0-9.]/g, '');
 }
 
-function generateRandomPin(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
 const SAMPLE_CSV =
-  'Full Name,Phone,Role,Driver ID,PIN,Rate Type,Base Rate,Agency\n' +
-  'John Jones,+44 7700 900100,driver,,,Hourly,16.00,Direct\n' +
-  'Maria Kowalski,+44 7700 900101,driver,,,Hourly,16.50,Direct\n';
+  'Full Name,Phone,Role,Driver ID,Rate Type,Base Rate,Agency\n' +
+  'John Jones,+44 7700 900100,driver,,Hourly,16.00,Direct\n' +
+  'Maria Kowalski,+44 7700 900101,driver,,Hourly,16.50,Direct\n';
 
 interface DriverBulkImportModalProps {
   existingDriverIds: string[];
@@ -156,7 +156,6 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
       const nameCol = findColumn(headers, ALIASES.full_name);
       const phoneCol = findColumn(headers, ALIASES.phone);
       const idCol = findColumn(headers, ALIASES.driver_id);
-      const pinCol = findColumn(headers, ALIASES.pin);
       const professionCol = findColumn(headers, ALIASES.profession);
       const rateTypeCol = findColumn(headers, ALIASES.rate_type);
       const baseRateCol = findColumn(headers, ALIASES.base_rate);
@@ -187,9 +186,6 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
           }
           usedIds.add(driver_id);
 
-          const rawPin = pinCol ? String(row[pinCol] ?? '').trim() : '';
-          const pin = /^\d{6}$/.test(rawPin) ? rawPin : generateRandomPin();
-
           const rawProfession = professionCol ? String(row[professionCol] ?? '').trim().toLowerCase() : 'driver';
           const profession = VALID_PROFESSIONS.includes(rawProfession) ? rawProfession : 'driver';
 
@@ -206,7 +202,6 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
             full_name,
             phone: phoneCol ? String(row[phoneCol] ?? '').trim() : '',
             driver_id,
-            pin,
             profession,
             rate_type,
             base_rate,
@@ -253,7 +248,7 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
     for (const row of readyRows) {
       try {
         const { data, error: fnError } = await supabase.functions.invoke('create-driver', {
-          body: { driver_id: row.driver_id, full_name: row.full_name, phone: row.phone || 'N/A', pin: row.pin },
+          body: { driver_id: row.driver_id, full_name: row.full_name, phone: row.phone || 'N/A' },
         });
 
         if (fnError || data?.error) {
@@ -265,12 +260,17 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
               if (body?.error) msg = body.error;
             }
           } catch (_) {}
-          results.push({ driver_id: row.driver_id, full_name: row.full_name, phone: row.phone, pin: row.pin, ok: false, reason: msg });
+          results.push({ driver_id: row.driver_id, full_name: row.full_name, phone: row.phone, activation_code: null, ok: false, reason: msg });
           setImportProgress(results.length);
           continue;
         }
 
         const createdDriver = data.driver;
+        // The identity is created either way — a missing code here (rare:
+        // issue_driver_activation_code itself failed) doesn't roll back
+        // the driver, same as the single Add Employee form's handling;
+        // it just means this row needs "Reset PIN" afterward instead.
+        const activationCode: string | null = typeof data.activation_code === 'string' ? data.activation_code : null;
         // Best-effort compensation setup — same second write the single Add
         // Employee form does; identity is already saved regardless of this.
         try {
@@ -289,9 +289,9 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
           // Non-fatal — identity already exists, rate can be fixed from Edit.
         }
 
-        results.push({ driver_id: row.driver_id, full_name: row.full_name, phone: row.phone, pin: row.pin, ok: true });
+        results.push({ driver_id: row.driver_id, full_name: row.full_name, phone: row.phone, activation_code: activationCode, ok: true, reason: activationCode ? undefined : 'Created, but no activation code was issued — use "Reset PIN" from the row menu.' });
       } catch (err: any) {
-        results.push({ driver_id: row.driver_id, full_name: row.full_name, phone: row.phone, pin: row.pin, ok: false, reason: err?.message ?? 'Connection error' });
+        results.push({ driver_id: row.driver_id, full_name: row.full_name, phone: row.phone, activation_code: null, ok: false, reason: err?.message ?? 'Connection error' });
       }
       setImportProgress(results.length);
     }
@@ -318,15 +318,49 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
       'Driver ID': o.driver_id,
       'Full Name': o.full_name,
       'Phone': o.phone,
-      'PIN': o.pin,
+      'Activation Code': o.activation_code ?? '(use Reset PIN from the row menu)',
     })));
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `driver-credentials-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `driver-activation-codes-${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  // Opens a printable list in a new tab — for handing paper copies to
+  // drivers who don't have their own device handy yet, alongside the
+  // CSV download above. Same one-time-only codes; nothing is re-fetched.
+  const openPrintableCodes = () => {
+    if (!outcomes) return;
+    const successes = outcomes.filter(o => o.ok);
+    const win = window.open('', '_blank');
+    if (!win) return;
+    const rowsHtml = successes.map(o => `
+      <tr>
+        <td>${escapeHtml(o.full_name)}</td>
+        <td style="font-family: monospace;">${escapeHtml(o.driver_id)}</td>
+        <td style="font-family: monospace; font-weight: 700;">${escapeHtml(o.activation_code ?? 'Use Reset PIN')}</td>
+      </tr>`).join('');
+    win.document.write(`<!DOCTYPE html>
+      <html><head><title>Driver activation codes — ${new Date().toLocaleDateString('en-GB')}</title>
+      <style>
+        body { font-family: -apple-system, Arial, sans-serif; padding: 32px; color: #111; }
+        h1 { font-size: 18px; }
+        p { color: #555; font-size: 12px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #ddd; font-size: 13px; }
+        th { text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; color: #888; }
+        @media print { body { padding: 0; } }
+      </style></head>
+      <body>
+        <h1>Driver activation codes</h1>
+        <p>Imported ${new Date().toLocaleString('en-GB')} — each code works once and expires in 48 hours. In the Tachyo app, a driver enters their Driver ID and this code, then picks their own 6-digit PIN.</p>
+        <table><thead><tr><th>Name</th><th>Driver ID</th><th>Activation Code</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+        <script>window.onload = () => window.print();</script>
+      </body></html>`);
+    win.document.close();
   };
 
   const successCount = outcomes?.filter(o => o.ok).length ?? 0;
@@ -367,14 +401,35 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
             {successCount > 0 && (
               <div className="mb-16" style={{ padding: '14px 16px', borderRadius: '10px', background: 'rgba(204,0,0,0.06)', border: '1px solid rgba(204,0,0,0.2)' }}>
                 <p className="text-sm font-bold text-primary mb-8 flex items-center" style={{ gap: '6px' }}>
-                  <KeyRound size={14} color="#CC0000" /> Download credentials now — this is the only time these PINs can be shown
+                  <KeyRound size={14} color="#CC0000" /> Activation codes — this is the only time these can be shown
                 </p>
                 <p className="text-xs text-muted mb-12">
-                  PINs are bcrypt-hashed the moment they're saved and can never be read back after this screen closes. Download this file and hand each driver their login, or the code is gone for good — you'd have to reset it later instead.
+                  Each driver enters their Driver ID and this code in the Tachyo app, then picks their own 6-digit PIN. Codes expire in 48 hours and can't be viewed again after this screen closes — download or print them now, or reset an individual driver's from the row menu later.
                 </p>
-                <button type="button" onClick={downloadCredentials} className="btn btn-brand flex items-center" style={{ gap: '6px' }}>
-                  <Download size={14} /> Download {successCount} Credential{successCount === 1 ? '' : 's'} (.csv)
-                </button>
+                <div className="table-container mb-12" style={{ maxHeight: '260px', overflowY: 'auto' }}>
+                  <table className="data-table">
+                    <thead><tr><th>Name</th><th>Driver ID</th><th>Activation Code</th></tr></thead>
+                    <tbody>
+                      {outcomes.filter(o => o.ok).map(o => (
+                        <tr key={o.driver_id}>
+                          <td className="text-sm">{o.full_name}</td>
+                          <td className="font-mono text-xs">{o.driver_id}</td>
+                          <td className="font-mono font-bold" style={{ color: o.activation_code ? '#CC0000' : '#E65100', letterSpacing: '0.08em' }}>
+                            {o.activation_code ?? 'Use Reset PIN'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center" style={{ gap: '10px', flexWrap: 'wrap' }}>
+                  <button type="button" onClick={downloadCredentials} className="btn btn-brand flex items-center" style={{ gap: '6px' }}>
+                    <Download size={14} /> Download {successCount} Code{successCount === 1 ? '' : 's'} (.csv)
+                  </button>
+                  <button type="button" onClick={openPrintableCodes} className="btn btn-secondary flex items-center" style={{ gap: '6px' }}>
+                    <FileSpreadsheet size={14} /> Open Printable List (new tab)
+                  </button>
+                </div>
               </div>
             )}
 
@@ -402,7 +457,7 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
         ) : !rows ? (
           <>
             <div className="flex items-center justify-between mb-8">
-              <p className="text-xs text-muted m-0">Reads any spreadsheet with a name column — phone, role, driver ID, PIN and pay rate are all optional and auto-filled if missing.</p>
+              <p className="text-xs text-muted m-0">Reads any spreadsheet with a name column — phone, role, driver ID and pay rate are all optional and auto-filled if missing. Each driver gets a one-time activation code after import; they pick their own PIN in the app.</p>
               <button type="button" onClick={downloadSample} className="text-xs font-bold" style={{ background: 'none', border: 'none', color: 'var(--brand-red)', cursor: 'pointer', padding: 0, whiteSpace: 'nowrap' }}>
                 Download sample CSV
               </button>
@@ -457,7 +512,6 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
                     <th>Driver ID</th>
                     <th>Phone</th>
                     <th>Role</th>
-                    <th>PIN</th>
                     <th>Rate</th>
                   </tr>
                 </thead>
@@ -482,7 +536,6 @@ export default function DriverBulkImportModal({ existingDriverIds, onClose, onIm
                         </td>
                         <td className="font-mono text-xs">{row.phone || '—'}</td>
                         <td className="text-xs">{PROFESSION_DISPLAY(row.profession)}</td>
-                        <td className="font-mono text-xs">{row.pin}</td>
                         <td className="font-mono text-xs">
                           {row.rate_type === 'Fixed Shift Rate (Day Rate)' ? `£${row.base_rate.toFixed(2)}/shift` : `£${row.base_rate.toFixed(2)}/hr`}
                         </td>

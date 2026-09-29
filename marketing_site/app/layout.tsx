@@ -22,6 +22,23 @@ export const metadata: Metadata = {
   description:
     "Tachyo puts live dispatch, walk-around checks, proof of delivery, fuel, payroll and margin on one screen — so UK haulage operators know which routes actually pay and can prove every delivery.",
   metadataBase: new URL("https://tachyo.co.uk"),
+  openGraph: {
+    title: "Tachyo — Fleet Dispatch, Payroll & Compliance for UK Haulage",
+    description:
+      "Live dispatch, walk-around checks, proof of delivery, fuel, payroll and margin on one screen.",
+    url: "https://tachyo.co.uk",
+    siteName: "Tachyo",
+    images: [{ url: "/features/dashboard-screenshot.png", width: 2880, height: 1800, alt: "The Tachyo admin dashboard" }],
+    locale: "en_GB",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Tachyo — Fleet Dispatch, Payroll & Compliance for UK Haulage",
+    description:
+      "Live dispatch, walk-around checks, proof of delivery, fuel, payroll and margin on one screen.",
+    images: ["/features/dashboard-screenshot.png"],
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
