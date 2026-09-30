@@ -114,6 +114,39 @@ serve(async (req: Request) => {
     const body = await req.json().catch(() => ({}));
     const action = String(body.action ?? "");
 
+    // ── Permanently delete a company and everything in it ───────
+    // The SQL side (platform_delete_account, migration 080) does the
+    // actual data deletion and is called on userClient — it's SECURITY
+    // DEFINER but still checks is_platform_admin()/current_org_id() off
+    // the caller's own JWT, which only exists on that client, not the
+    // service-role one. It returns every driver/admin auth id the org
+    // had; those are only deletable from Supabase Auth here, with the
+    // service role.
+    if (action === "delete-account") {
+      const organizationId = String(body.organizationId ?? "");
+      const confirmName = String(body.confirmName ?? "");
+      if (!organizationId) return json({ error: "organizationId is required." }, 400);
+
+      const { data: rows, error: rpcError } = await userClient.rpc("platform_delete_account", {
+        p_organization_id: organizationId,
+        p_confirm_name: confirmName,
+      });
+      if (rpcError) {
+        return json({ error: rpcError.message }, 400);
+      }
+      const authIds: string[] = rows?.[0]?.deleted_auth_ids ?? [];
+      let authDeleteFailures = 0;
+      for (const id of authIds) {
+        const { error: delErr } = await admin.auth.admin.deleteUser(id);
+        if (delErr) {
+          authDeleteFailures++;
+          console.warn("platform-accounts delete-account: auth user delete failed (non-fatal):", id, delErr.message);
+        }
+      }
+      console.log(`Account deleted (org ${organizationId}) by platform admin ${callerEmail}: ${authIds.length} auth users, ${authDeleteFailures} failed`);
+      return json({ success: true, authUsersRemoved: authIds.length - authDeleteFailures, authUsersFailed: authDeleteFailures });
+    }
+
     if (action !== "create-account") {
       return json({ error: `Unknown action "${action}".` }, 400);
     }

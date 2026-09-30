@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
-import { Building2, ChevronDown, Copy, Check, Plus, Search, X, UserPlus, Inbox, Users } from 'lucide-react';
+import { Building2, ChevronDown, Copy, Check, Plus, Search, X, UserPlus, Inbox, Users, Trash2, TriangleAlert } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../components/ui/empty';
 
@@ -98,6 +98,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
   const [savingId, setSavingId] = useState<string | null>(null);
   const [confirmSuspendId, setConfirmSuspendId] = useState<string | null>(null);
   const [accessAccount, setAccessAccount] = useState<AccountRow | null>(null);
+  const [deleteAccount, setDeleteAccount] = useState<AccountRow | null>(null);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createForRequest, setCreateForRequest] = useState<AccessRequest | null>(null);
@@ -570,6 +571,16 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
                               {busy ? 'Reactivating…' : 'Reactivate'}
                             </button>
                           )}
+                          {!isOwn && (
+                            <button
+                              type="button"
+                              title="Permanently delete this account"
+                              onClick={() => setDeleteAccount(a)}
+                              style={{ marginLeft: '6px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--brand-red)', verticalAlign: 'middle', padding: '6px' }}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -579,12 +590,20 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
             </div>
           )}
           <p className="text-xs text-muted m-0" style={{ padding: '10px 16px', borderTop: '1px solid var(--border-color)' }}>
-            Suspending blocks the company's admin panel straight away (their drivers can still clock out of a shift in progress). Reactivate any time.
+            Suspending blocks the company's admin panel straight away (their drivers can still clock out of a shift in progress) and can be undone any time. The <Trash2 size={11} style={{ verticalAlign: '-1px' }} /> icon permanently deletes an account instead — that cannot be undone.
           </p>
         </div>
       )}
 
       {accessAccount && <AccessModal account={accessAccount} onClose={() => setAccessAccount(null)} onChanged={load} />}
+
+      {deleteAccount && (
+        <DeleteAccountModal
+          account={deleteAccount}
+          onClose={() => setDeleteAccount(null)}
+          onDeleted={() => { setDeleteAccount(null); load(); changed(); }}
+        />
+      )}
 
       {createOpen && (
         <div
@@ -816,6 +835,94 @@ function AccessModal({ account, onClose, onChanged }: { account: AccountRow; onC
             </div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Permanent delete: type the company name to confirm ────────
+// Everything the account has — drivers, shifts, telemetry, walk-
+// arounds, proofs, loads, logins — is gone for good. Suspend (above)
+// is the reversible option; this isn't, so it needs its own explicit,
+// harder-to-misclick confirmation rather than the inline
+// confirm/cancel pair Suspend uses.
+function DeleteAccountModal({ account, onClose, onDeleted }: { account: AccountRow; onClose: () => void; onDeleted: () => void }) {
+  const [confirmText, setConfirmText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [error, setError] = useState('');
+  const matches = confirmText.trim() === account.name;
+
+  const submit = async () => {
+    if (!supabase || !matches || isDeleting) return;
+    setIsDeleting(true);
+    setError('');
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke('platform-accounts', {
+        body: { action: 'delete-account', organizationId: account.organization_id, confirmName: confirmText.trim() },
+      });
+      let failure: string | null = data?.error ?? null;
+      if (!failure && fnError) {
+        try {
+          const body = await (fnError as any).context?.json?.();
+          failure = body?.error ?? fnError.message;
+        } catch {
+          failure = fnError.message;
+        }
+      }
+      if (failure) {
+        setError(failure);
+        return;
+      }
+      onDeleted();
+    } catch (err: any) {
+      setError(describeError(err, 'Could not delete this account.'));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px' }} onClick={() => { if (!isDeleting) onClose(); }}>
+      <div className="modal-content glass-panel" style={{ width: '460px', maxWidth: '100%', padding: '24px', borderRadius: '16px', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)' }} onClick={e => e.stopPropagation()}>
+        <div className="flex align-center justify-between mb-16">
+          <h3 className="text-md font-bold text-primary m-0 flex align-center" style={{ gap: '8px' }}>
+            <TriangleAlert size={18} color="var(--brand-red)" /> Permanently Delete Account
+          </h3>
+          <button type="button" onClick={onClose} disabled={isDeleting} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}><X size={18} /></button>
+        </div>
+
+        <div className="login-notice login-notice--error mb-16" style={{ fontSize: '12.5px' }}>
+          This deletes <strong>{account.name}</strong> and everything it has — {account.employees} employee{account.employees === 1 ? '' : 's'}, {account.shifts_total} shift{account.shifts_total === 1 ? '' : 's'}, every driver login, walk-around check, proof of delivery and load. It cannot be undone, and there's no backup to restore from. Suspend instead if you just want to block their access for now.
+        </div>
+
+        <div className="input-group mb-16">
+          <span className="input-label">TYPE THE COMPANY NAME TO CONFIRM</span>
+          <input
+            type="text"
+            className="input-field font-mono"
+            style={{ width: '100%' }}
+            placeholder={account.name}
+            value={confirmText}
+            disabled={isDeleting}
+            onChange={(e) => setConfirmText(e.target.value)}
+            autoFocus
+          />
+        </div>
+
+        {error && <div className="login-notice login-notice--error mb-16">{error}</div>}
+
+        <div className="flex gap-8 justify-end" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '16px' }}>
+          <button type="button" className="btn btn-secondary" onClick={onClose} disabled={isDeleting}>Cancel</button>
+          <button
+            type="button"
+            className="btn"
+            disabled={!matches || isDeleting}
+            style={{ backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', opacity: matches ? 1 : 0.5 }}
+            onClick={submit}
+          >
+            {isDeleting ? 'Deleting…' : 'Permanently Delete'}
+          </button>
+        </div>
       </div>
     </div>
   );
