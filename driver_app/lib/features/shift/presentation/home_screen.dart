@@ -3352,16 +3352,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                           ...state.depots.map((depot) {
                             return ml.Marker(
                               point: ml.Geographic(lon: depot.longitude, lat: depot.latitude),
-                              size: const Size(30, 30),
+                              size: const Size(18, 18),
                               child: Center(
                                 child: Container(
-                                  width: 18,
-                                  height: 18,
+                                  width: 11,
+                                  height: 11,
                                   decoration: BoxDecoration(
                                     color: const Color(0xFFCC0000),
                                     shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.white, width: 3),
-                                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 4, offset: const Offset(0, 1))],
+                                    border: Border.all(color: Colors.white, width: 2),
+                                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 3, offset: const Offset(0, 1))],
                                   ),
                                 ),
                               ),

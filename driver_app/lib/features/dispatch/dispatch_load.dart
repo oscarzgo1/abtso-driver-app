@@ -1,3 +1,33 @@
+/// One proof-of-delivery photo the driver took for a load (migration 077).
+class LoadProof {
+  final String id;
+  final String podType; // solo_departure | empty_trailer | paper_pod
+  final String photoPath;
+  final DateTime? takenAt;
+  const LoadProof({required this.id, required this.podType, required this.photoPath, this.takenAt});
+
+  static const Map<String, String> labels = {
+    'solo_departure': 'Solo departure',
+    'empty_trailer': 'Empty trailer',
+    'paper_pod': 'Paper POD',
+  };
+  String get label => labels[podType] ?? podType;
+
+  factory LoadProof.fromJson(Map<String, dynamic> j) => LoadProof(
+        id: j['id'].toString(),
+        podType: j['pod_type']?.toString() ?? '',
+        photoPath: j['photo_path']?.toString() ?? '',
+        takenAt: j['taken_at'] == null ? null : DateTime.tryParse(j['taken_at'].toString())?.toLocal(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'pod_type': podType,
+        'photo_path': photoPath,
+        'taken_at': takenAt?.toUtc().toIso8601String(),
+      };
+}
+
 /// A load the office assigned to this driver (migration 073).
 class DispatchLoad {
   final String id;
@@ -12,6 +42,7 @@ class DispatchLoad {
   final DateTime createdAt;
   final DateTime? acceptedAt;
   final DateTime? completedAt;
+  final List<LoadProof> proofs;
 
   const DispatchLoad({
     required this.id,
@@ -26,6 +57,7 @@ class DispatchLoad {
     required this.createdAt,
     this.acceptedAt,
     this.completedAt,
+    this.proofs = const [],
   });
 
   static DateTime? _date(dynamic v) => v == null ? null : DateTime.tryParse(v.toString())?.toLocal();
@@ -48,6 +80,13 @@ class DispatchLoad {
         createdAt: _date(j['created_at']) ?? DateTime.now(),
         acceptedAt: _date(j['accepted_at']),
         completedAt: _date(j['completed_at']),
+        proofs: j['shipment_proofs'] is List
+            ? (j['shipment_proofs'] as List)
+                .whereType<Map>()
+                .map((p) => LoadProof.fromJson(Map<String, dynamic>.from(p)))
+                .where((p) => p.photoPath.isNotEmpty)
+                .toList()
+            : const [],
       );
 
   Map<String, dynamic> toJson() => {
@@ -63,5 +102,6 @@ class DispatchLoad {
         'created_at': createdAt.toUtc().toIso8601String(),
         'accepted_at': acceptedAt?.toUtc().toIso8601String(),
         'completed_at': completedAt?.toUtc().toIso8601String(),
+        'shipment_proofs': proofs.map((p) => p.toJson()).toList(),
       };
 }

@@ -1069,23 +1069,23 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
   Widget _viewToggleButton(ThemeData theme, {required String label, required bool selected, required VoidCallback onTap}) {
     return Material(
       color: selected ? TachyoTheme.charcoal : Colors.white,
-      borderRadius: BorderRadius.circular(12),
+      borderRadius: BorderRadius.circular(10),
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(10),
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 180),
-          height: 46,
+          height: 36,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(10),
             border: Border.all(color: selected ? TachyoTheme.charcoal : const Color(0xFFDDDDDD), width: 1),
           ),
           child: Text(
             label,
             style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
               color: selected ? Colors.white : TachyoTheme.charcoalMid,
             ),
           ),
@@ -1448,7 +1448,7 @@ class _HistoryTabState extends ConsumerState<HistoryTab> {
                 child: Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: color ?? TachyoTheme.charcoal)),
               ),
               const SizedBox(height: 3),
-              Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: TachyoTheme.charcoalLight, height: 1.25)),
+              Text(label, textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: TachyoTheme.charcoalLight, height: 1.25)),
             ],
           ),
         ),

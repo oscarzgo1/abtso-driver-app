@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import '../../core/network/supabase_service.dart';
 import 'dispatch_load.dart';
 import 'dispatch_provider.dart';
 
-/// Read-only list of the driver's completed loads — dense, tabular figures.
+/// Read-only list of the driver's completed loads — dense, tabular figures,
+/// plus whichever proof-of-delivery photos they took to confirm each one.
 class LoadHistoryScreen extends StatefulWidget {
   const LoadHistoryScreen({super.key});
 
@@ -12,10 +14,21 @@ class LoadHistoryScreen extends StatefulWidget {
 }
 
 class _LoadHistoryScreenState extends State<LoadHistoryScreen> {
-  late Future<LoadHistoryResult> _future = fetchLoadHistory();
+  late Future<LoadHistoryResult> _future = _loadWithPhotos();
+  final Map<String, String> _photoUrls = {};
+
+  Future<LoadHistoryResult> _loadWithPhotos() async {
+    final result = await fetchLoadHistory();
+    final paths = result.loads.expand((l) => l.proofs.map((p) => p.photoPath)).toSet().toList();
+    if (paths.isNotEmpty) {
+      final urls = await SupabaseService.fetchSignedDeliveryPhotoUrls(paths);
+      if (mounted) setState(() => _photoUrls.addAll(urls));
+    }
+    return result;
+  }
 
   Future<void> _refresh() async {
-    setState(() => _future = fetchLoadHistory());
+    setState(() => _future = _loadWithPhotos());
     await _future.catchError((_) => const LoadHistoryResult([]));
   }
 
@@ -65,7 +78,7 @@ class _LoadHistoryScreenState extends State<LoadHistoryScreen> {
                       Expanded(child: Text('Offline — showing the last copy saved on this device.', style: TextStyle(fontSize: 12, color: Color(0xFF8A5A00), fontWeight: FontWeight.w600))),
                     ]),
                   ),
-                for (final l in result.loads) _HistoryCard(load: l),
+                for (final l in result.loads) _HistoryCard(load: l, photoUrls: _photoUrls),
               ],
             );
           },
@@ -77,9 +90,60 @@ class _LoadHistoryScreenState extends State<LoadHistoryScreen> {
 
 class _HistoryCard extends StatelessWidget {
   final DispatchLoad load;
-  const _HistoryCard({required this.load});
+  final Map<String, String> photoUrls;
+  const _HistoryCard({required this.load, required this.photoUrls});
 
   static const _tab = [FontFeature.tabularFigures()];
+
+  void _openPhoto(BuildContext context, LoadProof proof) {
+    final url = photoUrls[proof.photoPath];
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: url == null
+                  ? Container(
+                      height: 240,
+                      color: const Color(0xFF222222),
+                      alignment: Alignment.center,
+                      child: const CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white54),
+                    )
+                  : InteractiveViewer(
+                      child: Image.network(url, fit: BoxFit.contain),
+                    ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10)),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(proof.label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
+                  if (proof.takenAt != null) ...[
+                    const SizedBox(width: 8),
+                    Text(DateFormat('d MMM, HH:mm').format(proof.takenAt!), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF888888))),
+                  ],
+                  const SizedBox(width: 10),
+                  GestureDetector(
+                    onTap: () => Navigator.of(ctx).pop(),
+                    child: const Icon(Icons.close, size: 18, color: Color(0xFF888888)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -120,6 +184,39 @@ class _HistoryCard extends StatelessWidget {
           kv('Route', route),
           kv('Trailer', load.trailerNumber ?? '—'),
           kv('Odometer', odo),
+          if (load.proofs.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text('No delivery photo on file', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFFAAAAAA))),
+            )
+          else ...[
+            const Padding(
+              padding: EdgeInsets.only(top: 8, bottom: 4),
+              child: Text('PROOF OF DELIVERY', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w800, letterSpacing: 0.4, color: Color(0xFF888888))),
+            ),
+            Row(
+              children: [
+                for (final proof in load.proofs)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: GestureDetector(
+                      onTap: () => _openPhoto(context, proof),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          width: 54,
+                          height: 54,
+                          color: const Color(0xFFF0F0F0),
+                          child: photoUrls[proof.photoPath] != null
+                              ? Image.network(photoUrls[proof.photoPath]!, fit: BoxFit.cover)
+                              : const Center(child: Icon(Icons.image_outlined, size: 18, color: Color(0xFFAAAAAA))),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ],
         ],
       ),
     );

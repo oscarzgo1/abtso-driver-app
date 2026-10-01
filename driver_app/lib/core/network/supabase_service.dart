@@ -898,12 +898,32 @@ class SupabaseService {
     if (isMockMode || driverId == null) return [];
     final rows = await client
         .from('dispatch_loads')
-        .select('id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at')
+        .select('id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at, shipment_proofs(id, pod_type, photo_path, taken_at)')
         .eq('driver_id', driverId)
         .inFilter('status', statuses)
         .order('created_at', ascending: false)
         .limit(limit);
     return List<Map<String, dynamic>>.from(rows as List);
+  }
+
+  /// Signed, short-lived links for proof-of-delivery photos (private
+  /// "delivery-photos" bucket) — a driver can only ever get a link for
+  /// photos in their own driver_id folder (storage RLS), which is all
+  /// the Load History screen ever shows them anyway.
+  static Future<Map<String, String>> fetchSignedDeliveryPhotoUrls(List<String> paths) async {
+    if (isMockMode || paths.isEmpty) return {};
+    try {
+      final data = await client.storage.from('delivery-photos').createSignedUrls(paths, 3600);
+      final out = <String, String>{};
+      for (var i = 0; i < data.length; i++) {
+        final url = data[i].signedUrl;
+        if (url.isNotEmpty) out[paths[i]] = url;
+      }
+      return out;
+    } catch (e) {
+      debugPrint('fetchSignedDeliveryPhotoUrls failed: $e');
+      return {};
+    }
   }
 
   /// Accepts an assigned load (assigned → in_progress) with the odometer
