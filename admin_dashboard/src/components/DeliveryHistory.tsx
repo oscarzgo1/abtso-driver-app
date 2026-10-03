@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search, X, MapPin, Camera } from 'lucide-react';
+import { Search, X, MapPin, Camera, PenLine, Printer } from 'lucide-react';
 import TableFilter, { type TableFilterGroup } from './ui/table-filter';
 import { supabase, isMockMode } from '../App';
 
@@ -24,6 +24,15 @@ interface Proof {
   gps_lng: number | null;
 }
 
+interface Signature {
+  first_name: string;
+  last_name: string;
+  svg: string;
+  signed_at: string;
+  gps_lat: number | null;
+  gps_lng: number | null;
+}
+
 interface HistoryRow {
   key: string;
   kind: 'assigned' | 'manual';
@@ -39,6 +48,7 @@ interface HistoryRow {
   cargoPath: string | null;
   sealed: boolean;
   proofs: Proof[];
+  signature: Signature | null;
 }
 
 const POD_LABEL: Record<PodType, string> = {
@@ -47,7 +57,60 @@ const POD_LABEL: Record<PodType, string> = {
   paper_pod: 'Paper POD',
 };
 
-const PROOF_SELECT = 'shipment_proofs(id, pod_type, photo_path, taken_at, gps_lat, gps_lng)';
+const PROOF_SELECT = 'shipment_proofs(id, pod_type, photo_path, taken_at, gps_lat, gps_lng), delivery_signatures(signer_first_name, signer_last_name, signature_svg, signed_at, gps_lat, gps_lng)';
+
+/** The signature taken on the driver's phone when a photo was not possible. */
+function signatureOf(r: Raw): Signature | null {
+  const raw = Array.isArray(r.delivery_signatures) ? r.delivery_signatures[0] : r.delivery_signatures;
+  if (!raw?.signature_svg) return null;
+  return {
+    first_name: raw.signer_first_name,
+    last_name: raw.signer_last_name,
+    svg: raw.signature_svg,
+    signed_at: raw.signed_at,
+    gps_lat: raw.gps_lat,
+    gps_lng: raw.gps_lng,
+  };
+}
+
+// An <img> never runs scripts, so a stored signature is safe to show this way.
+const signatureSrc = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+
+const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+const esc = (v: string) => v.replace(/[&<>"']/g, c => ESC[c]);
+
+/** Opens a clean one-page record of the signed delivery and prints it. */
+function printSignature(row: HistoryRow) {
+  const sig = row.signature;
+  if (!sig) return;
+  const w = window.open('', '_blank', 'width=820,height=900');
+  if (!w) return;
+  const route = [row.originFull, row.destinationFull].every(Boolean) ? `${row.originFull} to ${row.destinationFull}` : row.carrier;
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Delivery signature ${esc(row.ref)}</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:48px;}
+h1{font-size:20px;margin:0 0 4px;} .sub{color:#666;font-size:13px;margin-bottom:28px;}
+table{border-collapse:collapse;width:100%;font-size:14px;margin-bottom:28px;} td{padding:8px 0;border-bottom:1px solid #e3e3e3;vertical-align:top;} td:first-child{width:180px;color:#666;}
+.sig{border:1px solid #bbb;border-radius:8px;padding:12px;height:190px;display:flex;align-items:center;justify-content:center;} .sig img{max-width:100%;max-height:100%;}
+.foot{margin-top:18px;font-size:12px;color:#666;}
+</style></head><body>
+<h1>Proof of delivery: signature</h1><div class="sub">Load ${esc(row.ref)}</div>
+<table>
+<tr><td>Received by</td><td><strong>${esc(sig.first_name)} ${esc(sig.last_name)}</strong></td></tr>
+<tr><td>Signed</td><td>${esc(fullDt(sig.signed_at))}</td></tr>
+<tr><td>Driver</td><td>${esc(row.driver)}</td></tr>
+<tr><td>Route</td><td>${esc(route)}</td></tr>
+${row.trailer ? `<tr><td>Trailer</td><td>${esc(row.trailer)}</td></tr>` : ''}
+<tr><td>Delivered</td><td>${esc(fullDt(row.delivered))}</td></tr>
+${sig.gps_lat != null && sig.gps_lng != null ? `<tr><td>Location</td><td>${sig.gps_lat.toFixed(5)}, ${sig.gps_lng.toFixed(5)}</td></tr>` : ''}
+${row.notes ? `<tr><td>Notes</td><td>${esc(row.notes)}</td></tr>` : ''}
+</table>
+<div class="sig"><img src="${signatureSrc(sig.svg)}" alt="Signature"></div>
+<div class="foot">Signed on the driver's device through Tachyo. The signer confirmed receipt of this load.</div>
+<script>window.onload=function(){setTimeout(function(){window.print();},250);};</script>
+</body></html>`);
+  w.document.close();
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Raw = Record<string, any>;
@@ -144,6 +207,7 @@ export default function DeliveryHistory() {
       cargoPath: r.cargo_photo_path,
       sealed: !!r.trailer_sealed,
       proofs: proofsOf(r, {}, r.completed_at),
+      signature: signatureOf(r),
     }));
     const manual: HistoryRow[] = ((m.data ?? []) as Raw[]).map(r => ({
       key: `m-${r.id}`,
@@ -160,6 +224,7 @@ export default function DeliveryHistory() {
       cargoPath: r.cargo_photo_path,
       sealed: !!r.trailer_sealed,
       proofs: proofsOf(r, { paper: r.delivery_paperwork_path, evidence: r.delivery_evidence_path }, r.delivered_at),
+      signature: signatureOf(r),
     }));
     setRows([...assigned, ...manual].sort((a, b) => b.delivered.localeCompare(a.delivered)));
   }, []);
@@ -214,7 +279,7 @@ export default function DeliveryHistory() {
     const q = search.trim().toLowerCase();
     return rows.filter(r => {
       if (companyFilter.length > 0 && !companyFilter.includes(r.carrier)) return false;
-      if (podFilter.length > 0 && !podFilter.includes(r.proofs.length === 0 ? 'missing' : 'has')) return false;
+      if (podFilter.length > 0 && !podFilter.includes(r.proofs.length === 0 && !r.signature ? 'missing' : 'has')) return false;
       return !q || `${r.ref} ${r.driver} ${r.carrier} ${r.originFull ?? ''} ${r.destinationFull ?? ''} ${r.trailer ?? ''}`.toLowerCase().includes(q);
     });
   }, [rows, search, companyFilter, podFilter]);
@@ -322,9 +387,19 @@ export default function DeliveryHistory() {
                     </td>
                     <td>
                       <div className="flex flex-row flex-nowrap items-center gap-1.5" style={{ height: '24px' }}>
-                        {podTypes.length === 0 ? (
+                        {podTypes.length === 0 && !r.signature ? (
                           <span className="badge badge-warning" style={{ height: '20px', display: 'inline-flex', alignItems: 'center' }}>Missing POD</span>
-                        ) : podTypes.map(t => (
+                        ) : null}
+                        {r.signature && (
+                          <span
+                            className="text-[10px] font-medium uppercase tracking-wider"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', height: '20px', padding: '0 6px', borderRadius: '4px', border: '1px solid var(--border-color)', color: 'var(--charcoal-light)' }}
+                          >
+                            <PenLine size={11} />
+                            Signature
+                          </span>
+                        )}
+                        {podTypes.map(t => (
                           <span
                             key={t}
                             className="text-[10px] font-medium uppercase tracking-wider"
@@ -395,8 +470,30 @@ function PodInspector({ row, urls, onClose }: { row: HistoryRow; urls: Record<st
           <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}><X size={18} /></button>
         </div>
 
+        {row.signature && (
+          <div style={{ border: '1px solid var(--border-color)', borderRadius: '12px', background: 'var(--card-bg)', padding: '14px 16px', marginBottom: '16px', display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ background: '#fff', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '8px', width: '300px', maxWidth: '100%' }}>
+              <img src={signatureSrc(row.signature.svg)} alt="Signature" style={{ display: 'block', width: '100%', maxHeight: '170px', objectFit: 'contain' }} />
+            </div>
+            <div style={{ flex: '1 1 220px' }}>
+              <span className="input-label" style={{ display: 'block' }}>SIGNED DELIVERY</span>
+              <p className="text-md font-bold m-0 mt-4">{row.signature.first_name} {row.signature.last_name}</p>
+              <p className="text-xs text-muted m-0 mt-4">Signed {fullDt(row.signature.signed_at)}</p>
+              <p className="text-xs text-muted m-0 mt-4" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <MapPin size={12} />
+                {row.signature.gps_lat != null && row.signature.gps_lng != null
+                  ? <a href={`https://www.openstreetmap.org/?mlat=${row.signature.gps_lat}&mlon=${row.signature.gps_lng}#map=17/${row.signature.gps_lat}/${row.signature.gps_lng}`} target="_blank" rel="noreferrer" style={{ color: 'var(--brand-red)' }}>{row.signature.gps_lat.toFixed(5)}, {row.signature.gps_lng.toFixed(5)}</a>
+                  : 'No GPS stamp'}
+              </p>
+              <button type="button" className="btn btn-secondary" style={{ marginTop: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }} onClick={() => printSignature(row)}>
+                <Printer size={14} /> Print signature
+              </button>
+            </div>
+          </div>
+        )}
+
         {row.proofs.length === 0 ? (
-          <p className="text-sm text-muted">No proof photos were recorded for this delivery.</p>
+          !row.signature && <p className="text-sm text-muted">No proof photos were recorded for this delivery.</p>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px' }}>
             {row.proofs.map(p => (

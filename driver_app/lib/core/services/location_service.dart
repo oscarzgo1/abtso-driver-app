@@ -53,7 +53,7 @@ class LocationService {
   /// Start background GPS tracking stream (legacy/local UI fallback)
   static void startTrackingStream({
     required Function(Position) onLocationChanged,
-    int intervalSeconds = 120,
+    int intervalSeconds = 180,
     int distanceFilterMeters = 10,
   }) {
     _positionStreamSubscription?.cancel();

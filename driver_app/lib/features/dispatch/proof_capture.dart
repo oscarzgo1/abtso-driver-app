@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../core/network/supabase_service.dart';
 import '../auth/presentation/auth_provider.dart';
 import '../shift/presentation/shift_provider.dart';
+import 'signature_capture.dart';
 
 const _red = Color(0xFFCC0000);
 
@@ -39,7 +40,10 @@ class ProofPhoto {
 class ProofSubmission {
   final List<ProofPhoto> photos;
   final String notes;
-  const ProofSubmission(this.photos, this.notes);
+
+  /// Fallback when no photo can be taken: the receiver's name + signature.
+  final DeliverySignature? signature;
+  const ProofSubmission(this.photos, this.notes, {this.signature});
 }
 
 /// The completion sheet shared by BOTH load kinds (office-assigned and
@@ -57,6 +61,7 @@ Future<ProofSubmission?> showProofCaptureSheet(
   final takenAt = <PodType, DateTime>{};
   final uploads = <PodType, Future<String?>>{};
   final notes = TextEditingController();
+  DeliverySignature? signature;
   final orgId = ref.read(authProvider).driver?['organization_id']?.toString();
   final driverId = SupabaseService.currentDriverId;
 
@@ -102,7 +107,7 @@ Future<ProofSubmission?> showProofCaptureSheet(
           }
         }
 
-        final ready = selected.isNotEmpty && selected.every(shots.containsKey);
+        final ready = (selected.isNotEmpty && selected.every(shots.containsKey)) || signature != null;
         return Padding(
           padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
           child: SingleChildScrollView(
@@ -114,7 +119,7 @@ Future<ProofSubmission?> showProofCaptureSheet(
                 const SizedBox(height: 4),
                 Text(subtitle, style: const TextStyle(fontSize: 12.5, color: Color(0xFF666666))),
                 const SizedBox(height: 4),
-                const Text('Choose what you can prove and take a live photo for each. At least one is required.', style: TextStyle(fontSize: 12.5, color: Color(0xFF666666))),
+                const Text('Choose what you can prove and take a live photo for each. If a photo is not possible, use a signature instead.', style: TextStyle(fontSize: 12.5, color: Color(0xFF666666))),
                 const SizedBox(height: 12),
                 for (final t in PodType.values)
                   Container(
@@ -158,6 +163,52 @@ Future<ProofSubmission?> showProofCaptureSheet(
                       ),
                     ),
                   ),
+                Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: signature != null ? const Color(0xFF111111) : const Color(0xFFE0E0E0), width: signature != null ? 1.5 : 1),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () async {
+                      final r = await showSignatureCapture(
+                        sheetContext,
+                        initialFirstName: signature?.firstName,
+                        initialLastName: signature?.lastName,
+                      );
+                      if (r == null) return;
+                      final pos = ref.read(shiftProvider).currentPosition;
+                      setState(() => signature = DeliverySignature(
+                            firstName: r.firstName,
+                            lastName: r.lastName,
+                            svg: r.svg,
+                            signedAt: DateTime.now(),
+                            lat: pos?.latitude,
+                            lng: pos?.longitude,
+                          ));
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.draw_outlined, color: Color(0xFF555555)),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(signature == null ? 'Signature instead' : 'Signed by ${signature!.fullName}', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13.5)),
+                                Text(signature == null ? "Can't take a photo? The person receiving the load signs on your phone." : 'Tap to sign again', style: const TextStyle(fontSize: 11.5, color: Color(0xFF777777))),
+                              ],
+                            ),
+                          ),
+                          if (signature != null) SignaturePreview(svg: signature!.svg, height: 40),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
                 TextField(
                   controller: notes,
                   maxLines: 2,
@@ -180,7 +231,7 @@ Future<ProofSubmission?> showProofCaptureSheet(
                               for (final t in PodType.values)
                                 if (shots[t] != null)
                                   ProofPhoto(t, shots[t]!, pos?.latitude, pos?.longitude, takenAt[t] ?? DateTime.now(), uploads[t] ?? Future.value(null)),
-                            ], notes.text.trim()),
+                            ], notes.text.trim(), signature: signature),
                           );
                         }
                       : null,
@@ -190,7 +241,7 @@ Future<ProofSubmission?> showProofCaptureSheet(
                     minimumSize: const Size(double.infinity, 48),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
-                  child: Text(ready ? 'Confirm & complete' : 'Take at least one proof photo', style: const TextStyle(fontWeight: FontWeight.w800)),
+                  child: Text(ready ? 'Confirm & complete' : 'Take a proof photo or get a signature', style: const TextStyle(fontWeight: FontWeight.w800)),
                 ),
               ],
             ),
@@ -222,7 +273,9 @@ Future<List<Map<String, dynamic>>?> uploadProofs(WidgetRef ref, ProofSubmission 
     );
   }));
   if (paths.any((p) => p == null)) return null;
+  final sig = submission.signature;
   return [
+    if (sig != null) sig.toProofJson(),
     for (var i = 0; i < submission.photos.length; i++)
       {
         'pod_type': submission.photos[i].type.wire,

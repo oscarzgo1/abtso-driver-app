@@ -1,9 +1,12 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../services/gps_policy.dart';
 
 /// Singleton access to the Supabase client with offline mock mode fallback
 class SupabaseService {
   SupabaseService._();
+
+  static const deactivatedMessage = 'This account has been deactivated. Contact your manager.';
 
   static SupabaseClient get client => Supabase.instance.client;
 
@@ -93,7 +96,10 @@ class SupabaseService {
       // the account is locked so a stubborn attacker can't count wrong
       // PINs by pressing sign-in in a loop.
       try {
-        final lock = await client.rpc('driver_lock_state', params: {'p_driver_id': cleanDriverIdUpper});
+        final lock = await client.rpc('driver_lock_state', params: {
+          'p_company_slug': cleanCompanyCode,
+          'p_driver_id': cleanDriverIdUpper,
+        });
         final rows = (lock is List) ? lock : const [];
         if (rows.isNotEmpty) {
           final untilStr = rows.first['locked_until']?.toString();
@@ -109,30 +115,38 @@ class SupabaseService {
         // Non-fatal: fall through, the real auth call still guards.
       }
 
+      String? authErrorCode;
       final response = await client.auth.signInWithPassword(
         email: email,
         password: pin.trim(),
       ).catchError((e) {
+        if (e is AuthException) authErrorCode = e.code;
         return AuthResponse();
       });
+
+      // A deactivated driver's login is banned (migration 091). Say so,
+      // rather than "wrong PIN", and don't count it as a failed attempt.
+      if (authErrorCode == 'user_banned') {
+        return {'success': false, 'error': deactivatedMessage};
+      }
 
       final session = response.session;
       if (session == null) {
         // Wrong PIN — record the failure and return a shaped lock-out
         // response, then keep the "wrong id or PIN" wording for the app.
+        // We're signed out here, so this goes through the pre-sign-in RPC
+        // (migration 085) rather than reading the drivers table directly.
         try {
-          final driverRow = await client
-              .from('drivers')
-              .select('id, pin_status')
-              .eq('driver_id', cleanDriverIdUpper)
-              .maybeSingle();
-          if (driverRow != null && driverRow['pin_status'] == 'pending') {
-            return {'success': false, 'pin_pending': true, 'error': "Your PIN isn't set up yet. Tap \"I have an activation code\" below."};
-          }
-          if (driverRow != null) {
-            final state = await client.rpc('register_pin_failure', params: {'p_driver_id': driverRow['id']});
-            final rows = (state is List) ? state : const [];
-            final row = rows.isNotEmpty ? rows.first as Map : {};
+          final state = await client.rpc('register_driver_login_failure', params: {
+            'p_company_slug': cleanCompanyCode,
+            'p_driver_id': cleanDriverIdUpper,
+          });
+          final rows = (state is List) ? state : const [];
+          if (rows.isNotEmpty) {
+            final row = rows.first as Map;
+            if (row['pin_pending'] == true) {
+              return {'success': false, 'pin_pending': true, 'error': "Your PIN isn't set up yet. Tap \"I have an activation code\" below."};
+            }
             final untilStr = row['locked_until']?.toString();
             if (untilStr != null && untilStr.isNotEmpty) {
               final until = DateTime.tryParse(untilStr);
@@ -289,7 +303,7 @@ class SupabaseService {
   /// from the PIN entry / activate screen when the driver isn't signed
   /// in, so we fall back to writing directly through the anon key when
   /// there's no session.
-  static Future<Map<String, dynamic>> requestPinReset({required String driverId}) async {
+  static Future<Map<String, dynamic>> requestPinReset({required String driverId, String? companyCode}) async {
     if (isMockMode) return {'success': true};
     try {
       // Uses driver-activate as a stateless entry: it doesn't need a
@@ -299,6 +313,8 @@ class SupabaseService {
       final response = await client.functions.invoke('driver-activate', body: {
         'action': 'forgot',
         'driver_id': driverId,
+        // Driver IDs are only unique per company — this picks the right one.
+        if (companyCode != null && companyCode.isNotEmpty) 'company_code': companyCode,
       });
       final data = response.data;
       if (data is Map && data['error'] != null) return {'success': false, 'error': data['error']};
@@ -351,13 +367,22 @@ class SupabaseService {
       final user = client.auth.currentUser;
       if (user == null) return {'success': false, 'error': 'You need to sign in again before changing your PIN.'};
 
-      // Supabase Auth password — used by signInWithPassword.
-      await client.auth.updateUser(UserAttributes(password: cleanPin));
-
       // pin_hash is behind RLS admins own, so the driver's own change
       // goes through a SECURITY DEFINER function that writes the row
-      // and clears any lock-out state (migration 065).
+      // and clears any lock-out state (migration 065). It runs first: it
+      // also validates the PIN server-side, and if it fails the sign-in
+      // password must not have changed already — otherwise the driver is
+      // told the change failed while their old PIN no longer works.
       await client.rpc('change_own_pin', params: {'p_new_pin': cleanPin});
+
+      // Supabase Auth password — used by signInWithPassword. A retry after
+      // a half-finished attempt can hit "same password"; that already
+      // means the sign-in PIN is the new one.
+      try {
+        await client.auth.updateUser(UserAttributes(password: cleanPin));
+      } on AuthException catch (e) {
+        if (e.code != 'same_password') rethrow;
+      }
 
       return {'success': true};
     } on PostgrestException catch (e) {
@@ -545,11 +570,27 @@ class SupabaseService {
     }
 
     try {
+      // Comparing a driver code like "dan.tester" against the uuid id column
+      // makes Postgres reject the whole query (400), which callers read as
+      // "offline" — so only match on id when the key is actually a uuid.
+      final isUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+          .hasMatch(driverCodeOrId);
       final response = await client
           .from('drivers')
           .select('*')
-          .or('driver_id.ilike.$driverCodeOrId,id.eq.$driverCodeOrId')
+          .or(isUuid ? 'id.eq.$driverCodeOrId' : 'driver_id.ilike.$driverCodeOrId')
           .maybeSingle();
+
+      if (response != null && response['is_active'] == false) {
+        // Deactivated by the employer. Auth refuses new sign-ins and token
+        // refreshes (migration 091), but a session already on the device
+        // keeps a valid access token for up to an hour — end it here.
+        return {
+          'success': false,
+          'error': deactivatedMessage,
+          'errorType': 'deactivated',
+        };
+      }
 
       if (response != null) {
         final String rateType = (response['rate_type'] != null && response['rate_type'].toString().isNotEmpty)
@@ -722,11 +763,37 @@ class SupabaseService {
           .eq('is_active', true)
           .order('vehicle_type')
           .order('vehicle_number');
-      return List<Map<String, dynamic>>.from(response);
+      return _mergeVehicleRows(List<Map<String, dynamic>>.from(response));
     } catch (e) {
       debugPrint('fetchOrgVehicles failed: $e');
       return [];
     }
+  }
+
+  /// The fleet register stores one `vehicles` row per inspection type
+  /// (MOT, PMI, tacho…) for the same registration, so the raw list repeats
+  /// a unit once per inspection. Collapse them to one entry per unit: keep
+  /// the first row's id, the earliest of each due date (the one that makes
+  /// the unit unroadworthy first) and VOR if any row is VOR.
+  static List<Map<String, dynamic>> _mergeVehicleRows(List<Map<String, dynamic>> rows) {
+    const dateKeys = ['inspection_due_date', 'mot_due_date', 'tax_due_date', 'insurance_expiry_date'];
+    final merged = <String, Map<String, dynamic>>{};
+    for (final row in rows) {
+      final key = '${row['vehicle_type']}|${(row['vehicle_number'] ?? '').toString().trim().toUpperCase()}';
+      final existing = merged[key];
+      if (existing == null) {
+        merged[key] = Map<String, dynamic>.from(row);
+        continue;
+      }
+      if (row['is_vor'] == true) existing['is_vor'] = true;
+      existing['fuel_tank_capacity_litres'] ??= row['fuel_tank_capacity_litres'];
+      for (final k in dateKeys) {
+        final a = DateTime.tryParse(existing[k]?.toString() ?? '');
+        final b = DateTime.tryParse(row[k]?.toString() ?? '');
+        if (b != null && (a == null || b.isBefore(a))) existing[k] = row[k];
+      }
+    }
+    return merged.values.toList();
   }
 
   /// Submits a driver-reported defect (migration 040/043) — vehicle
@@ -793,34 +860,65 @@ class SupabaseService {
     required List<Map<String, dynamic>> items,
     String? overallResult, // 'pass' | 'defects_found'
     String? defectNote,
+    String? existingId, // a saved draft to finish/overwrite instead of inserting
   }) async {
     if (isMockMode) {
       debugPrint('MOCK walkaround check: $checkType for vehicle $vehicleId / trailer $trailerId — ${overallResult ?? 'draft'}');
       return 'mock-walkaround-id';
     }
+    final row = {
+      'driver_id': driverId,
+      'vehicle_id': vehicleId,
+      'trailer_id': trailerId,
+      'custom_trailer_number': trailerId == null && customTrailerNumber != null && customTrailerNumber.trim().isNotEmpty
+          ? customTrailerNumber.trim().toUpperCase()
+          : null,
+      if (shiftId != null) 'shift_id': shiftId,
+      'check_type': checkType,
+      'started_at': startedAt.toUtc().toIso8601String(),
+      'completed_at': completedAt?.toUtc().toIso8601String(),
+      'duration_seconds': completedAt?.difference(startedAt).inSeconds,
+      'items': items,
+      'overall_result': overallResult,
+      'defect_note': defectNote != null && defectNote.trim().isNotEmpty ? defectNote.trim() : null,
+    };
     try {
-      final response = await client
-          .from('walkaround_checks')
-          .insert({
-            'driver_id': driverId,
-            'vehicle_id': vehicleId,
-            if (trailerId != null) 'trailer_id': trailerId,
-            if (trailerId == null && customTrailerNumber != null && customTrailerNumber.trim().isNotEmpty)
-              'custom_trailer_number': customTrailerNumber.trim().toUpperCase(),
-            if (shiftId != null) 'shift_id': shiftId,
-            'check_type': checkType,
-            'started_at': startedAt.toUtc().toIso8601String(),
-            if (completedAt != null) 'completed_at': completedAt.toUtc().toIso8601String(),
-            if (completedAt != null) 'duration_seconds': completedAt.difference(startedAt).inSeconds,
-            'items': items,
-            if (overallResult != null) 'overall_result': overallResult,
-            if (defectNote != null && defectNote.trim().isNotEmpty) 'defect_note': defectNote.trim(),
-          })
-          .select('id')
-          .single();
+      final query = existingId != null
+          ? client.from('walkaround_checks').update(row).eq('id', existingId)
+          : client.from('walkaround_checks').insert(row);
+      final response = await query.select('id').single();
       return response['id'] as String?;
     } catch (e) {
       debugPrint('submitWalkaroundCheck failed: $e');
+      return null;
+    }
+  }
+
+  /// The signed-in driver's most recent unsubmitted draft for this check,
+  /// so "Save as Draft" can be picked up where it was left. Without a
+  /// shift (a start-of-shift check before clock-in) it only looks at
+  /// drafts from the last 12 hours.
+  static Future<Map<String, dynamic>?> fetchWalkaroundDraft({
+    required String checkType,
+    String? shiftId,
+  }) async {
+    final driverId = currentDriverId;
+    if (isMockMode || driverId == null) return null;
+    try {
+      var query = client
+          .from('walkaround_checks')
+          .select('id, started_at, items, trailer_id, custom_trailer_number')
+          .eq('driver_id', driverId)
+          .eq('check_type', checkType)
+          .isFilter('completed_at', null);
+      query = shiftId != null
+          ? query.eq('shift_id', shiftId)
+          : query.isFilter('shift_id', null).gte('started_at', DateTime.now().subtract(const Duration(hours: 12)).toUtc().toIso8601String());
+      final rows = await query.order('started_at', ascending: false).limit(1);
+      final list = List<Map<String, dynamic>>.from(rows as List);
+      return list.isEmpty ? null : list.first;
+    } catch (e) {
+      debugPrint('fetchWalkaroundDraft failed: $e');
       return null;
     }
   }
@@ -904,6 +1002,33 @@ class SupabaseService {
         .order('created_at', ascending: false)
         .limit(limit);
     return List<Map<String, dynamic>>.from(rows as List);
+  }
+
+  /// The company's rule for what happens when tracking stops (Settings →
+  /// Alerts in the admin panel). Falls back to the defaults when offline.
+  static Future<GpsPolicy> fetchGpsPolicy() async {
+    if (isMockMode) return GpsPolicy.fallback;
+    try {
+      final res = await client.rpc('driver_gps_policy');
+      if (res is Map) return GpsPolicy.fromJson(Map<String, dynamic>.from(res));
+    } catch (e) {
+      debugPrint('fetchGpsPolicy failed, using defaults: $e');
+    }
+    return GpsPolicy.fallback;
+  }
+
+  /// The driver's most recent "tracking stopped" event in the last 12
+  /// hours (null if none) — shown when they reopen the app so they know
+  /// what the office saw and what it did to their time.
+  static Future<Map<String, dynamic>?> fetchRecentGpsOffline() async {
+    if (isMockMode) return null;
+    try {
+      final res = await client.rpc('my_recent_gps_offline');
+      if (res is List && res.isNotEmpty) return Map<String, dynamic>.from(res.first as Map);
+    } catch (e) {
+      debugPrint('fetchRecentGpsOffline failed: $e');
+    }
+    return null;
   }
 
   /// Signed, short-lived links for proof-of-delivery photos (private

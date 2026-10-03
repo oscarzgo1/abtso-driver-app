@@ -137,8 +137,38 @@ serve(async (req: Request) => {
       const POD_TYPES = ["solo_departure", "empty_trailer", "paper_pod"];
       type Proof = { pod_type: string; path: string; lat: number | null; lng: number | null; taken_at: string | null };
       let proofs: Proof[] = [];
+      // A signature can stand in for the photos when none can be taken
+      // (client feedback, Oct 2026): {pod_type:"signature", first_name,
+      // last_name, signature_svg, lat, lng, taken_at}. Stored in
+      // delivery_signatures (migration 081), not shipment_proofs.
+      let signature: { first: string; last: string; svg: string; lat: number | null; lng: number | null; signedAt: string } | null = null;
       if (Array.isArray(body.proofs)) {
-        proofs = body.proofs.map((p: Record<string, unknown>) => ({
+        const entries = body.proofs as Record<string, unknown>[];
+        const sigEntries = entries.filter((p) => String(p?.pod_type ?? "") === "signature");
+        if (sigEntries.length > 1) {
+          return json({ error: "Only one signature per delivery." }, 400);
+        }
+        if (sigEntries.length === 1) {
+          const s = sigEntries[0];
+          const first = String(s.first_name ?? "").trim().slice(0, 60);
+          const last = String(s.last_name ?? "").trim().slice(0, 60);
+          const svg = String(s.signature_svg ?? "");
+          if (!first || !last) {
+            return json({ error: "Enter the first and last name of the person signing." }, 400);
+          }
+          if (!svg.startsWith("<svg") || svg.length < 40 || svg.length > 200000 || /<script|onload|onerror|javascript:/i.test(svg)) {
+            return json({ error: "The signature is missing or invalid." }, 400);
+          }
+          signature = {
+            first,
+            last,
+            svg,
+            lat: typeof s.lat === "number" ? s.lat : null,
+            lng: typeof s.lng === "number" ? s.lng : null,
+            signedAt: typeof s.taken_at === "string" ? s.taken_at : new Date().toISOString(),
+          };
+        }
+        proofs = entries.filter((p) => String(p?.pod_type ?? "") !== "signature").map((p: Record<string, unknown>) => ({
           pod_type: String(p.pod_type ?? ""),
           path: String(p.path ?? "").trim(),
           lat: typeof p.lat === "number" ? p.lat : null,
@@ -152,8 +182,8 @@ serve(async (req: Request) => {
           { pod_type: "empty_trailer", path: body.evidence_path.trim(), lat: null, lng: null, taken_at: null },
         ];
       }
-      if (proofs.length < 1) {
-        return json({ error: "Take at least one proof photo to confirm delivery." }, 400);
+      if (proofs.length < 1 && !signature) {
+        return json({ error: "Take at least one proof photo, or get a signature, to confirm delivery." }, 400);
       }
       if (proofs.length > 12) {
         return json({ error: "Too many photos." }, 400);
@@ -196,20 +226,38 @@ serve(async (req: Request) => {
       if (!delivered) {
         return json({ error: "That load is already confirmed as delivered." }, 400);
       }
-      const { error: proofError } = await admin.from("shipment_proofs").insert(
-        proofs.map((p) => ({
+      if (proofs.length > 0) {
+        const { error: proofError } = await admin.from("shipment_proofs").insert(
+          proofs.map((p) => ({
+            organization_id: shift.organization_id,
+            driver_id: callerId,
+            shift_load_id: delivered.id,
+            pod_type: p.pod_type,
+            photo_path: p.path,
+            taken_at: p.taken_at ?? new Date().toISOString(),
+            gps_lat: p.lat,
+            gps_lng: p.lng,
+          })),
+        );
+        if (proofError) {
+          console.error("attach-load: proof insert failed:", proofError.message);
+        }
+      }
+      if (signature) {
+        const { error: sigError } = await admin.from("delivery_signatures").insert({
           organization_id: shift.organization_id,
           driver_id: callerId,
           shift_load_id: delivered.id,
-          pod_type: p.pod_type,
-          photo_path: p.path,
-          taken_at: p.taken_at ?? new Date().toISOString(),
-          gps_lat: p.lat,
-          gps_lng: p.lng,
-        })),
-      );
-      if (proofError) {
-        console.error("attach-load: proof insert failed:", proofError.message);
+          signer_first_name: signature.first,
+          signer_last_name: signature.last,
+          signature_svg: signature.svg,
+          signed_at: signature.signedAt,
+          gps_lat: signature.lat,
+          gps_lng: signature.lng,
+        });
+        if (sigError) {
+          console.error("attach-load: signature insert failed:", sigError.message);
+        }
       }
       return json({ success: true, load_id: delivered.id, delivered_at: delivered.delivered_at });
     }

@@ -23,6 +23,8 @@ import '../../holidays/presentation/holiday_screen.dart';
 import '../../../core/network/supabase_service.dart';
 import '../../../core/utils/role_helper.dart';
 import '../../../core/network/entitlements_provider.dart';
+import '../../../core/services/tracking_guard.dart';
+import 'tracking_setup_sheet.dart';
 
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -52,7 +54,7 @@ List<ml.Geographic> _geofenceRing(double lat, double lon, double radiusM, {int s
   ];
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStateMixin {
+class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
   Timer? _shiftDurationTimer;
   Duration _elapsedTime = Duration.zero;
   ml.MapController? _mapController;
@@ -61,6 +63,119 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   RealtimeChannel? _driverProfileChannel;
   RealtimeChannel? _shiftsChannel;
   RealtimeChannel? _orgSettingsChannel;
+
+  // ── Live tracking health (Always-location, GPS, battery) ──────────
+  // A driver who lets the phone stop Tachyo in the background stops being
+  // tracked, so the app checks on launch and every time it comes back to
+  // the foreground, and shows the setup sheet until it's fixed.
+  bool _trackingUnhealthy = false;
+  bool _trackingSheetOpen = false;
+  final Set<String> _shownOfflineNotices = {};
+
+  /// Wired into ShiftNotifier.trackingPrompt so clock-in can ask for the
+  /// permissions with the sheet's direct-to-settings buttons.
+  Future<bool> _promptTrackingSetup() async {
+    if (!mounted || _trackingSheetOpen) return false;
+    _trackingSheetOpen = true;
+    try {
+      final policy = ref.read(shiftProvider.notifier).gpsPolicy;
+      return await TrackingSetupSheet.show(context, mandatory: true, policy: policy);
+    } finally {
+      _trackingSheetOpen = false;
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _checkTrackingOnResume();
+  }
+
+  Future<void> _checkTrackingOnResume() async {
+    if (kIsWeb || !mounted) return;
+    final hasShift = ref.read(shiftProvider).activeShift != null;
+    final health = await TrackingGuard.check();
+    if (!mounted) return;
+    setState(() => _trackingUnhealthy = hasShift && !health.healthy);
+    if (!hasShift) return;
+
+    await ref.read(shiftProvider.notifier).refreshGpsPolicy();
+    final event = await SupabaseService.fetchRecentGpsOffline();
+    if (event != null && mounted) _showOfflineNotice(event);
+
+    if (!health.healthy && mounted) {
+      await _promptTrackingSetup();
+      final again = await TrackingGuard.check();
+      if (mounted) setState(() => _trackingUnhealthy = !again.healthy);
+    }
+  }
+
+  /// Tells the driver, once per event, that the office saw tracking stop
+  /// and what that did to their time (only if the company chose to notify).
+  void _showOfflineNotice(Map<String, dynamic> event) {
+    final policy = ref.read(shiftProvider.notifier).gpsPolicy;
+    if (!policy.notifyDriver) return;
+    final started = DateTime.tryParse(event['started_at']?.toString() ?? '')?.toLocal();
+    if (started == null) return;
+    final key = started.toIso8601String();
+    if (_shownOfflineNotices.contains(key)) return;
+    _shownOfflineNotices.add(key);
+
+    final resolved = DateTime.tryParse(event['resolved_at']?.toString() ?? '')?.toLocal();
+    final fmt = DateFormat('HH:mm');
+    final minutes = ((resolved ?? DateTime.now()).difference(started).inMinutes).clamp(0, 100000);
+    final action = event['action_taken']?.toString() ?? 'alert';
+    final String title;
+    final String body;
+    if (action == 'clocked_out') {
+      title = 'You were clocked out';
+      body = 'Tachyo stopped tracking you at ${fmt.format(started)}, so your shift was ended automatically at that time. Keep Tachyo running to avoid this.';
+    } else if (action == 'time_frozen') {
+      title = 'Your time was paused';
+      body = 'Tachyo stopped tracking you at ${fmt.format(started)}'
+          '${resolved != null ? ' until ${fmt.format(resolved)} ($minutes min)' : ''}. That time is paused and will not be paid.';
+    } else {
+      title = 'Tracking stopped';
+      body = 'Tachyo stopped tracking you at ${fmt.format(started)}'
+          '${resolved != null ? ' until ${fmt.format(resolved)} ($minutes min)' : ''}. Your manager was alerted.';
+    }
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
+        content: Text(body, style: const TextStyle(fontSize: 14, height: 1.4)),
+        actions: [TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('OK'))],
+      ),
+    );
+  }
+
+  Widget _buildTrackingBanner() {
+    return Material(
+      color: TachyoTheme.brandRed,
+      child: InkWell(
+        onTap: _promptTrackingSetup,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          child: Row(
+            children: [
+              const Icon(Icons.gps_off_rounded, size: 18, color: Colors.white),
+              const SizedBox(width: 10),
+              const Expanded(
+                child: Text(
+                  'Tracking is limited — fix your phone settings',
+                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8)),
+                child: const Text('Fix now', style: TextStyle(color: TachyoTheme.brandRed, fontWeight: FontWeight.w800, fontSize: 12)),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   /// Whether the Action Hub shows "Request Night Out" at all (migration
   /// 050's organizations.allow_driver_night_out_requests). Defaults
@@ -180,7 +295,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   @override
   void initState() {
     super.initState();
-    
+    WidgetsBinding.instance.addObserver(this);
+    ref.read(shiftProvider.notifier).trackingPrompt = _promptTrackingSetup;
+
     _iconAnimationController = AnimationController(
       duration: const Duration(milliseconds: 300),
       vsync: this,
@@ -203,6 +320,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
       if (ref.read(shiftProvider).activeShift != null) {
         _iconAnimationController.value = 1.0;
+        unawaited(_checkTrackingOnResume());
       }
     });
 
@@ -234,6 +352,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _cleanupRealtimeListeners();
     _shiftDurationTimer?.cancel();
     _iconAnimationController.dispose();
@@ -3305,6 +3424,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                 ],
               ),
             ),
+
+            if (_trackingUnhealthy && isClockedIn) _buildTrackingBanner(),
 
             // Live map (High Contrast Grid)
             Expanded(

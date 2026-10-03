@@ -24,10 +24,9 @@ import {
   Shield,
   Bell,
   MapPinned,
+  Container,
   FileText,
   User,
-  ChevronUp,
-  Activity,
   Search,
   X,
   ChevronDown,
@@ -41,10 +40,8 @@ import {
   AlertTriangle,
   CreditCard,
   LocateFixed,
-  Radio,
   Gauge,
   Filter,
-  ChevronsUpDown,
   SatelliteDish,
   Truck,
   IdCard,
@@ -87,7 +84,7 @@ import { ActivityList } from './components/ui/activity-list';
 import { EarningsDateRangePicker } from './components/ui/earnings-date-range-picker';
 import { NotificationIcon, EyeToggleIcon, VolumeIcon, SaveIcon, DownloadIcon } from './components/ui/animated-state-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './components/ui/empty';
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './components/ui/empty';
 import { Switch } from './components/ui/switch-button';
 import { ThemeToggle } from './components/ui/theme-toggle';
 import FilterBar, { FilterType, FilterOperator, AnimateChangeInHeight, type Filter as AnalyticsFilter, type FilterOption } from './components/ui/filters';
@@ -105,6 +102,9 @@ import FuelBonusSettings from './components/FuelBonusSettings';
 import DispatchLoadsModal from './components/DispatchLoadsModal';
 import ShipmentsTracking from './components/ShipmentsTracking';
 import DeliveryHistory from './components/DeliveryHistory';
+import LiveTelemetryPanel from './components/LiveTelemetryPanel';
+import JourneyHistory from './pages/JourneyHistory';
+import { buildJourney, formatDuration, LABEL_META, type Ping } from './lib/journey';
 import LockedFeature from './components/LockedFeature';
 import { TAB_FEATURE, FEATURE_LABEL, type Entitlements, type FeatureKey } from './lib/entitlements';
 import TrueProfitSection from './components/analytics/TrueProfitSection';
@@ -443,6 +443,31 @@ interface IdleAlert {
   vehicle_number?: string | null;
 }
 
+interface GpsOfflineEvent {
+  id: string;
+  driver_id: string;
+  shift_id: string;
+  started_at: string;
+  detected_at: string;
+  resolved_at: string | null;
+  last_lat: number | null;
+  last_lng: number | null;
+  time_frozen: boolean;
+  action_taken: 'alert' | 'time_frozen' | 'clocked_out';
+  acknowledged: boolean;
+  driver_name?: string;
+  vehicle_number?: string | null;
+}
+
+interface GpsPolicySettings {
+  enabled: boolean;
+  afterMinutes: number;
+  notifyDriver: boolean;
+  action: 'none' | 'freeze_time' | 'clock_out';
+  clockOutMinutes: number;
+}
+const DEFAULT_GPS_POLICY: GpsPolicySettings = { enabled: true, afterMinutes: 10, notifyDriver: true, action: 'none', clockOutMinutes: 60 };
+
 interface Depot {
   id: string;
   name: string;
@@ -754,7 +779,7 @@ export default function App() {
     }
     if (role === 'logistics') setActiveTab('dashboard');
   };
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects' | 'walkaround-history' | 'accounts'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'journeys' | 'compliance-defects' | 'walkaround-history' | 'accounts'>('dashboard');
   // Sidebar expand/collapse — controlled here (not left to the component's
   // own internal state) so the brand header can also switch between the
   // full wordmark and the icon-only mark based on the same flag.
@@ -911,6 +936,26 @@ export default function App() {
     } catch (_) {
       // Migration 038 likely not applied on this environment yet — keep defaults.
     }
+    try {
+      const { data } = await supabase
+        .from('organizations')
+        .select('gps_offline_detection_enabled, gps_offline_after_minutes, gps_offline_notify_driver, gps_offline_action, gps_offline_clock_out_minutes')
+        .eq('id', orgId)
+        .maybeSingle();
+      if (data) {
+        const next: GpsPolicySettings = {
+          enabled: data.gps_offline_detection_enabled !== false,
+          afterMinutes: Number(data.gps_offline_after_minutes) || 10,
+          notifyDriver: data.gps_offline_notify_driver !== false,
+          action: (['none', 'freeze_time', 'clock_out'].includes(data.gps_offline_action) ? data.gps_offline_action : 'none') as GpsPolicySettings['action'],
+          clockOutMinutes: Number(data.gps_offline_clock_out_minutes) || 60,
+        };
+        setGpsPolicy(next);
+        setGpsPolicyForm({ afterMinutes: String(next.afterMinutes), clockOutMinutes: String(next.clockOutMinutes) });
+      }
+    } catch (_) {
+      // Migration 081 not applied here — keep defaults.
+    }
   }, []);
 
   // Database States
@@ -951,7 +996,25 @@ export default function App() {
     () => (orgAlertSettings.idleDetectionEnabled ? allAlerts : allAlerts.filter(a => a.is_sos)),
     [allAlerts, orgAlertSettings.idleDetectionEnabled],
   );
-  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending' | 'walkaround' | 'holiday_pending' | 'access_requests' | 'risk_signoffs' | 'pin_reset'>('all');
+  // Driver whose journey-so-far is drawn on the live map (click a driver).
+  const [trailDriverId, setTrailDriverId] = useState<string | null>(null);
+  const trailLayerRef = useRef<L.LayerGroup | null>(null);
+  // Trailers shown on the live map. Today a trailer's position is its coupled
+  // driver's; when trailers get their own GPS trackers, this is where their
+  // own coordinates take over (see trailerSource below).
+  const [showTrailers, setShowTrailers] = useState(false);
+  const trailerMarkersRef = useRef<Record<string, L.Marker>>({});
+  const trailFittedFor = useRef<string | null>(null);
+  const [gpsOfflineEvents, setGpsOfflineEvents] = useState<GpsOfflineEvent[]>([]);
+  const [gpsPolicy, setGpsPolicy] = useState<GpsPolicySettings>(DEFAULT_GPS_POLICY);
+  const [gpsPolicyForm, setGpsPolicyForm] = useState({ afterMinutes: '10', clockOutMinutes: '60' });
+  const [isSavingGpsPolicy, setIsSavingGpsPolicy] = useState(false);
+  const [gpsPolicyMessage, setGpsPolicyMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null);
+  const noSignalDriverIds = useMemo(
+    () => new Set(gpsOfflineEvents.filter(e => !e.resolved_at).map(e => e.driver_id)),
+    [gpsOfflineEvents],
+  );
+  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'gps_offline' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending' | 'walkaround' | 'holiday_pending' | 'access_requests' | 'risk_signoffs' | 'pin_reset'>('all');
   const [depots, setDepots] = useState<Depot[]>([]);
   const [, setFleetVehicles] = useState<FleetVehicle[]>([]);
   const [mileageByShift, setMileageByShift] = useState<Record<string, number>>({});
@@ -1016,13 +1079,6 @@ export default function App() {
   // Active Telemetry Feed panel (Live Dispatch Board) — view, search and
   // filter state. "All Activity" shows the full roster (including drivers
   // who aren't currently pinging in) rather than only the live subset.
-  const [telemetryViewTab, setTelemetryViewTab] = useState<'live' | 'all'>('live');
-  const [telemetrySearchQuery, setTelemetrySearchQuery] = useState('');
-  const [telemetryStatusFilter, setTelemetryStatusFilter] = useState<'all' | 'moving' | 'idle' | 'stationary'>('all');
-  const [telemetryLocationFilter, setTelemetryLocationFilter] = useState('all');
-  const [telemetrySpeedFilter, setTelemetrySpeedFilter] = useState<'all' | 'stationary' | 'moving' | 'fast'>('all');
-  const [telemetrySortBy, setTelemetrySortBy] = useState<'employee' | 'speed' | 'timestamp'>('timestamp');
-  const [telemetrySortDir, setTelemetrySortDir] = useState<'asc' | 'desc'>('desc');
   const mockProgressRef = useRef<{ [driverId: string]: { index: number; direction: 'forward' | 'backward'; waitTicks: number } }>({});
   // Audio Control
   const [isAudioMuted, setIsAudioMuted] = useState(false);
@@ -1569,9 +1625,12 @@ export default function App() {
       // Fetch Active Idle Alerts — joined through to the vehicle assigned
       // to the shift this alert fired on (nullable: not every shift has
       // one), so the card can show a real VRM instead of fabricating one.
+      // Dismissed alerts are stored as cleared = true in the database, so
+      // they stay dismissed after a reload and for every other dispatcher.
       const { data: alrts } = await supabase!
         .from('idle_alerts')
         .select('*, drivers(full_name, driver_id), shifts(vehicle_id, vehicles!vehicle_id(vehicle_number))')
+        .eq('cleared', false)
         .order('started_at', { ascending: false });
 
       const mappedIdle = (alrts || [])
@@ -1592,7 +1651,7 @@ export default function App() {
         .order('created_at', { ascending: false });
 
       const mappedSOS = (sosAlrts || [])
-        .filter((a: any) => !activeClearedIds.includes(a.id))
+        .filter((a: any) => a.cleared !== true && !activeClearedIds.includes(a.id))
         .map((a: any) => ({
           ...a,
           driver_name: a.drivers?.full_name,
@@ -1608,6 +1667,21 @@ export default function App() {
         (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
       );
       setAlerts(combinedAlerts);
+
+      // Drivers on shift whose GPS stopped (migration 081): open events,
+      // plus recent unacknowledged ones so the Alert Panel can show what
+      // happened while nobody was watching.
+      const { data: offlineRows } = await supabase!
+        .from('gps_offline_events')
+        .select('*, drivers(full_name), shifts(vehicles!vehicle_id(vehicle_number))')
+        .or('resolved_at.is.null,acknowledged.eq.false')
+        .order('started_at', { ascending: false })
+        .limit(100);
+      setGpsOfflineEvents((offlineRows || []).map((e: any) => ({
+        ...e,
+        driver_name: e.drivers?.full_name,
+        vehicle_number: e.shifts?.vehicles?.vehicle_number ?? null,
+      })));
 
       // 1. Fetch Live Locations from live_driver_locations view
       const { data: viewLocs } = await supabase!
@@ -1789,19 +1863,40 @@ export default function App() {
       }
 
       if (session) {
-        setIsAuthenticated(true);
-        localStorage.setItem('admin_session', 'true');
+        // Deferred out of the callback: supabase-js holds its auth lock
+        // while listeners run, so awaiting another auth call here can hang.
+        setTimeout(async () => {
+          // A password-only (AAL1) session for an account with a verified
+          // authenticator isn't signed in yet. This listener fires on
+          // SIGNED_IN before handleLogin's own check, and on every reload,
+          // so the two-step gate has to live here as well.
+          const { data: aal } = await supabase!.auth.mfa.getAuthenticatorAssuranceLevel();
+          if (aal?.currentLevel === 'aal1' && aal.nextLevel === 'aal2') {
+            setIsAuthenticated(false);
+            localStorage.removeItem('admin_session');
+            const { data: factors } = await supabase!.auth.mfa.listFactors();
+            const first = (factors?.totp ?? []).find(f => f.status === 'verified');
+            if (first) {
+              setMfaChallenge(prev => prev ?? { factorId: first.id, code: '', verifying: false, error: '' });
+            } else {
+              await supabase!.auth.signOut();
+            }
+            return;
+          }
 
-        // A provisioned or admin-reset account carries a temporary password —
-        // divert to the same "set a new password" screen before anything else.
-        if (session.user?.user_metadata?.must_change_password) {
-          setRecoveryMode(true);
-        }
+          setIsAuthenticated(true);
+          localStorage.setItem('admin_session', 'true');
 
-        // Re-resolve the department from the database so an edited
-        // localStorage value cannot widen the UI on reload — and check
-        // the org hasn't been blocked since the last visit.
-        resolveUserRole().then(({ role, blocked, companyName, organizationId }) => {
+          // A provisioned or admin-reset account carries a temporary password —
+          // divert to the same "set a new password" screen before anything else.
+          if (session.user?.user_metadata?.must_change_password) {
+            setRecoveryMode(true);
+          }
+
+          // Re-resolve the department from the database so an edited
+          // localStorage value cannot widen the UI on reload — and check
+          // the org hasn't been blocked since the last visit.
+          const { role, blocked, companyName, organizationId } = await resolveUserRole();
           if (blocked) {
             supabase!.auth.signOut();
             setIsAuthenticated(false);
@@ -1816,7 +1911,7 @@ export default function App() {
             setCurrentOrgId(organizationId);
             loadOrgAlertSettings(organizationId);
           }
-        });
+        }, 0);
       } else {
         setIsAuthenticated(false);
         localStorage.removeItem('admin_session');
@@ -1850,6 +1945,12 @@ export default function App() {
           loadData();
         }
       )
+      .subscribe();
+
+    // Drivers whose GPS stops / resumes (migration 081)
+    const gpsOfflineChannel = supabase!
+      .channel('realtime_gps_offline')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'gps_offline_events' }, () => { loadData(); })
       .subscribe();
 
     // Realtime channel for new SOS Alerts
@@ -1910,6 +2011,7 @@ export default function App() {
     return () => {
       supabase!.removeChannel(alertChannel);
       supabase!.removeChannel(sosAlertChannel);
+      supabase!.removeChannel(gpsOfflineChannel);
       clearTimeout(reloadTimer);
       supabase!.removeChannel(shiftChannel);
       supabase!.removeChannel(gpsChannel);
@@ -1924,24 +2026,31 @@ export default function App() {
   // shift rather than refiring on every unrelated `shifts` update (e.g.
   // a revenue edit). A shift absent from the result (under 2 GPS pings)
   // is left out of the map entirely — genuinely unknown, not zero.
+  // Shifts already sent to the RPC. A shift with too few pings never lands
+  // in mileageByShift, so "not in the map" alone can't mean "not asked yet"
+  // — that re-requested it on every state update, in a tight loop.
+  const mileageRequestedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (isMockMode || !supabase || !isAuthenticated) return;
-    const completedIds = shifts.filter(s => s.status === 'completed').map(s => s.id);
-    const missing = completedIds.filter(id => !(id in mileageByShift));
+    const requested = mileageRequestedRef.current;
+    const missing = shifts
+      .filter(s => s.status === 'completed' && !(s.id in mileageByShift) && !requested.has(s.id))
+      .map(s => s.id);
     if (missing.length === 0) return;
-    let cancelled = false;
+    missing.forEach(id => requested.add(id));
     (async () => {
       const updates: Record<string, number> = {};
       for (let i = 0; i < missing.length; i += 200) {
         const chunk = missing.slice(i, i + 200);
-        const { data } = await supabase!.rpc('shift_mileages', { p_shift_ids: chunk });
+        const { data, error } = await supabase!.rpc('shift_mileages', { p_shift_ids: chunk });
+        // Let a failed batch be retried on the next shifts refresh.
+        if (error) { chunk.forEach(id => requested.delete(id)); continue; }
         for (const row of (data ?? []) as { shift_id: string; miles: number }[]) {
           updates[row.shift_id] = Number(row.miles);
         }
       }
-      if (!cancelled) setMileageByShift(prev => ({ ...prev, ...updates }));
+      if (Object.keys(updates).length > 0) setMileageByShift(prev => ({ ...prev, ...updates }));
     })();
-    return () => { cancelled = true; };
   }, [shifts, isMockMode, isAuthenticated, mileageByShift]);
 
   // ── Fuel Receipts (Profitability) ─────────────────────────
@@ -2046,7 +2155,7 @@ export default function App() {
     const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const { data, error } = await supabase
       .from('walkaround_checks')
-      .select('id, shift_id, check_type, completed_at, duration_seconds')
+      .select('id, shift_id, check_type, completed_at, duration_seconds, overall_result, defect_note')
       .eq('organization_id', currentOrgId)
       .gte('started_at', since);
     if (error) {
@@ -2834,6 +2943,43 @@ export default function App() {
     }
   };
 
+  /// Saves the GPS-tracking policy (migration 082 RPC). `patch` lets the
+  /// on/off switches save instantly; the numeric fields come from the form.
+  const saveGpsPolicy = async (patch: Partial<GpsPolicySettings> = {}) => {
+    if (isMockMode || !supabase || isSavingGpsPolicy) return;
+    const next: GpsPolicySettings = {
+      ...gpsPolicy,
+      afterMinutes: parseInt(gpsPolicyForm.afterMinutes, 10),
+      clockOutMinutes: parseInt(gpsPolicyForm.clockOutMinutes, 10),
+      ...patch,
+    };
+    if (!Number.isInteger(next.afterMinutes) || next.afterMinutes < 5 || next.afterMinutes > 120) {
+      setGpsPolicyMessage({ kind: 'error', text: 'Minutes without GPS must be between 5 and 120.' });
+      return;
+    }
+    if (!Number.isInteger(next.clockOutMinutes) || next.clockOutMinutes < 10 || next.clockOutMinutes > 480) {
+      setGpsPolicyMessage({ kind: 'error', text: 'Auto clock-out must be between 10 and 480 minutes.' });
+      return;
+    }
+    setIsSavingGpsPolicy(true);
+    setGpsPolicyMessage(null);
+    const { error } = await supabase.rpc('set_gps_policy', {
+      p_enabled: next.enabled,
+      p_after_minutes: next.afterMinutes,
+      p_notify_driver: next.notifyDriver,
+      p_action: next.action,
+      p_clock_out_minutes: next.clockOutMinutes,
+    });
+    setIsSavingGpsPolicy(false);
+    if (error) {
+      setGpsPolicyMessage({ kind: 'error', text: error.message });
+      return;
+    }
+    setGpsPolicy(next);
+    setGpsPolicyMessage({ kind: 'success', text: 'Saved.' });
+    setTimeout(() => setGpsPolicyMessage(null), 1800);
+  };
+
   /// Instant on/off toggle for company-wide idle detection (item 3).
   /// Same pattern as the Night Out toggle: an independent call so the
   /// switch never depends on the numeric threshold fields also being
@@ -2858,7 +3004,9 @@ export default function App() {
         },
       });
       const failure = await readFunctionError(data, error);
-      if (!failure) {
+      if (failure) {
+        showToast(`Couldn't change idle detection: ${failure}`, 'error');
+      } else {
         setOrgAlertSettings(prev => ({ ...prev, idleDetectionEnabled: nextValue }));
       }
     } finally {
@@ -2888,11 +3036,15 @@ export default function App() {
           nightOutMinGapHours: orgAlertSettings.nightOutMinGapHours,
           nightOutMaxGapHours: orgAlertSettings.nightOutMaxGapHours,
           complianceAlertLeadDays: orgAlertSettings.complianceAlertLeadDays,
+          walkaroundCheckTargetMinutes: orgAlertSettings.walkaroundCheckTargetMinutes,
+          loadReminderMinutes: orgAlertSettings.loadReminderMinutes,
           allowDriverNightOutRequests: nextValue,
         },
       });
       const failure = await readFunctionError(data, error);
-      if (!failure) {
+      if (failure) {
+        showToast(`Couldn't change Night Out requests: ${failure}`, 'error');
+      } else {
         setOrgAlertSettings(prev => ({ ...prev, allowDriverNightOutRequests: nextValue }));
       }
     } finally {
@@ -3258,6 +3410,15 @@ export default function App() {
     }
   };
 
+  const acknowledgeGpsOffline = async (eventId: string) => {
+    if (isMockMode || !supabase) return;
+    await supabase
+      .from('gps_offline_events')
+      .update({ acknowledged: true, acknowledged_at: new Date().toISOString() })
+      .eq('id', eventId);
+    loadData();
+  };
+
   const clearAlert = async (alertId: string, isSos?: boolean) => {
     if (isMockMode) {
       setAlerts(prev => prev.filter(a => a.id !== alertId));
@@ -3287,15 +3448,17 @@ export default function App() {
 
     try {
       // 1. Bulk acknowledge all active alerts in the database to trigger loop guards
+      // "Clear Alerts" dismisses everything currently shown, in the
+      // database — not just in this browser — so it survives a reload.
       await supabase!
         .from('idle_alerts')
-        .update({ acknowledged: true })
-        .eq('acknowledged', false);
+        .update({ acknowledged: true, cleared: true })
+        .eq('cleared', false);
 
       await supabase!
         .from('sos_alerts')
-        .update({ acknowledged: true })
-        .eq('acknowledged', false);
+        .update({ acknowledged: true, cleared: true })
+        .eq('cleared', false);
 
       // 2. Add current active alert IDs to local cleared storage
       const activeIds = alerts.map(a => a.id);
@@ -4699,6 +4862,83 @@ export default function App() {
     XLSX.writeFile(workbook, `Payroll_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
+  // Clicking a driver in the telemetry panel centres the map on them.
+  const focusDriverOnMap = useCallback((driverId: string) => {
+    const marker = markersRef.current[driverId];
+    if (!mapRef.current || !marker) return;
+    marker.openPopup();
+    setTrailDriverId(prev => {
+      if (prev === driverId) { trailFittedFor.current = null; return null; }
+      trailFittedFor.current = null;
+      return driverId;
+    });
+    if (mapRef.current) mapRef.current.setView(marker.getLatLng(), Math.max(mapRef.current.getZoom(), 14), { animate: true });
+  }, []);
+
+  // Draw the selected driver's journey so far (clock-in to now) on the live
+  // map, using the same labelling as Journey History. Redraws whenever the
+  // live positions refresh, so it grows as the driver moves.
+  useEffect(() => {
+    if (activeTab !== 'live' || !trailDriverId || isMockMode || !supabase) {
+      trailLayerRef.current?.clearLayers();
+      return;
+    }
+    const shift = shifts.find(x => x.driver_id === trailDriverId && !x.end_time && x.status !== 'completed');
+    if (!shift) { trailLayerRef.current?.clearLayers(); return; }
+    let cancelled = false;
+    (async () => {
+      const toMs = (ts: string) => new Date(/Z$|[+-]\d\d(:?\d\d)?$/.test(ts.trim()) ? ts.trim() : `${ts.trim().replace(' ', 'T')}Z`).getTime();
+      const pings: Ping[] = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase!
+          .from('gps_locations')
+          .select('latitude, longitude, speed, recorded_at')
+          .eq('shift_id', shift.id)
+          .order('recorded_at', { ascending: true })
+          .range(from, from + 999);
+        if (error) return;
+        for (const r of data ?? []) {
+          if (r.latitude == null || r.longitude == null) continue;
+          pings.push({ lat: Number(r.latitude), lng: Number(r.longitude), speed: r.speed == null ? null : Number(r.speed), t: toMs(r.recorded_at) });
+        }
+        if (!data || data.length < 1000) break;
+      }
+      if (cancelled || !mapRef.current) return;
+      const startMs = toMs(shift.start_time);
+      if ((shift as { start_lat?: number | null }).start_lat != null && (shift as { start_lng?: number | null }).start_lng != null && (pings.length === 0 || pings[0].t > startMs)) {
+        pings.unshift({ lat: Number((shift as { start_lat?: number | null }).start_lat), lng: Number((shift as { start_lng?: number | null }).start_lng), speed: 0, t: startMs });
+      }
+      const segs = buildJourney(pings, Date.now());
+      if (!trailLayerRef.current) trailLayerRef.current = L.layerGroup().addTo(mapRef.current);
+      const layer = trailLayerRef.current;
+      layer.clearLayers();
+      const all: [number, number][] = [];
+      segs.forEach(seg => {
+        const color = LABEL_META[seg.label].color;
+        const pts = seg.path.map(pt => [pt.lat, pt.lng] as [number, number]);
+        pts.forEach(pt => all.push(pt));
+        if (seg.label === 'moving' || seg.label === 'no_signal') {
+          L.polyline(pts, { color, weight: seg.label === 'moving' ? 5 : 3, opacity: 0.85, dashArray: seg.label === 'no_signal' ? '6 8' : undefined }).addTo(layer);
+        } else {
+          const t = (d: number) => new Date(d).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+          L.circleMarker([seg.from.lat, seg.from.lng], { radius: seg.label === 'stopped' ? 9 : 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 })
+            .addTo(layer)
+            .bindTooltip(`${LABEL_META[seg.label].text} ${t(seg.start)} to ${t(seg.end)} (${formatDuration(seg.durationMs)})`);
+        }
+      });
+      if (all.length && trailFittedFor.current !== trailDriverId) {
+        trailFittedFor.current = trailDriverId;
+        mapRef.current.fitBounds(L.latLngBounds(all).pad(0.2), { maxZoom: 15 });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab, trailDriverId, liveLocations, shifts]);
+
+  // Leaving the live tab or the driver clocking out ends the trail.
+  useEffect(() => {
+    if (activeTab !== 'live') setTrailDriverId(null);
+  }, [activeTab]);
+
   // ── Leaflet Map Component Implementation ────────────────────
   useEffect(() => {
     if (!isAuthenticated || activeTab !== 'live') {
@@ -4706,6 +4946,9 @@ export default function App() {
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
+        trailLayerRef.current = null;
+        trailFittedFor.current = null;
+        trailerMarkersRef.current = {};
         depotLayersRef.current = [];
       }
       return;
@@ -4760,46 +5003,97 @@ export default function App() {
       depotLayersRef.current.push(circle, marker);
     });
 
-    // Plot and update live driver markers dynamically
+    // Plot and update live driver markers dynamically. Each marker shows the
+    // driver's tractor and the trailer coupled to it beside the dot; icon and
+    // popup are refreshed on every run so a changed trailer or status shows
+    // without recreating the marker.
+    const escHtml = (v: string) => v.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
     liveLocations.forEach(loc => {
-      // MAP MARKER OVERLAP FIX (JITTER): Apply microscopic random offset ONLY to map marker position
-      const displayLat = loc.latitude + (Math.random() - 0.5) * 0.0002;
-      const displayLng = loc.longitude + (Math.random() - 0.5) * 0.0002;
-      const markerHtml = `<div class="${loc.status === 'idle' ? 'driver-idle-dot' : 'driver-live-dot'}"></div>`;
+      // Overlap jitter: a small fixed offset per driver (derived from the id,
+      // so markers stay put between refreshes) keeps two units parked
+      // together from sitting exactly on top of each other.
+      let h = 0;
+      for (let i = 0; i < loc.driver_id.length; i++) h = (h * 31 + loc.driver_id.charCodeAt(i)) >>> 0;
+      const displayLat = loc.latitude + (((h % 1000) / 1000) - 0.5) * 0.0002;
+      const displayLng = loc.longitude + ((((h >> 10) % 1000) / 1000) - 0.5) * 0.0002;
 
-      if (markersRef.current[loc.driver_id]) {
-        // Update position if marker already exists
-        markersRef.current[loc.driver_id].setLatLng([displayLat, displayLng]);
-      } else {
-        // Current tractor/trailer — same source (shifts.vehicle_id/
-        // trailer_id) as the Employee Database's "Current Unit" column
-        // and the Driver Hours calendar, not a separate lookup, so this
-        // stays consistent with those rather than becoming a third
-        // independent place this fact could drift out of sync.
-        const activeShiftForMarker = shifts.find(s => (s.driver_id === loc.driver_id) && !s.end_time && s.status !== 'completed');
-        const unitLine = activeShiftForMarker && (activeShiftForMarker.vehicle_number || activeShiftForMarker.trailer_number)
-          ? `<span style="color:#333333;font-size:11px;font-weight:bold;">${[activeShiftForMarker.vehicle_number, activeShiftForMarker.trailer_number].filter(Boolean).join(' / ')}</span><br>`
-          : '';
+      const noSignal = noSignalDriverIds.has(loc.driver_id);
+      const dotClass = noSignal ? 'driver-nosignal-dot' : loc.status === 'idle' ? 'driver-idle-dot' : 'driver-live-dot';
+      const statusLabel = noSignal ? 'NO GPS SIGNAL' : loc.status.toUpperCase();
 
-        // Create new marker
-        const marker = L.marker([displayLat, displayLng], {
-          icon: L.divIcon({
-            className: '',
-            html: markerHtml,
-            iconSize: [12, 12]
-          })
-        }).addTo(mapRef.current!).bindPopup(`
+      // Same source as the Employee Database's "Current Unit" column and the
+      // Driver Hours calendar (shifts.vehicle_id / trailer_id).
+      const sh = shifts.find(x => (x.driver_id === loc.driver_id) && !x.end_time && x.status !== 'completed');
+      const tractor = sh?.vehicle_number ? escHtml(String(sh.vehicle_number)) : null;
+      const trailer = sh?.trailer_number ? escHtml(String(sh.trailer_number)) : null;
+      const labelParts = [tractor, trailer ? `<span>+</span> ${trailer}` : null].filter(Boolean);
+      const markerHtml = `<div class="driver-marker"><div class="${dotClass}"></div>${labelParts.length ? `<div class="driver-marker-label">${labelParts.join(' ')}</div>` : ''}</div>`;
+      const unitLines = [
+        tractor ? `<span style="color:#333333;font-size:11px;font-weight:bold;">Tractor: ${tractor}</span><br>` : '',
+        trailer ? `<span style="color:#333333;font-size:11px;font-weight:bold;">Trailer: ${trailer}</span><br>` : '',
+      ].join('');
+      const popupHtml = `
           <div style="font-family:'Inter',sans-serif;">
-            <b style="font-size:13px;color:#333333;">${loc.driver_name}</b><br>
-            ${unitLine}
+            <b style="font-size:13px;color:#333333;">${escHtml(loc.driver_name)}</b><br>
+            ${unitLines}
             <span style="color:#888888;font-size:11px;">Speed: ${loc.speed_mph.toFixed(0)} mph</span><br>
-            <span style="color:${loc.status === 'idle' ? '#CC0000' : '#2E7D32'};font-size:11px;font-weight:bold;">
-              Status: ${loc.status.toUpperCase()}
+            <span style="color:${loc.status === 'idle' || noSignal ? '#CC0000' : '#2E7D32'};font-size:11px;font-weight:bold;">
+              Status: ${statusLabel}
             </span><br>
-            <a href="https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">🗺️ View in Google Maps</a>
-          </div>
-        `);
-        markersRef.current[loc.driver_id] = marker;
+            <a href="https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">View in Google Maps</a>
+          </div>`;
+      const icon = L.divIcon({ className: '', html: markerHtml, iconSize: [12, 12], iconAnchor: [6, 6] });
+
+      const existing = markersRef.current[loc.driver_id];
+      if (existing) {
+        existing.setLatLng([displayLat, displayLng]);
+        existing.setIcon(icon);
+        existing.setPopupContent(popupHtml);
+      } else {
+        markersRef.current[loc.driver_id] = L.marker([displayLat, displayLng], { icon })
+          .addTo(mapRef.current!)
+          .bindPopup(popupHtml);
+      }
+    });
+
+    // Trailer markers: a trailer icon with its number, placed at the coupled
+    // driver's position (shifts.trailer_id). `trailerSource` is 'driver' for
+    // now; a trailer with its own tracker would report source 'tracker'.
+    const wantedTrailerKeys = new Set<string>();
+    if (showTrailers) {
+      liveLocations.forEach(loc => {
+        const sh = shifts.find(x => (x.driver_id === loc.driver_id) && !x.end_time && x.status !== 'completed');
+        if (!sh?.trailer_number) return;
+        const key = `trailer-${sh.trailer_number}`;
+        wantedTrailerKeys.add(key);
+        const trailerNo = escHtml(String(sh.trailer_number));
+        const trailerSource: 'driver' | 'tracker' = 'driver';
+        // Sits just beside the driver's dot so both stay visible.
+        const lat = loc.latitude - 0.00018;
+        const lng = loc.longitude + 0.00028;
+        const html = `<div class="trailer-marker"><svg viewBox="0 0 28 16" width="26" height="15" aria-hidden="true"><rect x="1" y="2" width="20" height="9" rx="1.5" fill="#fff"/><rect x="22" y="5" width="5" height="6" rx="1" fill="#fff" opacity="0.8"/><circle cx="7" cy="13" r="2" fill="#fff"/><circle cx="14" cy="13" r="2" fill="#fff"/><circle cx="24" cy="13" r="2" fill="#fff"/></svg><span>${trailerNo}</span></div>`;
+        const popup = `
+          <div style="font-family:'Inter',sans-serif;">
+            <b style="font-size:13px;color:#333333;">Trailer ${trailerNo}</b><br>
+            <span style="color:#333333;font-size:11px;">${trailerSource === 'driver' ? `Position from ${escHtml(loc.driver_name)}${sh.vehicle_number ? ` (tractor ${escHtml(String(sh.vehicle_number))})` : ''}` : 'Position from trailer tracker'}</span><br>
+            <span style="color:#888888;font-size:11px;">Last update ${new Date(loc.last_ping).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span><br>
+            <a href="https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">View in Google Maps</a>
+          </div>`;
+        const icon = L.divIcon({ className: '', html, iconSize: [0, 0], iconAnchor: [0, 0] });
+        const existing = trailerMarkersRef.current[key];
+        if (existing) {
+          existing.setLatLng([lat, lng]);
+          existing.setIcon(icon);
+          existing.setPopupContent(popup);
+        } else {
+          trailerMarkersRef.current[key] = L.marker([lat, lng], { icon, zIndexOffset: -100 }).addTo(mapRef.current!).bindPopup(popup);
+        }
+      });
+    }
+    Object.keys(trailerMarkersRef.current).forEach(key => {
+      if (!wantedTrailerKeys.has(key)) {
+        trailerMarkersRef.current[key].remove();
+        delete trailerMarkersRef.current[key];
       }
     });
 
@@ -4845,7 +5139,7 @@ export default function App() {
       }
     });
 
-  }, [isAuthenticated, activeTab, liveLocations, alerts, depots]);
+  }, [isAuthenticated, activeTab, liveLocations, alerts, depots, shifts, noSignalDriverIds, showTrailers]);
 
   // ── Render login Page if Unauthenticated ───────────────────
   // ── Two-step sign-in code ─────────────────────────────────
@@ -5356,7 +5650,7 @@ export default function App() {
   // Includes fuel/parking items still awaiting review — the Alert Panel
   // (Alert Monitors) is now the only place those get approved, so the
   // "needs attention" badge belongs on this nav item, not Analytics'.
-  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + (hasFeature('fuel_audit') ? pendingFuelReceiptsCount : 0) + (hasFeature('payroll_rates') ? pendingParkingExpensesCount : 0) + walkaroundIssuesToday + holidayRequests.length + newAccessRequests.length + riskSignoffs.length + pinResetRequests.length;
+  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + gpsOfflineEvents.filter(e => !e.acknowledged).length + (hasFeature('fuel_audit') ? pendingFuelReceiptsCount : 0) + (hasFeature('payroll_rates') ? pendingParkingExpensesCount : 0) + walkaroundIssuesToday + holidayRequests.length + newAccessRequests.length + riskSignoffs.length + pinResetRequests.length;
   const pendingNightOutsCount = shifts.filter(s => s.night_out_status === 'pending').length;
 
   return (
@@ -5398,7 +5692,7 @@ export default function App() {
                   type="button"
                   onClick={() => setIsDispatchExpanded(v => !v)}
                   aria-expanded={isDispatchExpanded}
-                  className={`nav-item ${(activeTab === 'dashboard' || activeTab === 'live' || activeTab === 'shipments') ? 'active' : ''}`}
+                  className={`nav-item ${(activeTab === 'dashboard' || activeTab === 'live' || activeTab === 'journeys' || activeTab === 'shipments') ? 'active' : ''}`}
                   style={{ width: '100%', borderTop: 'none', borderRight: 'none', borderBottom: 'none' }}
                 >
                   <span className="nav-icon">
@@ -5428,6 +5722,7 @@ export default function App() {
                         {([
                           ['dashboard', 'Dashboard', 0] as const,
                           ['live', 'Live Map', 0] as const,
+                          ['journeys', 'Journey History', 0] as const,
                           ...(userRole === 'payroll_admin' ? [['shipments', 'Shipments', pendingLoadsCount] as const] : []),
                         ]).map(([tab, label, count]) => (
                           <button
@@ -5741,320 +6036,69 @@ export default function App() {
         )}
 
         {activeTab === 'live' && (
-          <div className="flex-1 grid gap-24" style={{ gridTemplateRows: 'auto 1fr auto', minHeight: 0 }}>
+          <div className="flex-1 grid gap-24" style={{ gridTemplateRows: 'auto 1fr', minHeight: 0 }}>
             <div>
               <h2 className="text-xl font-black text-primary m-0">LIVE MAP</h2>
-              <p className="text-xs text-muted m-0 mt-4">Every driver's last known position, depots and active alerts.</p>
+              <p className="text-xs text-muted m-0 mt-4">Every driver's last known position with their tractor and trailer, depots and active alerts.</p>
             </div>
 
-            {/* Live map layout */}
-            <div className="map-shell">
-              <div id="live-dispatch-map" className="h-full w-full"></div>
+            {/* Map takes three quarters of the width, telemetry status the right quarter */}
+            <div className="live-split">
+              <div className="map-shell">
+                <div id="live-dispatch-map" className="h-full w-full"></div>
 
-              {/* Floating Map Refresh Button */}
-              <button
-                className="map-refresh-btn"
-                onClick={handleMapRefresh}
-                disabled={isRefreshing}
-              >
-                <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} />
-                {isRefreshing ? 'REFRESHING…' : 'REFRESH POSITIONS'}
-              </button>
-            </div>
-
-            {/* Live Telemetry lists */}
-            {(() => {
-              interface TelemetryRow {
-                driver_id: string;
-                driver_name: string;
-                latitude: number | null;
-                longitude: number | null;
-                speed_mph: number | null;
-                status: 'moving' | 'idle' | 'stationary' | 'offline';
-                last_ping: string | null;
-              }
-
-              // Nearest depot to a coordinate — real geometry over the org's
-              // own depots (see Team & Access), used to give the "Location"
-              // filter genuine, non-fabricated options instead of a
-              // meaningless placeholder list.
-              const nearestDepotName = (lat: number | null, lng: number | null): string | null => {
-                if (lat == null || lng == null || depots.length === 0) return null;
-                let best = depots[0];
-                let bestDist = Infinity;
-                for (const d of depots) {
-                  const dist = (d.latitude - lat) ** 2 + (d.longitude - lng) ** 2;
-                  if (dist < bestDist) { bestDist = dist; best = d; }
-                }
-                return best.name;
-              };
-
-              const matchesEmployee = (emp: typeof employees[number], loc: LiveLocation) =>
-                loc.driver_id === emp.id || loc.driver_code === emp.driver_id;
-
-              const baseRows: TelemetryRow[] = telemetryViewTab === 'live'
-                ? liveLocations.map(l => ({
-                    driver_id: l.driver_id, driver_name: l.driver_name,
-                    latitude: l.latitude, longitude: l.longitude,
-                    speed_mph: l.speed_mph, status: l.status, last_ping: l.last_ping,
-                  }))
-                : employees.map(emp => {
-                    const live = liveLocations.find(l => matchesEmployee(emp, l));
-                    if (live) {
-                      return {
-                        driver_id: live.driver_id, driver_name: live.driver_name,
-                        latitude: live.latitude, longitude: live.longitude,
-                        speed_mph: live.speed_mph, status: live.status, last_ping: live.last_ping,
-                      };
-                    }
-                    return {
-                      driver_id: emp.id, driver_name: emp.full_name,
-                      latitude: null, longitude: null, speed_mph: null,
-                      status: 'offline' as const, last_ping: null,
-                    };
-                  });
-
-              const query = telemetrySearchQuery.trim().toLowerCase();
-              const filteredRows = baseRows.filter(row => {
-                if (query && !row.driver_name.toLowerCase().includes(query)) return false;
-                if (telemetryStatusFilter !== 'all' && row.status !== telemetryStatusFilter) return false;
-                if (telemetryLocationFilter !== 'all') {
-                  if (nearestDepotName(row.latitude, row.longitude) !== telemetryLocationFilter) return false;
-                }
-                if (telemetrySpeedFilter !== 'all') {
-                  if (row.speed_mph == null) return false;
-                  if (telemetrySpeedFilter === 'stationary' && row.speed_mph >= 0.5) return false;
-                  if (telemetrySpeedFilter === 'moving' && (row.speed_mph < 0.5 || row.speed_mph >= 40)) return false;
-                  if (telemetrySpeedFilter === 'fast' && row.speed_mph < 40) return false;
-                }
-                return true;
-              });
-
-              const sortDirMul = telemetrySortDir === 'asc' ? 1 : -1;
-              const sortedRows = [...filteredRows].sort((a, b) => {
-                if (telemetrySortBy === 'employee') return a.driver_name.localeCompare(b.driver_name) * sortDirMul;
-                if (telemetrySortBy === 'speed') return ((a.speed_mph ?? -1) - (b.speed_mph ?? -1)) * sortDirMul;
-                const at = a.last_ping ? new Date(a.last_ping).getTime() : 0;
-                const bt = b.last_ping ? new Date(b.last_ping).getTime() : 0;
-                return (at - bt) * sortDirMul;
-              });
-
-              const toggleSort = (col: 'employee' | 'speed' | 'timestamp') => {
-                if (telemetrySortBy === col) {
-                  setTelemetrySortDir(d => d === 'asc' ? 'desc' : 'asc');
-                } else {
-                  setTelemetrySortBy(col);
-                  setTelemetrySortDir(col === 'employee' ? 'asc' : 'desc');
-                }
-              };
-
-              const sortHeader = (col: 'employee' | 'speed' | 'timestamp', label: string) => (
-                <th onClick={() => toggleSort(col)}>
-                  <span className={`telemetry-sort-th ${telemetrySortBy === col ? 'telemetry-sort-th--active' : ''}`}>
-                    {label}
-                    <ChevronsUpDown size={11} />
-                  </span>
-                </th>
-              );
-
-              const hasActiveFilters = query || telemetryStatusFilter !== 'all' || telemetryLocationFilter !== 'all' || telemetrySpeedFilter !== 'all';
-
-              return (
-                <div className="telemetry-card">
-                  <div className="telemetry-header">
-                    <span className="telemetry-header-icon"><Activity size={14} /></span>
-                    <h3 className="telemetry-title">Active Telemetry Feed</h3>
-                    <ChevronUp size={16} className="telemetry-chevron" />
-                  </div>
-
-                  <div className="telemetry-tabs">
-                    <button
-                      type="button"
-                      className={`telemetry-tab ${telemetryViewTab === 'live' ? 'telemetry-tab--active' : ''}`}
-                      onClick={() => setTelemetryViewTab('live')}
-                    >
-                      <Radio size={13} /> Live Feed
-                    </button>
-                    <button
-                      type="button"
-                      className={`telemetry-tab ${telemetryViewTab === 'all' ? 'telemetry-tab--active' : ''}`}
-                      onClick={() => setTelemetryViewTab('all')}
-                    >
-                      <Clock size={13} /> All Activity
-                    </button>
-                  </div>
-
-                  <div className="telemetry-filter-bar">
-                    <div className="telemetry-search-wrap">
-                      <Search size={14} />
-                      <input
-                        type="text"
-                        placeholder="Search employee..."
-                        value={telemetrySearchQuery}
-                        onChange={(e) => setTelemetrySearchQuery(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="telemetry-pill-select-wrap">
-                      <span className="telemetry-pill-icon"><span className="telemetry-status-dot" /></span>
-                      <select
-                        className="telemetry-pill-select"
-                        value={telemetryStatusFilter}
-                        onChange={(e) => setTelemetryStatusFilter(e.target.value as any)}
-                      >
-                        <option value="all">All Status</option>
-                        <option value="moving">Moving</option>
-                        <option value="idle">Idle</option>
-                        <option value="stationary">Stationary</option>
-                      </select>
-                      <ChevronDown size={12} className="telemetry-pill-chevron" />
-                    </div>
-
-                    <div className="telemetry-pill-select-wrap">
-                      <span className="telemetry-pill-icon"><MapPinned size={13} color="#94A3B8" /></span>
-                      <select
-                        className="telemetry-pill-select"
-                        value={telemetryLocationFilter}
-                        onChange={(e) => setTelemetryLocationFilter(e.target.value)}
-                      >
-                        <option value="all">All Locations</option>
-                        {depots.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
-                      </select>
-                      <ChevronDown size={12} className="telemetry-pill-chevron" />
-                    </div>
-
-                    <div className="telemetry-pill-select-wrap">
-                      <span className="telemetry-pill-icon"><Gauge size={13} color="#94A3B8" /></span>
-                      <select
-                        className="telemetry-pill-select"
-                        value={telemetrySpeedFilter}
-                        onChange={(e) => setTelemetrySpeedFilter(e.target.value as any)}
-                      >
-                        <option value="all">All Speeds</option>
-                        <option value="stationary">Stationary</option>
-                        <option value="moving">Moving (&lt;40mph)</option>
-                        <option value="fast">Fast (40mph+)</option>
-                      </select>
-                      <ChevronDown size={12} className="telemetry-pill-chevron" />
-                    </div>
-
-                    <span className="telemetry-today-chip" title="This feed reflects live/current-day telemetry">
-                      <Calendar size={13} /> Today
-                    </span>
-
-                    <button
-                      type="button"
-                      className="telemetry-filter-icon-btn"
-                      onClick={() => {
-                        setTelemetrySearchQuery('');
-                        setTelemetryStatusFilter('all');
-                        setTelemetryLocationFilter('all');
-                        setTelemetrySpeedFilter('all');
-                      }}
-                      title="Clear filters"
-                    >
-                      <Filter size={14} />
-                    </button>
-                  </div>
-
-                  <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
-                    <table className="data-table telemetry-table">
-                      <thead>
-                        <tr>
-                          {sortHeader('employee', 'Employee')}
-                          <th>Last Ping Location</th>
-                          {sortHeader('speed', 'Speed')}
-                          <th>Telemetry Status</th>
-                          <th>Active Load</th>
-                          {sortHeader('timestamp', 'Timestamp')}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedRows.length === 0 ? (
-                          <tr>
-                            <td colSpan={6}>
-                              <Empty>
-                                <EmptyHeader>
-                                  <EmptyMedia variant="icon">
-                                    <SatelliteDish />
-                                  </EmptyMedia>
-                                  <EmptyTitle>No Telemetry Data Yet</EmptyTitle>
-                                  <EmptyDescription>
-                                    {hasActiveFilters
-                                      ? 'No employees match the current search/filters.'
-                                      : 'No employees currently logged into shifts or no telemetry data available.'}
-                                  </EmptyDescription>
-                                </EmptyHeader>
-                                <EmptyContent>
-                                  <button type="button" className="btn btn-secondary" onClick={handleMapRefresh} disabled={isRefreshing}>
-                                    <RefreshCw size={13} className={isRefreshing ? 'spin-animation' : ''} /> Refresh Feed
-                                  </button>
-                                </EmptyContent>
-                              </Empty>
-                            </td>
-                          </tr>
-                        ) : (
-                          sortedRows.map(loc => (
-                            <tr key={loc.driver_id}>
-                              <td className="font-bold text-primary">{loc.driver_name}</td>
-                              <td className="font-mono text-secondary text-sm">
-                                {loc.latitude == null || loc.longitude == null ? (
-                                  <span className="text-muted">No recent data</span>
-                                ) : (
-                                  <div className="flex align-center gap-8">
-                                    <span>{loc.latitude.toFixed(6)}, {loc.longitude.toFixed(6)}</span>
-                                    <a
-                                      href={`https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}`}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="btn btn-secondary p-4"
-                                      style={{ display: 'inline-flex', padding: '4px 8px', fontSize: '10px', minHeight: 'auto', borderRadius: '4px', gap: '4px', textDecoration: 'none' }}
-                                      title="Open in Google Maps"
-                                    >
-                                      🗺️ View Maps
-                                    </a>
-                                  </div>
-                                )}
-                              </td>
-                              <td className="font-semibold">{loc.speed_mph == null ? '—' : `${loc.speed_mph.toFixed(0)} mph`}</td>
-                              <td>
-                                <span className={`badge ${loc.status === 'idle' ? 'badge-danger' : loc.status === 'moving' ? 'badge-success' : loc.status === 'offline' ? 'badge-accent' : 'badge-warning'}`}>
-                                  {loc.status}
-                                </span>
-                              </td>
-                              <td>
-                                {(() => {
-                                  // Same source as the Employee Database's
-                                  // "Current Unit" column and the Live
-                                  // Dispatch map's marker popup — one place
-                                  // this fact lives (shifts.load_reference
-                                  // via shift_revenue), not a separate
-                                  // lookup that could drift out of sync.
-                                  const activeShiftForRow = shifts.find(s => (s.driver_id === loc.driver_id) && !s.end_time && s.status !== 'completed');
-                                  return activeShiftForRow?.load_reference ? (
-                                    <span className="font-mono font-bold" style={{ fontSize: '11px', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '2px 8px', borderRadius: '4px' }}>
-                                      {activeShiftForRow.load_reference}
-                                    </span>
-                                  ) : activeShiftForRow ? (
-                                    <span className="text-xs text-muted">No Load</span>
-                                  ) : (
-                                    <span className="text-xs text-muted">—</span>
-                                  );
-                                })()}
-                              </td>
-                              <td className="text-secondary text-sm">{loc.last_ping ? new Date(loc.last_ping).toLocaleTimeString() : '—'}</td>
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                {/* Floating map controls */}
+                <div className="map-toolbar">
+                  <button
+                    type="button"
+                    className={`map-refresh-btn map-trailer-toggle ${showTrailers ? 'map-trailer-toggle--on' : ''}`}
+                    onClick={() => setShowTrailers(v => !v)}
+                    aria-pressed={showTrailers}
+                  >
+                    <Container size={14} />
+                    {showTrailers ? 'HIDE TRAILERS' : 'SHOW TRAILERS'}
+                  </button>
+                  <button
+                    className="map-refresh-btn"
+                    onClick={handleMapRefresh}
+                    disabled={isRefreshing}
+                  >
+                    <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} />
+                    {isRefreshing ? 'REFRESHING…' : 'REFRESH POSITIONS'}
+                  </button>
                 </div>
-              );
-            })()}
+
+                {trailDriverId && (
+                  <div className="map-trail-chip">
+                    <span>Journey so far: {liveLocations.find(l => l.driver_id === trailDriverId)?.driver_name ?? 'Driver'}</span>
+                    <span className="map-trail-key">
+                      {(['moving', 'stationary', 'stopped', 'no_signal'] as const).map(k => (
+                        <span key={k}><i style={{ background: LABEL_META[k].color }} />{LABEL_META[k].text}</span>
+                      ))}
+                    </span>
+                    <button type="button" onClick={() => setTrailDriverId(null)}>Hide journey</button>
+                  </div>
+                )}
+              </div>
+
+              <LiveTelemetryPanel
+                liveLocations={liveLocations}
+                employees={employees}
+                shifts={shifts}
+                depots={depots}
+                noSignalDriverIds={noSignalDriverIds}
+                isRefreshing={isRefreshing}
+                onRefresh={handleMapRefresh}
+                onSelectDriver={focusDriverOnMap}
+              />
+            </div>
           </div>
         )}
 
+
+        {activeTab === 'journeys' && (
+          <JourneyHistory shifts={shifts} employees={employees} depots={depots} />
+        )}
 
         {/* ── TAB 2: Idle Alert Center ─────────────────────── */}
         {activeTab === 'alerts' && (
@@ -6110,6 +6154,7 @@ export default function App() {
                 >
                   {([
                     ['all', 'All Alerts', alerts.length],
+                    ['gps_offline', 'GPS Tracking Off', gpsOfflineEvents.filter(e => !e.acknowledged).length],
                     ['sos', 'Emergency SOS', alerts.filter(a => a.is_sos).length],
                     ...(orgAlertSettings.idleDetectionEnabled ? [['idle50', 'Idle >50m', null] as const] : []),
                     ...(hasFeature('fuel_audit') ? [
@@ -6138,7 +6183,7 @@ export default function App() {
                 Each card links out to its real review modal (Fuel Audit /
                 Parking Claims) instead of duplicating the approve/reject
                 actions here. */}
-            {(alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending' || alertCategoryFilter === 'walkaround' || alertCategoryFilter === 'holiday_pending' || alertCategoryFilter === 'access_requests' || alertCategoryFilter === 'risk_signoffs' || alertCategoryFilter === 'pin_reset') ? (() => {
+            {(alertCategoryFilter === 'gps_offline' || alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending' || alertCategoryFilter === 'walkaround' || alertCategoryFilter === 'holiday_pending' || alertCategoryFilter === 'access_requests' || alertCategoryFilter === 'risk_signoffs' || alertCategoryFilter === 'pin_reset') ? (() => {
               const renderQueueAlertCards = (
                 items: { key: string; driverName?: string; subtitle?: string; dateStr: string; reasonText: string }[],
                 emptyTitle: string,
@@ -6181,6 +6226,66 @@ export default function App() {
                 </div>
               );
 
+              if (alertCategoryFilter === 'gps_offline') {
+                const mins = (from: string, to: string | null) => Math.max(1, Math.round(((to ? new Date(to).getTime() : Date.now()) - new Date(from).getTime()) / 60000));
+                const lenLabel = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m` : `${m}m`);
+                const actionText: Record<GpsOfflineEvent['action_taken'], string> = {
+                  alert: 'Alert only. Time is still being paid.',
+                  time_frozen: 'Time frozen: the offline stretch is not paid.',
+                  clocked_out: 'Clocked out automatically at the last GPS ping.',
+                };
+                return gpsOfflineEvents.length === 0 ? (
+                  <div className="glass-card">
+                    <Empty>
+                      <EmptyHeader>
+                        <EmptyMedia variant="icon"><SatelliteDish /></EmptyMedia>
+                        <EmptyTitle>No GPS Tracking Alerts</EmptyTitle>
+                        <EmptyDescription>When a driver on shift stops sending GPS, for example by closing the app or switching location off, it appears here.</EmptyDescription>
+                      </EmptyHeader>
+                    </Empty>
+                  </div>
+                ) : (
+                  <div className="flex flex-col" style={{ gap: '12px' }}>
+                    {gpsOfflineEvents.map(ev => {
+                      const open = !ev.resolved_at;
+                      return (
+                        <div key={ev.id} className={`alert-card ${open ? 'alert-card--sos' : 'alert-card--idle'}`}>
+                          <div className="flex align-center justify-between mb-8">
+                            <span className={`alert-badge-pill ${open ? 'alert-badge-pill--sos' : 'alert-badge-pill--idle'}`}>
+                              <SatelliteDish size={12} /> {open ? 'GPS Tracking Off' : 'GPS Resumed'}
+                            </span>
+                            <span className="font-mono tabular-nums text-xs text-muted">
+                              {new Date(ev.started_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                          <div className="flex align-center mb-4" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                            <span className="font-semibold text-primary" style={{ fontSize: '13.5px' }}>{toTitleCase(ev.driver_name ?? '') || 'Unknown Driver'}</span>
+                            {ev.vehicle_number && <span className="font-mono font-bold text-secondary" style={{ fontSize: '12px', textTransform: 'uppercase' }}>{ev.vehicle_number}</span>}
+                          </div>
+                          <p className="text-xs text-secondary" style={{ margin: '0 0 6px' }}>
+                            {open
+                              ? `No GPS for ${lenLabel(mins(ev.started_at, null))}. The app was closed or removed from the background, or location was switched off.`
+                              : `No GPS for ${lenLabel(mins(ev.started_at, ev.resolved_at))}, tracking is back.`}
+                          </p>
+                          <p className="text-xs text-muted" style={{ margin: '0 0 10px' }}>{actionText[ev.action_taken]}</p>
+                          <div className="flex align-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                            {ev.last_lat != null && ev.last_lng != null && (
+                              <a href={`https://www.google.com/maps/search/?api=1&query=${ev.last_lat},${ev.last_lng}`} target="_blank" rel="noopener noreferrer" className="comp-edit-btn">
+                                <MapPin size={13} /> Last known position
+                              </a>
+                            )}
+                            {!ev.acknowledged && (
+                              <button type="button" className="alert-ack-btn" onClick={() => acknowledgeGpsOffline(ev.id)}>
+                                <CheckCircle2 size={13} /> Acknowledge
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              }
               if (alertCategoryFilter === 'fuel_anomaly') {
                 return renderQueueAlertCards(
                   fuelReceipts.filter(r => r.theft_flag).map(r => ({
@@ -6395,12 +6500,14 @@ export default function App() {
                     driverName: toTitleCase(issue.shift.driver_name ?? ''),
                     subtitle: issue.shift.vehicle_number ?? undefined,
                     dateStr: new Date(issue.at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }),
-                    reasonText: issue.kind === 'rushed'
+                    reasonText: issue.kind === 'defects'
+                      ? `Defects reported on the ${checkLabel(issue.checkType)}${issue.defectNote ? `: "${issue.defectNote}"` : '.'}`
+                      : issue.kind === 'rushed'
                       ? `${checkLabel(issue.checkType)[0].toUpperCase()}${checkLabel(issue.checkType).slice(1)} took ${formatCheckDuration(issue.durationSeconds)} — under the ${orgAlertSettings.walkaroundCheckTargetMinutes}-minute target.`
                       : `Skipped the ${checkLabel(issue.checkType)} — no check was submitted for this shift.`,
                   })),
                   'No Walk-Around Issues',
-                  `Every driver and mechanic completed their checks in the last 7 days, all within the ${orgAlertSettings.walkaroundCheckTargetMinutes}-minute target.`,
+                  `Every driver and mechanic completed their checks in the last 7 days, within the ${orgAlertSettings.walkaroundCheckTargetMinutes}-minute target and with no defects reported.`,
                   'Walk-Around',
                   'Open Walk-Around Checks',
                   () => setActiveTab('walkaround-history'),
@@ -8398,7 +8505,7 @@ export default function App() {
                 {
                   key: 'cost', label: 'Payroll', value: totalDriverCost, previous: comparing ? prevCost : null,
                   format: money, axisFormat: moneyAxis, color: '#CC0000', delta: tileDelta('cost'),
-                  hint: `${formatHoursMinutes(totalHours)} logged`,
+                  hint: `${formatHoursMinutes(totalHours)} on rated shifts`,
                 },
                 {
                   key: 'fuel', label: 'Fuel & AdBlue', value: totalFuelCost, previous: comparing ? prevFuelCost : null,
@@ -8460,7 +8567,7 @@ export default function App() {
                 metrics={overviewMetrics}
                 data={dailySeries.map(d => ({ label: d.label, profit: d.profit, revenue: d.revenue, cost: d.cost, fuel: d.fuel, margin: Math.round(d.margin * 10) / 10 }))}
                 defaultKey="profit"
-                emptyText="Daily figures appear once there are completed shifts in this period."
+                emptyText="Daily figures appear once completed shifts in this period have a load rate."
                 footer={
                   <>
                     <span className="flex items-center text-xs text-muted" style={{ gap: '12px', flexWrap: 'wrap' }}>
@@ -8594,546 +8701,6 @@ export default function App() {
               );
             })()}
 
-            {/* Fuel Receipts Audit — moved off the main canvas entirely
-                into a modal triggered from the toolbar button. Same data/
-                handlers as before (a receipt sits 'pending' until
-                approved here; only approved rows feed the KPI strip and
-                the ledger's Fuel Incurred column), just no longer a
-                permanent full-width section on the page. */}
-            {isFuelReceiptsModalOpen && (() => {
-              const vehicleOptions = Array.from(new Set(fuelReceipts.map(r => r.vehicle_number).filter((v): v is string => Boolean(v)))).sort();
-              const modalDriverQuery = fuelModalDriverSearch.trim().toLowerCase();
-              const filteredReceipts = fuelReceipts.filter(r => {
-                if (modalDriverQuery && !(r.driver_name ?? '').toLowerCase().includes(modalDriverQuery)) return false;
-                if (fuelModalVehicleFilter && r.vehicle_number !== fuelModalVehicleFilter) return false;
-                const receiptDate = r.created_at.slice(0, 10);
-                if (fuelModalDateStart && receiptDate < fuelModalDateStart) return false;
-                if (fuelModalDateEnd && receiptDate > fuelModalDateEnd) return false;
-                return true;
-              });
-              const pendingCount = fuelReceipts.filter(r => r.status === 'pending').length;
-
-              return (
-                <>
-                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 }} onClick={() => setIsFuelReceiptsModalOpen(false)} />
-                  <div
-                    className="glass-panel"
-                    style={{
-                      position: 'fixed', top: '5vh', left: '50%', transform: 'translateX(-50%)',
-                      width: 'min(1320px, 96vw)', maxHeight: '90vh', overflowY: 'auto', zIndex: 999,
-                      borderRadius: '14px', padding: '24px', background: 'var(--card-bg)',
-                      boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                      <span className="flex items-center" style={{ gap: '10px' }}>
-                        <Receipt size={18} color="var(--charcoal)" />
-                        <h2 className="text-lg font-black text-primary m-0">Fuel &amp; AdBlue Receipts Audit</h2>
-                        {pendingCount > 0 && <span className="badge badge-warning font-mono">{pendingCount} awaiting review</span>}
-                        {anomalousFuelReceiptCount > 0 && (
-                          <span className="badge badge-danger font-mono">
-                            {anomalousFuelReceiptCount} anomal{anomalousFuelReceiptCount === 1 ? 'y' : 'ies'}
-                          </span>
-                        )}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setIsFuelReceiptsModalOpen(false)}
-                        aria-label="Close"
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)', display: 'flex' }}
-                      >
-                        <X size={18} />
-                      </button>
-                    </div>
-
-                    <div className="flex items-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
-                      <div className="telemetry-search-wrap" style={{ minWidth: '200px' }}>
-                        <Search size={14} />
-                        <input
-                          type="text"
-                          placeholder="Search driver name…"
-                          value={fuelModalDriverSearch}
-                          onChange={(e) => setFuelModalDriverSearch(e.target.value)}
-                        />
-                      </div>
-                      <select
-                        className="select-field"
-                        style={{ width: 'auto' }}
-                        value={fuelModalVehicleFilter}
-                        onChange={(e) => setFuelModalVehicleFilter(e.target.value)}
-                      >
-                        <option value="">All Vehicles</option>
-                        {vehicleOptions.map(v => <option key={v} value={v}>{v}</option>)}
-                      </select>
-                      <span className="flex items-center" style={{ gap: '6px' }}>
-                        <Calendar size={13} className="text-muted" />
-                        <input type="date" className="input-field" style={{ width: 'auto' }} value={fuelModalDateStart} onChange={(e) => setFuelModalDateStart(e.target.value)} />
-                        <span className="text-xs text-muted">to</span>
-                        <input type="date" className="input-field" style={{ width: 'auto' }} value={fuelModalDateEnd} onChange={(e) => setFuelModalDateEnd(e.target.value)} />
-                      </span>
-                      {(fuelModalDriverSearch || fuelModalVehicleFilter || fuelModalDateStart || fuelModalDateEnd) && (
-                        <button
-                          type="button"
-                          onClick={() => { setFuelModalDriverSearch(''); setFuelModalVehicleFilter(''); setFuelModalDateStart(''); setFuelModalDateEnd(''); }}
-                          className="text-xs font-bold"
-                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}
-                        >
-                          Clear
-                        </button>
-                      )}
-                      <span className="text-xs text-muted" style={{ marginLeft: 'auto' }}>{filteredReceipts.length} of {fuelReceipts.length} receipts</span>
-                    </div>
-
-                    {fuelReceipts.length === 0 ? (
-                      <Empty className="py-24">
-                        <EmptyHeader>
-                          <EmptyMedia variant="icon"><Fuel /></EmptyMedia>
-                          <EmptyTitle>No Fuel Receipts Yet</EmptyTitle>
-                          <EmptyDescription>Fuel receipts drivers photograph from the app will show up here for approval.</EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
-                    ) : filteredReceipts.length === 0 ? (
-                      <Empty className="py-24">
-                        <EmptyHeader>
-                          <EmptyMedia variant="icon"><Search /></EmptyMedia>
-                          <EmptyTitle>No Matches</EmptyTitle>
-                          <EmptyDescription>No receipts match the current search/filters.</EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
-                    ) : (
-                      <div className="table-container">
-                        <table className="data-table data-table--nowrap">
-                          <thead>
-                            <tr>
-                              <th>Photos</th>
-                              <th>Driver Name</th>
-                              <th>Vehicle Reg</th>
-                              <th>Date &amp; Time</th>
-                              <th>Odometer (mi)</th>
-                              <th>Volume (L)</th>
-                              <th>Total Cost (£)</th>
-                              <th>Δ Miles / MPG</th>
-                              <th>Station / Vendor</th>
-                              <th>Status</th>
-                              <th></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {filteredReceipts.map(r => {
-                              const thumbUrl = fuelReceiptThumbUrls[r.receipt_photo_path];
-                              const dashboardThumbUrl = r.dashboard_photo_path ? fuelReceiptThumbUrls[r.dashboard_photo_path] : undefined;
-                              return (
-                                <React.Fragment key={r.id}>
-                                  <tr style={r.theft_flag ? { background: 'rgba(204,0,0,0.05)' } : undefined}>
-                                    <td>
-                                      <div className="flex items-center" style={{ gap: '4px' }}>
-                                        <button
-                                          type="button"
-                                          onClick={() => openFuelReceiptLightbox(r.receipt_photo_path)}
-                                          style={{ position: 'relative', width: '36px', height: '36px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
-                                          title="View pump/receipt photo"
-                                        >
-                                          {thumbUrl ? (
-                                            <img src={thumbUrl} alt="Fuel receipt" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                          ) : (
-                                            <Fuel size={13} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
-                                          )}
-                                        </button>
-                                        {r.dashboard_photo_path ? (
-                                          <button
-                                            type="button"
-                                            onClick={() => openFuelReceiptLightbox(r.dashboard_photo_path!)}
-                                            style={{ position: 'relative', width: '36px', height: '36px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
-                                            title="View dashboard photo (odometer + fuel gauge)"
-                                          >
-                                            {dashboardThumbUrl ? (
-                                              <img src={dashboardThumbUrl} alt="Dashboard" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                            ) : (
-                                              <Gauge size={13} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
-                                            )}
-                                          </button>
-                                        ) : (
-                                          <span title="No dashboard photo (submitted before this check existed)" style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '6px', background: 'var(--card-bg-hover)' }}>
-                                            <Gauge size={13} color="var(--charcoal-light)" style={{ opacity: 0.3 }} />
-                                          </span>
-                                        )}
-                                        {r.gps_lat !== null && r.gps_lng !== null && (
-                                          <button
-                                            type="button"
-                                            onClick={() => setGpsCompareReceipt(r)}
-                                            title="Compare GPS location vs. claimed station"
-                                            style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: '6px', background: 'var(--card-bg-hover)', cursor: 'pointer', color: 'var(--charcoal)' }}
-                                          >
-                                            <MapPin size={13} />
-                                          </button>
-                                        )}
-                                      </div>
-                                    </td>
-                                    <td className="font-medium text-primary" style={{ fontSize: '13px' }}>{toTitleCase(r.driver_name ?? '') || '—'}</td>
-                                    <td>
-                                      {r.vehicle_number ? (
-                                        <span className="font-mono font-bold" style={{ fontSize: '11px', textTransform: 'uppercase', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '2px 8px', borderRadius: '4px' }}>
-                                          {r.vehicle_number}
-                                        </span>
-                                      ) : '—'}
-                                    </td>
-                                    <td className="whitespace-nowrap font-mono tabular-nums text-xs">
-                                      {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}{' '}
-                                      {new Date(r.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
-                                    </td>
-                                    <td className="font-mono tabular-nums text-xs">{r.odometer_miles === null ? '—' : r.odometer_miles.toLocaleString('en-GB')}</td>
-                                    <td className="font-mono tabular-nums font-semibold text-xs">
-                                      {r.liters === null ? '—' : r.liters.toFixed(1)}
-                                      {r.fuel_tank_capacity_litres != null && r.liters !== null && r.liters > r.fuel_tank_capacity_litres && (
-                                        <AlertTriangle size={11} color="#CC0000" style={{ marginLeft: '4px', verticalAlign: 'middle' }} />
-                                      )}
-                                    </td>
-                                    <td className="font-mono tabular-nums font-semibold">{r.total_cost === null ? '—' : `£${r.total_cost.toFixed(2)}`}</td>
-                                    <td className="whitespace-nowrap">
-                                      {r.calculated_mpg != null ? (
-                                        <div className="flex flex-col" style={{ gap: '2px' }}>
-                                          <span className="text-xs text-muted">{r.delta_miles}mi</span>
-                                          {r.theft_flag ? (
-                                            <span
-                                              className="font-mono tabular-nums font-black"
-                                              style={{ fontSize: '11px', color: '#fff', background: '#CC0000', padding: '2px 8px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px', width: 'fit-content' }}
-                                              title={r.theft_reason ?? undefined}
-                                            >
-                                              <AlertTriangle size={11} /> Anomaly: {r.calculated_mpg.toFixed(1)} MPG
-                                            </span>
-                                          ) : (
-                                            <span
-                                              className="font-mono tabular-nums font-bold"
-                                              style={{ fontSize: '11px', color: '#10B981', background: 'rgba(16,185,129,0.12)', padding: '2px 8px', borderRadius: '4px', width: 'fit-content' }}
-                                            >
-                                              {r.calculated_mpg.toFixed(1)} MPG
-                                            </span>
-                                          )}
-                                        </div>
-                                      ) : (
-                                        <span className="text-xs text-muted">
-                                          {r.odometer_miles === null ? 'No odometer' : !r.is_full_tank ? 'Partial fill — not compared' : 'First full-tank fill logged'}
-                                        </span>
-                                      )}
-                                    </td>
-                                    <td className="text-xs">{r.vendor ?? '—'}</td>
-                                    <td>
-                                      <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
-                                        {r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : 'Pending'}
-                                      </span>
-                                      {r.auto_approved && (
-                                        <span className="text-xs text-muted" style={{ marginLeft: '6px' }} title="No admin reviewed this within 10 hours, so it was approved automatically.">
-                                          (auto)
-                                        </span>
-                                      )}
-                                    </td>
-                                    <td className="whitespace-nowrap">
-                                      {r.status === 'pending' && (
-                                        <div className="flex items-center" style={{ gap: '6px' }}>
-                                          <button
-                                            type="button"
-                                            disabled={reviewingFuelReceiptId === r.id}
-                                            onClick={() => handleReviewFuelReceipt(r.id, 'approved')}
-                                            title={r.theft_flag ? 'Flagged as an anomaly — approve only after checking the photos/GPS' : 'Approve Log'}
-                                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#10B981' }}
-                                          >
-                                            <CircleCheck size={18} />
-                                          </button>
-                                          <button
-                                            type="button"
-                                            disabled={reviewingFuelReceiptId === r.id}
-                                            onClick={() => handleReviewFuelReceipt(r.id, 'rejected')}
-                                            title={r.theft_flag ? 'Flag for Investigation' : 'Reject'}
-                                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--brand-red)' }}
-                                          >
-                                            <CircleX size={18} />
-                                          </button>
-                                        </div>
-                                      )}
-                                    </td>
-                                  </tr>
-                                  {r.vehicle_id && r.fuel_tank_capacity_litres == null && (
-                                    <tr>
-                                      <td colSpan={11} style={{ padding: '4px 8px', background: 'var(--card-bg-hover)' }}>
-                                        <span className="flex items-center text-xs" style={{ gap: '6px', color: 'var(--charcoal-light)' }}>
-                                          <AlertTriangle size={11} />
-                                          {r.vehicle_number ?? 'This vehicle'}'s tank capacity isn't set — the over-capacity check is skipped until it is.
-                                          <input
-                                            type="number"
-                                            placeholder="Capacity (L)"
-                                            className="input-field"
-                                            style={{ width: '110px', fontSize: '11px', padding: '2px 6px' }}
-                                            onKeyDown={async (e) => {
-                                              if (e.key !== 'Enter' || isMockMode || !supabase || !r.vehicle_id) return;
-                                              const value = parseInt((e.target as HTMLInputElement).value, 10);
-                                              if (!value || value <= 0) return;
-                                              await supabase.from('vehicles').update({ fuel_tank_capacity_litres: value }).eq('id', r.vehicle_id);
-                                              loadFuelReceipts();
-                                            }}
-                                          />
-                                        </span>
-                                      </td>
-                                    </tr>
-                                  )}
-                                </React.Fragment>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                </>
-              );
-            })()}
-
-            <ImageLightbox url={fuelReceiptLightboxUrl} onClose={() => setFuelReceiptLightboxUrl(null)} alt="Fuel receipt, full size" />
-
-            {/* GPS vs. claimed station — a real embedded map centred on
-                the driver's actual submit-time GPS fix (OpenStreetMap's
-                public embed endpoint, no API key needed), with the
-                vendor name shown as plain driver-entered text next to
-                it. Honest about what this is NOT: without a geocoding
-                key (Google/Mapbox) there's no way to plot where "Shell
-                Membury" actually is and measure a distance — an admin
-                has to eyeball whether the pin plausibly matches. */}
-            {gpsCompareReceipt && gpsCompareReceipt.gps_lat !== null && gpsCompareReceipt.gps_lng !== null && (() => {
-              const lat = gpsCompareReceipt.gps_lat!;
-              const lng = gpsCompareReceipt.gps_lng!;
-              const delta = 0.01;
-              const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
-              const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`;
-              const externalUrl = `https://www.google.com/maps?q=${lat},${lng}`;
-              return (
-                <>
-                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 }} onClick={() => setGpsCompareReceipt(null)} />
-                  <div
-                    className="glass-panel"
-                    style={{
-                      position: 'fixed', top: '8vh', left: '50%', transform: 'translateX(-50%)',
-                      width: 'min(560px, 92vw)', zIndex: 999, borderRadius: '14px', padding: '20px',
-                      background: 'var(--card-bg)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="flex items-center justify-between mb-12">
-                      <span className="flex items-center text-sm font-bold" style={{ gap: '8px' }}>
-                        <MapPin size={16} color="var(--brand-red)" /> GPS at Submission
-                      </span>
-                      <button type="button" onClick={() => setGpsCompareReceipt(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}>
-                        <X size={18} />
-                      </button>
-                    </div>
-                    <div className="mb-12" style={{ padding: '10px 12px', borderRadius: '8px', background: 'var(--card-bg-hover)' }}>
-                      <p className="text-xs font-bold text-muted m-0" style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>Claimed station (driver-entered, not verified)</p>
-                      <p className="text-sm font-semibold text-primary m-0 mt-4">{gpsCompareReceipt.vendor || 'No vendor name entered'}</p>
-                    </div>
-                    <div style={{ borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
-                      <iframe
-                        title="Fuel log GPS location"
-                        width="100%"
-                        height="320"
-                        style={{ border: 0, display: 'block' }}
-                        src={embedUrl}
-                      />
-                    </div>
-                    <div className="flex items-center justify-between mt-8">
-                      <span className="font-mono text-xs text-muted">{lat.toFixed(5)}, {lng.toFixed(5)}</span>
-                      <a href={externalUrl} target="_blank" rel="noreferrer" className="text-xs font-bold" style={{ color: 'var(--brand-red)' }}>
-                        Open in Google Maps <ExternalLink size={11} style={{ verticalAlign: 'middle', marginLeft: '2px' }} />
-                      </a>
-                    </div>
-                    <p className="text-xs text-muted mt-8 m-0">
-                      This confirms where the driver's device was when the log was submitted — not the station's real address (no geocoding is configured), so treat a mismatch as a prompt to ask, not final proof.
-                    </p>
-                  </div>
-                </>
-              );
-            })()}
-
-            {/* Overnight Parking Expenses — same review-queue shape as the
-                Fuel Receipts Audit modal above, except approving a claim
-                also reimburses it into that shift's payroll (extras_amount)
-                — see handleReviewParkingExpense. A claim with no shift_id
-                gets an inline "assign to shift" picker instead of the
-                usual approve/reject pair, since there's nowhere to credit
-                the money until one's chosen. */}
-            {isParkingExpensesModalOpen && (() => {
-              const modalDriverQuery = parkingModalDriverSearch.trim().toLowerCase();
-              const filteredExpenses = parkingExpenses.filter(r => {
-                if (modalDriverQuery && !(r.driver_name ?? '').toLowerCase().includes(modalDriverQuery)) return false;
-                return true;
-              });
-              const pendingCount = parkingExpenses.filter(r => r.status === 'pending').length;
-
-              return (
-                <>
-                  <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 }} onClick={() => setIsParkingExpensesModalOpen(false)} />
-                  <div
-                    className="glass-panel"
-                    style={{
-                      position: 'fixed', top: '5vh', left: '50%', transform: 'translateX(-50%)',
-                      width: 'min(1200px, 96vw)', maxHeight: '90vh', overflowY: 'auto', zIndex: 999,
-                      borderRadius: '14px', padding: '24px', background: 'var(--card-bg)',
-                      boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
-                      <span className="flex items-center" style={{ gap: '10px' }}>
-                        <ParkingCircle size={18} color="var(--charcoal)" />
-                        <h2 className="text-lg font-black text-primary m-0">Overnight Parking Claims</h2>
-                        {pendingCount > 0 && <span className="badge badge-warning font-mono">{pendingCount} awaiting review</span>}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setIsParkingExpensesModalOpen(false)}
-                        aria-label="Close"
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)', display: 'flex' }}
-                      >
-                        <X size={18} />
-                      </button>
-                    </div>
-
-                    <div className="flex items-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
-                      <div className="telemetry-search-wrap" style={{ minWidth: '200px' }}>
-                        <Search size={14} />
-                        <input
-                          type="text"
-                          placeholder="Search driver name…"
-                          value={parkingModalDriverSearch}
-                          onChange={(e) => setParkingModalDriverSearch(e.target.value)}
-                        />
-                      </div>
-                      <span className="text-xs text-muted" style={{ marginLeft: 'auto' }}>{filteredExpenses.length} of {parkingExpenses.length} claims</span>
-                    </div>
-
-                    {parkingExpenses.length === 0 ? (
-                      <Empty className="py-24">
-                        <EmptyHeader>
-                          <EmptyMedia variant="icon"><ParkingCircle /></EmptyMedia>
-                          <EmptyTitle>No Parking Claims Yet</EmptyTitle>
-                          <EmptyDescription>Overnight parking receipts drivers photograph from the app will show up here for approval.</EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
-                    ) : filteredExpenses.length === 0 ? (
-                      <Empty className="py-24">
-                        <EmptyHeader>
-                          <EmptyMedia variant="icon"><Search /></EmptyMedia>
-                          <EmptyTitle>No Matches</EmptyTitle>
-                          <EmptyDescription>No claims match the current search.</EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
-                    ) : (
-                      <div className="table-container">
-                        <table className="data-table data-table--nowrap">
-                          <thead>
-                            <tr>
-                              <th>Receipt Photo</th>
-                              <th>Driver Name</th>
-                              <th>Location</th>
-                              <th>Date</th>
-                              <th>Amount (£)</th>
-                              <th>Shift</th>
-                              <th>Status</th>
-                              <th></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {filteredExpenses.map(r => {
-                              const thumbUrl = parkingExpenseThumbUrls[r.receipt_photo_path];
-                              const driverRecentShifts = shifts
-                                .filter(s => (s.driver_id === r.driver_id) && s.status === 'completed')
-                                .slice(0, 20);
-                              return (
-                                <tr key={r.id}>
-                                  <td>
-                                    <button
-                                      type="button"
-                                      onClick={() => openParkingExpenseLightbox(r.receipt_photo_path)}
-                                      style={{ position: 'relative', width: '40px', height: '40px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
-                                      title="View receipt photo"
-                                    >
-                                      {thumbUrl ? (
-                                        <img src={thumbUrl} alt="Parking receipt" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                      ) : (
-                                        <ParkingCircle size={14} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
-                                      )}
-                                    </button>
-                                  </td>
-                                  <td className="font-medium text-primary" style={{ fontSize: '13px' }}>{toTitleCase(r.driver_name ?? '') || '—'}</td>
-                                  <td className="text-xs">{r.location ?? '—'}</td>
-                                  <td className="whitespace-nowrap font-mono tabular-nums text-xs">
-                                    {new Date(r.parking_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-                                  </td>
-                                  <td className="font-mono tabular-nums font-semibold">£{r.amount.toFixed(2)}</td>
-                                  <td>
-                                    {r.shift_id ? (
-                                      <CircleCheck size={14} color="#10B981" />
-                                    ) : r.status === 'pending' ? (
-                                      <select
-                                        className="select-field"
-                                        style={{ fontSize: '11px', padding: '4px 6px' }}
-                                        value={parkingShiftAssignment[r.id] ?? ''}
-                                        onChange={(e) => setParkingShiftAssignment(prev => ({ ...prev, [r.id]: e.target.value }))}
-                                      >
-                                        <option value="">Assign shift…</option>
-                                        {driverRecentShifts.map(s => (
-                                          <option key={s.id} value={s.id}>
-                                            {new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    ) : '—'}
-                                  </td>
-                                  <td>
-                                    <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
-                                      {r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : 'Pending'}
-                                    </span>
-                                    {r.auto_approved && (
-                                      <span className="text-xs text-muted" style={{ marginLeft: '6px' }} title="No admin reviewed this within 10 hours, so it was approved automatically.">
-                                        (auto)
-                                      </span>
-                                    )}
-                                  </td>
-                                  <td className="whitespace-nowrap">
-                                    {r.status === 'pending' && (
-                                      <div className="flex items-center" style={{ gap: '6px' }}>
-                                        <button
-                                          type="button"
-                                          disabled={reviewingParkingExpenseId === r.id}
-                                          onClick={() => handleReviewParkingExpense(r, 'approved')}
-                                          title={r.shift_id || parkingShiftAssignment[r.id] ? 'Approve — reimburses into payroll' : 'Assign a shift first'}
-                                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#10B981', opacity: (r.shift_id || parkingShiftAssignment[r.id]) ? 1 : 0.4 }}
-                                        >
-                                          <CircleCheck size={18} />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          disabled={reviewingParkingExpenseId === r.id}
-                                          onClick={() => handleReviewParkingExpense(r, 'rejected')}
-                                          title="Reject"
-                                          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--brand-red)' }}
-                                        >
-                                          <CircleX size={18} />
-                                        </button>
-                                      </div>
-                                    )}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                </>
-              );
-            })()}
-
-            <ImageLightbox url={parkingExpenseLightboxUrl} onClose={() => setParkingExpenseLightboxUrl(null)} alt="Parking receipt, full size" />
 
             {activeTab === 'shipments' && (
             <>
@@ -9168,6 +8735,551 @@ export default function App() {
             </>
           );
         })()}
+
+        {/* Review modals (fuel receipts, GPS compare, parking claims) live
+            outside the Analytics/Shipments-only block so the Alert Panel's
+            "Review in Fuel Audit" / "Review Claims" buttons can open them
+            from any page. */}
+        {/* Fuel Receipts Audit — moved off the main canvas entirely
+            into a modal triggered from the toolbar button. Same data/
+            handlers as before (a receipt sits 'pending' until
+            approved here; only approved rows feed the KPI strip and
+            the ledger's Fuel Incurred column), just no longer a
+            permanent full-width section on the page. */}
+        {isFuelReceiptsModalOpen && (() => {
+          const vehicleOptions = Array.from(new Set(fuelReceipts.map(r => r.vehicle_number).filter((v): v is string => Boolean(v)))).sort();
+          const modalDriverQuery = fuelModalDriverSearch.trim().toLowerCase();
+          const filteredReceipts = fuelReceipts.filter(r => {
+            if (modalDriverQuery && !(r.driver_name ?? '').toLowerCase().includes(modalDriverQuery)) return false;
+            if (fuelModalVehicleFilter && r.vehicle_number !== fuelModalVehicleFilter) return false;
+            const receiptDate = r.created_at.slice(0, 10);
+            if (fuelModalDateStart && receiptDate < fuelModalDateStart) return false;
+            if (fuelModalDateEnd && receiptDate > fuelModalDateEnd) return false;
+            return true;
+          });
+          const pendingCount = fuelReceipts.filter(r => r.status === 'pending').length;
+
+          return (
+            <>
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 }} onClick={() => setIsFuelReceiptsModalOpen(false)} />
+              <div
+                className="glass-panel"
+                style={{
+                  position: 'fixed', top: '5vh', left: '50%', transform: 'translateX(-50%)',
+                  width: 'min(1320px, 96vw)', maxHeight: '90vh', overflowY: 'auto', zIndex: 999,
+                  borderRadius: '14px', padding: '24px', background: 'var(--card-bg)',
+                  boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                  <span className="flex items-center" style={{ gap: '10px' }}>
+                    <Receipt size={18} color="var(--charcoal)" />
+                    <h2 className="text-lg font-black text-primary m-0">Fuel &amp; AdBlue Receipts Audit</h2>
+                    {pendingCount > 0 && <span className="badge badge-warning font-mono">{pendingCount} awaiting review</span>}
+                    {anomalousFuelReceiptCount > 0 && (
+                      <span className="badge badge-danger font-mono">
+                        {anomalousFuelReceiptCount} anomal{anomalousFuelReceiptCount === 1 ? 'y' : 'ies'}
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsFuelReceiptsModalOpen(false)}
+                    aria-label="Close"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)', display: 'flex' }}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="flex items-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
+                  <div className="telemetry-search-wrap" style={{ minWidth: '200px' }}>
+                    <Search size={14} />
+                    <input
+                      type="text"
+                      placeholder="Search driver name…"
+                      value={fuelModalDriverSearch}
+                      onChange={(e) => setFuelModalDriverSearch(e.target.value)}
+                    />
+                  </div>
+                  <select
+                    className="select-field"
+                    style={{ width: 'auto' }}
+                    value={fuelModalVehicleFilter}
+                    onChange={(e) => setFuelModalVehicleFilter(e.target.value)}
+                  >
+                    <option value="">All Vehicles</option>
+                    {vehicleOptions.map(v => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                  <span className="flex items-center" style={{ gap: '6px' }}>
+                    <Calendar size={13} className="text-muted" />
+                    <input type="date" className="input-field" style={{ width: 'auto' }} value={fuelModalDateStart} onChange={(e) => setFuelModalDateStart(e.target.value)} />
+                    <span className="text-xs text-muted">to</span>
+                    <input type="date" className="input-field" style={{ width: 'auto' }} value={fuelModalDateEnd} onChange={(e) => setFuelModalDateEnd(e.target.value)} />
+                  </span>
+                  {(fuelModalDriverSearch || fuelModalVehicleFilter || fuelModalDateStart || fuelModalDateEnd) && (
+                    <button
+                      type="button"
+                      onClick={() => { setFuelModalDriverSearch(''); setFuelModalVehicleFilter(''); setFuelModalDateStart(''); setFuelModalDateEnd(''); }}
+                      className="text-xs font-bold"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                  <span className="text-xs text-muted" style={{ marginLeft: 'auto' }}>{filteredReceipts.length} of {fuelReceipts.length} receipts</span>
+                </div>
+
+                {fuelReceipts.length === 0 ? (
+                  <Empty className="py-24">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon"><Fuel /></EmptyMedia>
+                      <EmptyTitle>No Fuel Receipts Yet</EmptyTitle>
+                      <EmptyDescription>Fuel receipts drivers photograph from the app will show up here for approval.</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : filteredReceipts.length === 0 ? (
+                  <Empty className="py-24">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon"><Search /></EmptyMedia>
+                      <EmptyTitle>No Matches</EmptyTitle>
+                      <EmptyDescription>No receipts match the current search/filters.</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : (
+                  <div className="table-container">
+                    <table className="data-table data-table--nowrap">
+                      <thead>
+                        <tr>
+                          <th>Photos</th>
+                          <th>Driver Name</th>
+                          <th>Vehicle Reg</th>
+                          <th>Date &amp; Time</th>
+                          <th>Odometer (mi)</th>
+                          <th>Volume (L)</th>
+                          <th>Total Cost (£)</th>
+                          <th>Δ Miles / MPG</th>
+                          <th>Station / Vendor</th>
+                          <th>Status</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredReceipts.map(r => {
+                          const thumbUrl = fuelReceiptThumbUrls[r.receipt_photo_path];
+                          const dashboardThumbUrl = r.dashboard_photo_path ? fuelReceiptThumbUrls[r.dashboard_photo_path] : undefined;
+                          return (
+                            <React.Fragment key={r.id}>
+                              <tr style={r.theft_flag ? { background: 'rgba(204,0,0,0.05)' } : undefined}>
+                                <td>
+                                  <div className="flex items-center" style={{ gap: '4px' }}>
+                                    <button
+                                      type="button"
+                                      onClick={() => openFuelReceiptLightbox(r.receipt_photo_path)}
+                                      style={{ position: 'relative', width: '36px', height: '36px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
+                                      title="View pump/receipt photo"
+                                    >
+                                      {thumbUrl ? (
+                                        <img src={thumbUrl} alt="Fuel receipt" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                      ) : (
+                                        <Fuel size={13} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
+                                      )}
+                                    </button>
+                                    {r.dashboard_photo_path ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => openFuelReceiptLightbox(r.dashboard_photo_path!)}
+                                        style={{ position: 'relative', width: '36px', height: '36px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
+                                        title="View dashboard photo (odometer + fuel gauge)"
+                                      >
+                                        {dashboardThumbUrl ? (
+                                          <img src={dashboardThumbUrl} alt="Dashboard" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                        ) : (
+                                          <Gauge size={13} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <span title="No dashboard photo (submitted before this check existed)" style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '6px', background: 'var(--card-bg-hover)' }}>
+                                        <Gauge size={13} color="var(--charcoal-light)" style={{ opacity: 0.3 }} />
+                                      </span>
+                                    )}
+                                    {r.gps_lat !== null && r.gps_lng !== null && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setGpsCompareReceipt(r)}
+                                        title="Compare GPS location vs. claimed station"
+                                        style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', borderRadius: '6px', background: 'var(--card-bg-hover)', cursor: 'pointer', color: 'var(--charcoal)' }}
+                                      >
+                                        <MapPin size={13} />
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="font-medium text-primary" style={{ fontSize: '13px' }}>{toTitleCase(r.driver_name ?? '') || '—'}</td>
+                                <td>
+                                  {r.vehicle_number ? (
+                                    <span className="font-mono font-bold" style={{ fontSize: '11px', textTransform: 'uppercase', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', padding: '2px 8px', borderRadius: '4px' }}>
+                                      {r.vehicle_number}
+                                    </span>
+                                  ) : '—'}
+                                </td>
+                                <td className="whitespace-nowrap font-mono tabular-nums text-xs">
+                                  {new Date(r.created_at).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}{' '}
+                                  {new Date(r.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
+                                </td>
+                                <td className="font-mono tabular-nums text-xs">{r.odometer_miles === null ? '—' : r.odometer_miles.toLocaleString('en-GB')}</td>
+                                <td className="font-mono tabular-nums font-semibold text-xs">
+                                  {r.liters === null ? '—' : r.liters.toFixed(1)}
+                                  {r.fuel_tank_capacity_litres != null && r.liters !== null && r.liters > r.fuel_tank_capacity_litres && (
+                                    <AlertTriangle size={11} color="#CC0000" style={{ marginLeft: '4px', verticalAlign: 'middle' }} />
+                                  )}
+                                </td>
+                                <td className="font-mono tabular-nums font-semibold">{r.total_cost === null ? '—' : `£${r.total_cost.toFixed(2)}`}</td>
+                                <td className="whitespace-nowrap">
+                                  {r.calculated_mpg != null ? (
+                                    <div className="flex flex-col" style={{ gap: '2px' }}>
+                                      <span className="text-xs text-muted">{r.delta_miles}mi</span>
+                                      {r.theft_flag ? (
+                                        <span
+                                          className="font-mono tabular-nums font-black"
+                                          style={{ fontSize: '11px', color: '#fff', background: '#CC0000', padding: '2px 8px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', gap: '4px', width: 'fit-content' }}
+                                          title={r.theft_reason ?? undefined}
+                                        >
+                                          <AlertTriangle size={11} /> Anomaly: {r.calculated_mpg.toFixed(1)} MPG
+                                        </span>
+                                      ) : (
+                                        <span
+                                          className="font-mono tabular-nums font-bold"
+                                          style={{ fontSize: '11px', color: '#10B981', background: 'rgba(16,185,129,0.12)', padding: '2px 8px', borderRadius: '4px', width: 'fit-content' }}
+                                        >
+                                          {r.calculated_mpg.toFixed(1)} MPG
+                                        </span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span className="text-xs text-muted">
+                                      {r.odometer_miles === null ? 'No odometer' : !r.is_full_tank ? 'Partial fill — not compared' : 'First full-tank fill logged'}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="text-xs">{r.vendor ?? '—'}</td>
+                                <td>
+                                  <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
+                                    {r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : 'Pending'}
+                                  </span>
+                                  {r.auto_approved && (
+                                    <span className="text-xs text-muted" style={{ marginLeft: '6px' }} title="No admin reviewed this within 10 hours, so it was approved automatically.">
+                                      (auto)
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="whitespace-nowrap">
+                                  {r.status === 'pending' && (
+                                    <div className="flex items-center" style={{ gap: '6px' }}>
+                                      <button
+                                        type="button"
+                                        disabled={reviewingFuelReceiptId === r.id}
+                                        onClick={() => handleReviewFuelReceipt(r.id, 'approved')}
+                                        title={r.theft_flag ? 'Flagged as an anomaly — approve only after checking the photos/GPS' : 'Approve Log'}
+                                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#10B981' }}
+                                      >
+                                        <CircleCheck size={18} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={reviewingFuelReceiptId === r.id}
+                                        onClick={() => handleReviewFuelReceipt(r.id, 'rejected')}
+                                        title={r.theft_flag ? 'Flag for Investigation' : 'Reject'}
+                                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--brand-red)' }}
+                                      >
+                                        <CircleX size={18} />
+                                      </button>
+                                    </div>
+                                  )}
+                                </td>
+                              </tr>
+                              {r.vehicle_id && r.fuel_tank_capacity_litres == null && (
+                                <tr>
+                                  <td colSpan={11} style={{ padding: '4px 8px', background: 'var(--card-bg-hover)' }}>
+                                    <span className="flex items-center text-xs" style={{ gap: '6px', color: 'var(--charcoal-light)' }}>
+                                      <AlertTriangle size={11} />
+                                      {r.vehicle_number ?? 'This vehicle'}'s tank capacity isn't set — the over-capacity check is skipped until it is.
+                                      <input
+                                        type="number"
+                                        placeholder="Capacity (L)"
+                                        className="input-field"
+                                        style={{ width: '110px', fontSize: '11px', padding: '2px 6px' }}
+                                        onKeyDown={async (e) => {
+                                          if (e.key !== 'Enter' || isMockMode || !supabase || !r.vehicle_id) return;
+                                          const value = parseInt((e.target as HTMLInputElement).value, 10);
+                                          if (!value || value <= 0) return;
+                                          await supabase.from('vehicles').update({ fuel_tank_capacity_litres: value }).eq('id', r.vehicle_id);
+                                          loadFuelReceipts();
+                                        }}
+                                      />
+                                    </span>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
+          );
+        })()}
+
+        <ImageLightbox url={fuelReceiptLightboxUrl} onClose={() => setFuelReceiptLightboxUrl(null)} alt="Fuel receipt, full size" />
+
+        {/* GPS vs. claimed station — a real embedded map centred on
+            the driver's actual submit-time GPS fix (OpenStreetMap's
+            public embed endpoint, no API key needed), with the
+            vendor name shown as plain driver-entered text next to
+            it. Honest about what this is NOT: without a geocoding
+            key (Google/Mapbox) there's no way to plot where "Shell
+            Membury" actually is and measure a distance — an admin
+            has to eyeball whether the pin plausibly matches. */}
+        {gpsCompareReceipt && gpsCompareReceipt.gps_lat !== null && gpsCompareReceipt.gps_lng !== null && (() => {
+          const lat = gpsCompareReceipt.gps_lat!;
+          const lng = gpsCompareReceipt.gps_lng!;
+          const delta = 0.01;
+          const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
+          const embedUrl = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`;
+          const externalUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+          return (
+            <>
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 }} onClick={() => setGpsCompareReceipt(null)} />
+              <div
+                className="glass-panel"
+                style={{
+                  position: 'fixed', top: '8vh', left: '50%', transform: 'translateX(-50%)',
+                  width: 'min(560px, 92vw)', zIndex: 999, borderRadius: '14px', padding: '20px',
+                  background: 'var(--card-bg)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-12">
+                  <span className="flex items-center text-sm font-bold" style={{ gap: '8px' }}>
+                    <MapPin size={16} color="var(--brand-red)" /> GPS at Submission
+                  </span>
+                  <button type="button" onClick={() => setGpsCompareReceipt(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}>
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="mb-12" style={{ padding: '10px 12px', borderRadius: '8px', background: 'var(--card-bg-hover)' }}>
+                  <p className="text-xs font-bold text-muted m-0" style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>Claimed station (driver-entered, not verified)</p>
+                  <p className="text-sm font-semibold text-primary m-0 mt-4">{gpsCompareReceipt.vendor || 'No vendor name entered'}</p>
+                </div>
+                <div style={{ borderRadius: '10px', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                  <iframe
+                    title="Fuel log GPS location"
+                    width="100%"
+                    height="320"
+                    style={{ border: 0, display: 'block' }}
+                    src={embedUrl}
+                  />
+                </div>
+                <div className="flex items-center justify-between mt-8">
+                  <span className="font-mono text-xs text-muted">{lat.toFixed(5)}, {lng.toFixed(5)}</span>
+                  <a href={externalUrl} target="_blank" rel="noreferrer" className="text-xs font-bold" style={{ color: 'var(--brand-red)' }}>
+                    Open in Google Maps <ExternalLink size={11} style={{ verticalAlign: 'middle', marginLeft: '2px' }} />
+                  </a>
+                </div>
+                <p className="text-xs text-muted mt-8 m-0">
+                  This confirms where the driver's device was when the log was submitted — not the station's real address (no geocoding is configured), so treat a mismatch as a prompt to ask, not final proof.
+                </p>
+              </div>
+            </>
+          );
+        })()}
+
+        {/* Overnight Parking Expenses — same review-queue shape as the
+            Fuel Receipts Audit modal above, except approving a claim
+            also reimburses it into that shift's payroll (extras_amount)
+            — see handleReviewParkingExpense. A claim with no shift_id
+            gets an inline "assign to shift" picker instead of the
+            usual approve/reject pair, since there's nowhere to credit
+            the money until one's chosen. */}
+        {isParkingExpensesModalOpen && (() => {
+          const modalDriverQuery = parkingModalDriverSearch.trim().toLowerCase();
+          const filteredExpenses = parkingExpenses.filter(r => {
+            if (modalDriverQuery && !(r.driver_name ?? '').toLowerCase().includes(modalDriverQuery)) return false;
+            return true;
+          });
+          const pendingCount = parkingExpenses.filter(r => r.status === 'pending').length;
+
+          return (
+            <>
+              <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 998 }} onClick={() => setIsParkingExpensesModalOpen(false)} />
+              <div
+                className="glass-panel"
+                style={{
+                  position: 'fixed', top: '5vh', left: '50%', transform: 'translateX(-50%)',
+                  width: 'min(1200px, 96vw)', maxHeight: '90vh', overflowY: 'auto', zIndex: 999,
+                  borderRadius: '14px', padding: '24px', background: 'var(--card-bg)',
+                  boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-16" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                  <span className="flex items-center" style={{ gap: '10px' }}>
+                    <ParkingCircle size={18} color="var(--charcoal)" />
+                    <h2 className="text-lg font-black text-primary m-0">Overnight Parking Claims</h2>
+                    {pendingCount > 0 && <span className="badge badge-warning font-mono">{pendingCount} awaiting review</span>}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setIsParkingExpensesModalOpen(false)}
+                    aria-label="Close"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)', display: 'flex' }}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div className="flex items-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
+                  <div className="telemetry-search-wrap" style={{ minWidth: '200px' }}>
+                    <Search size={14} />
+                    <input
+                      type="text"
+                      placeholder="Search driver name…"
+                      value={parkingModalDriverSearch}
+                      onChange={(e) => setParkingModalDriverSearch(e.target.value)}
+                    />
+                  </div>
+                  <span className="text-xs text-muted" style={{ marginLeft: 'auto' }}>{filteredExpenses.length} of {parkingExpenses.length} claims</span>
+                </div>
+
+                {parkingExpenses.length === 0 ? (
+                  <Empty className="py-24">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon"><ParkingCircle /></EmptyMedia>
+                      <EmptyTitle>No Parking Claims Yet</EmptyTitle>
+                      <EmptyDescription>Overnight parking receipts drivers photograph from the app will show up here for approval.</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : filteredExpenses.length === 0 ? (
+                  <Empty className="py-24">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon"><Search /></EmptyMedia>
+                      <EmptyTitle>No Matches</EmptyTitle>
+                      <EmptyDescription>No claims match the current search.</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                ) : (
+                  <div className="table-container">
+                    <table className="data-table data-table--nowrap">
+                      <thead>
+                        <tr>
+                          <th>Receipt Photo</th>
+                          <th>Driver Name</th>
+                          <th>Location</th>
+                          <th>Date</th>
+                          <th>Amount (£)</th>
+                          <th>Shift</th>
+                          <th>Status</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredExpenses.map(r => {
+                          const thumbUrl = parkingExpenseThumbUrls[r.receipt_photo_path];
+                          const driverRecentShifts = shifts
+                            .filter(s => (s.driver_id === r.driver_id) && s.status === 'completed')
+                            .slice(0, 20);
+                          return (
+                            <tr key={r.id}>
+                              <td>
+                                <button
+                                  type="button"
+                                  onClick={() => openParkingExpenseLightbox(r.receipt_photo_path)}
+                                  style={{ position: 'relative', width: '40px', height: '40px', border: 'none', padding: 0, cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', background: 'var(--card-bg-hover)' }}
+                                  title="View receipt photo"
+                                >
+                                  {thumbUrl ? (
+                                    <img src={thumbUrl} alt="Parking receipt" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                  ) : (
+                                    <ParkingCircle size={14} color="var(--charcoal-light)" style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }} />
+                                  )}
+                                </button>
+                              </td>
+                              <td className="font-medium text-primary" style={{ fontSize: '13px' }}>{toTitleCase(r.driver_name ?? '') || '—'}</td>
+                              <td className="text-xs">{r.location ?? '—'}</td>
+                              <td className="whitespace-nowrap font-mono tabular-nums text-xs">
+                                {new Date(r.parking_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              </td>
+                              <td className="font-mono tabular-nums font-semibold">£{r.amount.toFixed(2)}</td>
+                              <td>
+                                {r.shift_id ? (
+                                  <CircleCheck size={14} color="#10B981" />
+                                ) : r.status === 'pending' ? (
+                                  <select
+                                    className="select-field"
+                                    style={{ fontSize: '11px', padding: '4px 6px' }}
+                                    value={parkingShiftAssignment[r.id] ?? ''}
+                                    onChange={(e) => setParkingShiftAssignment(prev => ({ ...prev, [r.id]: e.target.value }))}
+                                  >
+                                    <option value="">Assign shift…</option>
+                                    {driverRecentShifts.map(s => (
+                                      <option key={s.id} value={s.id}>
+                                        {new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : '—'}
+                              </td>
+                              <td>
+                                <span className={`badge ${r.status === 'approved' ? 'badge-success' : r.status === 'rejected' ? 'badge-danger' : 'badge-warning'}`}>
+                                  {r.status === 'approved' ? 'Approved' : r.status === 'rejected' ? 'Rejected' : 'Pending'}
+                                </span>
+                                {r.auto_approved && (
+                                  <span className="text-xs text-muted" style={{ marginLeft: '6px' }} title="No admin reviewed this within 10 hours, so it was approved automatically.">
+                                    (auto)
+                                  </span>
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap">
+                                {r.status === 'pending' && (
+                                  <div className="flex items-center" style={{ gap: '6px' }}>
+                                    <button
+                                      type="button"
+                                      disabled={reviewingParkingExpenseId === r.id}
+                                      onClick={() => handleReviewParkingExpense(r, 'approved')}
+                                      title={r.shift_id || parkingShiftAssignment[r.id] ? 'Approve — reimburses into payroll' : 'Assign a shift first'}
+                                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: '#10B981', opacity: (r.shift_id || parkingShiftAssignment[r.id]) ? 1 : 0.4 }}
+                                    >
+                                      <CircleCheck size={18} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={reviewingParkingExpenseId === r.id}
+                                      onClick={() => handleReviewParkingExpense(r, 'rejected')}
+                                      title="Reject"
+                                      style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '2px', color: 'var(--brand-red)' }}
+                                    >
+                                      <CircleX size={18} />
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
+          );
+        })()}
+
+        <ImageLightbox url={parkingExpenseLightboxUrl} onClose={() => setParkingExpenseLightboxUrl(null)} alt="Parking receipt, full size" />
 
         <AnimatePresence>
         {activationCodeShown && (
@@ -9776,6 +9888,89 @@ export default function App() {
                       {(isSavingAlertSettings || alertSettingsSuccess) && <SaveIcon saving={isSavingAlertSettings} success={!!alertSettingsSuccess} />}
                       {isSavingAlertSettings ? 'Saving…' : alertSettingsSuccess ? 'Saved' : 'Save Thresholds'}
                     </button>
+
+                    <h4 className="font-bold text-xs text-muted mt-24 mb-4" style={{ textTransform: 'uppercase', letterSpacing: '0.02em' }}>GPS Tracking</h4>
+                    <p className="text-xs text-muted mb-16">
+                      Drivers can stop live tracking by closing the app or removing it from the background. Choose how {teamOrgInfo?.name ?? 'your company'} detects this and what happens to the driver's time.
+                    </p>
+
+                    {gpsPolicyMessage && <div className={`login-notice ${gpsPolicyMessage.kind === 'error' ? 'login-notice--error' : 'login-notice--success'} mb-16`}>{gpsPolicyMessage.text}</div>}
+
+                    <div className="input-group">
+                      <div className="flex align-center justify-between" style={{ gap: '10px', marginBottom: '6px' }}>
+                        <label className="input-label" htmlFor="gps-offline-minutes" style={{ margin: 0 }}>DETECT DRIVERS WITH NO GPS</label>
+                        <label className="flex align-center text-xs font-bold" style={{ gap: '8px', cursor: 'pointer', color: 'var(--charcoal)' }}>
+                          <span>{gpsPolicy.enabled ? 'On' : 'Off'}</span>
+                          <input type="checkbox" checked={gpsPolicy.enabled} disabled={isSavingGpsPolicy} onChange={() => saveGpsPolicy({ enabled: !gpsPolicy.enabled })} />
+                        </label>
+                      </div>
+                      <input
+                        id="gps-offline-minutes"
+                        type="number"
+                        min="5"
+                        max="120"
+                        step="1"
+                        className="input-field"
+                        value={gpsPolicyForm.afterMinutes}
+                        disabled={!gpsPolicy.enabled}
+                        onChange={(e) => setGpsPolicyForm(f => ({ ...f, afterMinutes: e.target.value }))}
+                      />
+                      <p className="text-xs text-muted mt-4">
+                        Minutes without a GPS ping, while a driver is clocked in, before a GPS Tracking Off alert appears in the Alert Panel.
+                      </p>
+                    </div>
+
+                    <div className="input-group">
+                      <div className="flex align-center justify-between" style={{ gap: '10px', marginBottom: '6px' }}>
+                        <label className="input-label" style={{ margin: 0 }}>WARN THE DRIVER</label>
+                        <label className="flex align-center text-xs font-bold" style={{ gap: '8px', cursor: 'pointer', color: 'var(--charcoal)' }}>
+                          <span>{gpsPolicy.notifyDriver ? 'On' : 'Off'}</span>
+                          <input type="checkbox" checked={gpsPolicy.notifyDriver} disabled={isSavingGpsPolicy || !gpsPolicy.enabled} onChange={() => saveGpsPolicy({ notifyDriver: !gpsPolicy.notifyDriver })} />
+                        </label>
+                      </div>
+                      <p className="text-xs text-muted mt-4">
+                        The app notifies the driver when tracking stops, saying what may happen: a frozen clock or an automatic clock-out.
+                      </p>
+                    </div>
+
+                    <div className="input-group">
+                      <label className="input-label" htmlFor="gps-offline-action">WHEN TRACKING STAYS OFF</label>
+                      <select
+                        id="gps-offline-action"
+                        className="input-field"
+                        value={gpsPolicy.action}
+                        disabled={!gpsPolicy.enabled || isSavingGpsPolicy}
+                        onChange={(e) => saveGpsPolicy({ action: e.target.value as GpsPolicySettings['action'] })}
+                      >
+                        <option value="none">Alert only, keep paying time</option>
+                        <option value="freeze_time">Freeze time while offline, the stretch is not paid</option>
+                        <option value="clock_out">Clock the driver out automatically</option>
+                      </select>
+                      <p className="text-xs text-muted mt-4">
+                        Frozen time is deducted from the shift's paid hours. An automatic clock-out ends the shift at the last GPS ping.
+                      </p>
+                    </div>
+
+                    {gpsPolicy.action === 'clock_out' && (
+                      <div className="input-group">
+                        <label className="input-label" htmlFor="gps-clockout-minutes">AUTO CLOCK-OUT AFTER (MINUTES)</label>
+                        <input
+                          id="gps-clockout-minutes"
+                          type="number"
+                          min="10"
+                          max="480"
+                          step="1"
+                          className="input-field"
+                          value={gpsPolicyForm.clockOutMinutes}
+                          disabled={!gpsPolicy.enabled}
+                          onChange={(e) => setGpsPolicyForm(f => ({ ...f, clockOutMinutes: e.target.value }))}
+                        />
+                      </div>
+                    )}
+
+                    <button type="button" className="btn btn-primary" disabled={isSavingGpsPolicy} onClick={() => saveGpsPolicy()}>
+                      {isSavingGpsPolicy ? 'Saving…' : 'Save GPS Settings'}
+                    </button>
                   </div>
                 )}
 
@@ -9783,13 +9978,13 @@ export default function App() {
                   <div>
                     <div className="settings-panel-header">
                       <p>Appearance</p>
-                      <p>Choose how the dashboard looks — light, dark, or system.</p>
+                      <p>Choose how the dashboard looks — light, or match your device.</p>
                     </div>
                     <div className="flex align-center justify-between" style={{ padding: '14px 16px', border: '1px solid var(--border-color)', borderRadius: '12px' }}>
                       <div>
                         <p className="font-bold text-sm text-primary" style={{ margin: '0 0 2px' }}>Theme</p>
                         <p className="text-xs text-muted" style={{ margin: 0 }}>
-                          Light, dark, or match your device's setting.
+                          Light, or match your device's setting.
                         </p>
                       </div>
                       <ThemeToggle />

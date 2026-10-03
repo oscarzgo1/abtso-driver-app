@@ -7,7 +7,9 @@ import 'package:latlong2/latlong.dart' as latlong;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/network/supabase_service.dart';
 import '../../../core/services/location_service.dart';
+import '../../../core/services/gps_policy.dart';
 import '../../../core/services/notification_service.dart';
+import '../../../core/services/tracking_guard.dart';
 import '../../../core/utils/role_helper.dart';
 import 'package:tracelet/tracelet.dart' as tl;
 import '../../../core/utils/geofence_helper.dart';
@@ -343,10 +345,41 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
   Timer? _gpsPingTimer;
 
+  /// How often a position is uploaded while a shift is running. Was 2
+  /// minutes; the client asked for 3 (Oct 2026) to ease battery and data.
+  static const Duration _gpsUploadInterval = Duration(minutes: 3);
+
+  /// The company's rule for what happens when tracking stops (loaded at
+  /// clock-in / app start; the defaults until then).
+  GpsPolicy gpsPolicy = GpsPolicy.fallback;
+
+  /// Set by the home screen so clockIn() can show the "turn on Always
+  /// location + battery" sheet. Returns true once everything is allowed.
+  Future<bool> Function()? trackingPrompt;
+
+  Future<void> refreshGpsPolicy() async {
+    gpsPolicy = await SupabaseService.fetchGpsPolicy();
+  }
+
+  /// (Re)arms the "tracking stopped" notification [afterMinutes] ahead; see
+  /// NotificationService.scheduleTrackingLostWarning. Cheap enough to call
+  /// on every successful upload.
+  void _armTrackingLostWarning() {
+    if (kIsWeb || state.activeShift == null) return;
+    final policy = gpsPolicy;
+    if (!policy.notifyDriver || !policy.detectionEnabled) return;
+    unawaited(NotificationService.scheduleTrackingLostWarning(
+      after: Duration(minutes: policy.afterMinutes),
+      title: 'Tachyo has stopped tracking you',
+      body: policy.warningBody,
+    ));
+  }
+
   void _startGpsPingTimer() {
     _gpsPingTimer?.cancel();
-    debugPrint('📡 Starting periodic 2-minute GPS Upload timer...');
-    _gpsPingTimer = Timer.periodic(const Duration(minutes: 2), (_) async {
+    debugPrint('📡 Starting periodic 3-minute GPS Upload timer...');
+    _armTrackingLostWarning();
+    _gpsPingTimer = Timer.periodic(_gpsUploadInterval, (_) async {
       Position? pos = state.currentPosition;
       if (pos == null) {
         try {
@@ -356,7 +389,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         } catch (_) {}
       }
       if (pos != null && state.activeShift != null) {
-        debugPrint('⏰ Periodic 2-minute GPS Upload tick executing...');
+        debugPrint('⏰ Periodic 3-minute GPS Upload tick executing...');
         await _maybeUploadPing(pos, forceUpload: true);
       } else {
         debugPrint('⏰ GPS Ping tick skipped: pos=${pos != null}, activeShift=${state.activeShift?.id}');
@@ -367,6 +400,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   void _stopGpsPingTimer() {
     _gpsPingTimer?.cancel();
     _gpsPingTimer = null;
+    unawaited(NotificationService.cancelTrackingLostWarning());
   }
 
   /// Processes new location updates (calculates distance, updates UI, and manages upload)
@@ -426,7 +460,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       clearErrorMessage: true,
     );
 
-    // If clocked in, check if we need to upload the ping to Supabase (limit to every 2 minutes)
+    // If clocked in, check if we need to upload the ping to Supabase (limit to every 3 minutes)
     if (state.activeShift != null) {
       _checkLoadReminder(position);
       _maybeUploadPing(position, forceUpload: forceUpload);
@@ -617,7 +651,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     }
   }
 
-  /// Handles upload of background coordinates every 2 minutes
+  /// Handles upload of background coordinates every 3 minutes
   Future<void> _maybeUploadPing(Position position, {bool forceUpload = false}) async {
     try {
       final now = DateTime.now();
@@ -627,7 +661,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       if (forceUpload || kDebugMode || isPlayback) {
         shouldUpload = true;
       } else {
-        shouldUpload = _lastUploadTime == null || now.difference(_lastUploadTime!) >= const Duration(minutes: 2);
+        shouldUpload = _lastUploadTime == null || now.difference(_lastUploadTime!) >= _gpsUploadInterval;
       }
 
       if (shouldUpload) {
@@ -656,6 +690,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         try {
           await SupabaseService.client.from('gps_locations').insert(payload);
           debugPrint('✅ GPS telemetry uploaded successfully: (${position.latitude}, ${position.longitude}) for shift $shiftId');
+          _armTrackingLostWarning();
           
           // Attempt to sync offline queue if we have cached pings
           if (_offlineQueue.isNotEmpty) {
@@ -722,6 +757,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         final activeShift = DriverShift.fromJson(response);
         state = state.copyWith(activeShift: activeShift);
         unawaited(refreshShiftChecklist());
+        unawaited(refreshGpsPolicy().then((_) => _armTrackingLostWarning()));
         await _startBackgroundTrackingService(driverId, activeShift.id);
         _startGpsPingTimer();
 
@@ -756,6 +792,24 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       );
       return;
     }
+
+    // Live tracking only works if the phone lets Tachyo run in the
+    // background — so clocking in needs "Always" location, GPS on and the
+    // battery exemption. The sheet has a button straight to each setting.
+    if (!kIsWeb) {
+      final health = await TrackingGuard.check();
+      if (!health.healthy) {
+        final allowed = await (trackingPrompt?.call() ?? Future.value(false));
+        if (!allowed) {
+          state = state.copyWith(
+            isLoading: false,
+            errorMessage: 'To clock in, allow location "all the time" and unrestricted battery use for Tachyo.',
+          );
+          return;
+        }
+      }
+    }
+    await refreshGpsPolicy();
 
     try {
       Map<String, dynamic> result;
