@@ -1,6 +1,6 @@
 # Uncomment this line to define a global platform for your project
-# Tracelet (background location) needs iOS 14 or newer.
-platform :ios, '14.0'
+# Flutter (current stable) needs iOS 15 or newer; Tracelet needs 14.
+platform :ios, '15.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
