@@ -1,29 +1,142 @@
+# Codemagic CI/CD for the Tachyo driver app (Flutter, in ./driver_app).
+#
+# Codemagic reads this file from the repository ROOT, so it lives here and
+# every step changes into driver_app first. Connect the GitHub repo in
+# Codemagic, choose "codemagic.yaml" as the configuration, and it builds on
+# every push to main that touches driver_app/ (or this file).
+#
+# One-off setup in the Codemagic dashboard (no secrets are kept in this file):
+#
+#   Android  Teams > Code signing identities > Android keystores: upload the
+#            release keystore and give it the reference name
+#            tachyo_driver_keystore (must match android_signing below).
+#
+#   iOS      Teams > Integrations > App Store Connect: add an API key and name
+#            the integration "Tachyo App Store Connect" (must match
+#            integrations below). Then Code signing identities > iOS: let
+#            Codemagic create/fetch the App Store distribution certificate and
+#            provisioning profile for bundle id com.tachyo.driver (or upload
+#            your own). In App Store Connect, create the app record for
+#            com.tachyo.driver.
+#            After the first upload, add an environment variable
+#            APP_STORE_APPLE_ID (the app's numeric Apple ID) so build numbers
+#            continue from App Store Connect. Until then Codemagic's own
+#            build counter is used.
+#
+#   Google Play (optional)  Create a service-account JSON, add it as the
+#            secure variable GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS, then
+#            uncomment the publishing block in android-release.
+
 workflows:
   android-release:
-    name: Android Release Build
-    max_build_duration: 120
-    instance_type: mac_mini_m2
+    name: Android release (AAB + APK)
+    max_build_duration: 60
+    instance_type: linux_x2
     environment:
       flutter: stable
+      java: 17
+      android_signing:
+        - tachyo_driver_keystore
+    when:
+      changeset:
+        includes:
+          - 'driver_app/'
+          - 'codemagic.yaml'
     triggering:
       events:
         - push
       branch_patterns:
         - pattern: 'main'
+          include: true
+      cancel_previous_builds: true
     scripts:
-      - name: Unzip project folder
-        script: |
-          # Automatically extract the project source code if uploaded as a zip
-          if [ -f "driver_app.zip" ]; then
-            unzip -o driver_app.zip
-          fi
       - name: Get Flutter packages
         script: |
           cd driver_app
-          flutter packages pub get
-      - name: Build Android APK
+          flutter pub get
+      - name: Write key.properties from Codemagic's signing identity
         script: |
           cd driver_app
-          flutter build apk --release
+          echo "storePassword=$CM_KEYSTORE_PASSWORD" > android/key.properties
+          echo "keyPassword=$CM_KEY_PASSWORD" >> android/key.properties
+          echo "keyAlias=$CM_KEY_ALIAS" >> android/key.properties
+          echo "storeFile=$CM_KEYSTORE_PATH" >> android/key.properties
+      - name: Analyze
+        script: |
+          cd driver_app
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Build signed App Bundle (Google Play)
+        script: |
+          cd driver_app
+          flutter build appbundle --release --build-number=$BUILD_NUMBER
+      - name: Build signed APK (direct install)
+        script: |
+          cd driver_app
+          flutter build apk --release --build-number=$BUILD_NUMBER
     artifacts:
+      - driver_app/build/app/outputs/bundle/release/*.aab
       - driver_app/build/app/outputs/flutter-apk/app-release.apk
+      - driver_app/build/app/outputs/mapping/release/mapping.txt
+    # publishing:
+    #   google_play:
+    #     credentials: $GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS
+    #     track: internal
+    #     submit_as_draft: true
+
+  ios-release:
+    name: iOS release (TestFlight)
+    max_build_duration: 90
+    instance_type: mac_mini_m2
+    integrations:
+      app_store_connect: Tachyo App Store Connect
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: com.tachyo.driver
+    when:
+      changeset:
+        includes:
+          - 'driver_app/'
+          - 'codemagic.yaml'
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+      cancel_previous_builds: true
+    scripts:
+      - name: Get Flutter packages
+        script: |
+          cd driver_app
+          flutter pub get
+      - name: Install CocoaPods dependencies
+        script: |
+          cd driver_app/ios
+          pod install
+      - name: Apply Codemagic code signing to the Xcode project
+        script: |
+          cd driver_app
+          xcode-project use-profiles --project ios/Runner.xcodeproj
+      - name: Build signed IPA
+        script: |
+          cd driver_app
+          if [ -n "${APP_STORE_APPLE_ID:-}" ]; then
+            BUILD_NUM=$(( $(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID") + 1 ))
+          else
+            BUILD_NUM=$BUILD_NUMBER
+          fi
+          flutter build ipa --release \
+            --build-number=$BUILD_NUM \
+            --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - driver_app/build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        submit_to_app_store: false

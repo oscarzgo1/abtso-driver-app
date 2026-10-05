@@ -23,6 +23,7 @@ dependencies:
   # Location & GPS
   geolocator: ^13.0.2
   flutter_local_notifications: ^17.0.0
+  timezone: ^0.9.4
   latlong2: ^0.9.1
 
   # UI
