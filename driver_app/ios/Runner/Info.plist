@@ -36,6 +36,8 @@
 	<string>Tachyo uses your location while you're clocked in to show your position on the dispatch map and log your route for your employer's fleet records.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Tachyo tracks your location in the background only while you're clocked in on an active shift, so your employer's dispatch team can see your position and confirm deliveries without you needing to keep the app open.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Tachyo uses your phone's motion sensors while you are clocked in to tell whether the vehicle is moving or parked. This keeps your route accurate and saves battery when you are stopped. Motion data is used on your phone and is not sent to your employer.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
