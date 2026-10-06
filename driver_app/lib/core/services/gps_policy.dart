@@ -1,3 +1,5 @@
+import 'package:intl/intl.dart';
+
 /// What the driver's company does when a shift sends no GPS — set by the
 /// office under Settings → Alerts (organizations.gps_offline_*, migration
 /// 081) and read through the driver_gps_policy() RPC. The same numbers
@@ -79,4 +81,41 @@ class GpsPolicy {
     }
     return "Tachyo isn't tracking you and your manager has been alerted. Open Tachyo to switch tracking back on.";
   }
+}
+
+/// Key that identifies one tracking/idle event, so each is announced once.
+String gpsNoticeKey(Map<String, dynamic> event) {
+  final isIdle = event['kind']?.toString() == 'idle';
+  final started = DateTime.tryParse(event['started_at']?.toString() ?? '')?.toLocal();
+  return '${isIdle ? 'idle' : 'offline'}|${started?.toIso8601String()}';
+}
+
+/// The title and text the driver is shown for a tracking-stopped or idle
+/// event (a pop-up in the open app, or a notification while it is in the
+/// background).
+({String title, String body}) gpsNoticeText(Map<String, dynamic> event) {
+  final isIdle = event['kind']?.toString() == 'idle';
+  final started = DateTime.tryParse(event['started_at']?.toString() ?? '')?.toLocal() ?? DateTime.now();
+  final resolved = DateTime.tryParse(event['resolved_at']?.toString() ?? '')?.toLocal();
+  final fmt = DateFormat('HH:mm');
+  final minutes = ((resolved ?? DateTime.now()).difference(started).inMinutes).clamp(0, 100000);
+  final action = event['action_taken']?.toString() ?? 'alert';
+  if (isIdle) {
+    final span = '${fmt.format(started)}${resolved != null ? ' – ${fmt.format(resolved)}' : ''}';
+    if (action == 'time_frozen') {
+      return (title: 'Your time was paused — idle', body: 'You were stationary for $minutes min ($span). That time is paused and will not be paid.');
+    }
+    return (title: 'You were idle', body: 'You were stationary for $minutes min ($span). Your manager has been alerted.');
+  }
+  if (action == 'clocked_out') {
+    return (
+      title: 'You were clocked out',
+      body: 'Tachyo stopped tracking you at ${fmt.format(started)}, so your shift was ended automatically at that time. Keep Tachyo running to avoid this.',
+    );
+  }
+  final until = resolved != null ? ' until ${fmt.format(resolved)} ($minutes min)' : '';
+  if (action == 'time_frozen') {
+    return (title: 'Your time was paused', body: 'Tachyo stopped tracking you at ${fmt.format(started)}$until. That time is paused and will not be paid.');
+  }
+  return (title: 'Tracking stopped', body: 'Tachyo stopped tracking you at ${fmt.format(started)}$until. Your manager was alerted.');
 }

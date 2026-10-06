@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding, AppLifecycleState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart' as latlong;
@@ -298,7 +299,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
           speedAccuracy: c.speedAccuracy,
         ),
         forceUpload: true,
-      );
+      ).then((_) => _notifyIdleInBackground());
     });
 
     _traceletSubscription?.cancel();
@@ -381,6 +382,36 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   }
 
   Timer? _gpsPingTimer;
+
+  /// While the app is in the background it cannot show a pop-up, so each
+  /// heartbeat (every 3 minutes) checks whether the server has marked the
+  /// driver idle and, if so, raises a notification, once per idle stretch.
+  /// The open app shows its own pop-up instead.
+  Future<void> _notifyIdleInBackground() async {
+    if (kIsWeb) return;
+    if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) return;
+    if (!gpsPolicy.idleNotifyDriver) return;
+    final driverId = SupabaseService.currentDriverId;
+    if (driverId == null) return;
+    try {
+      final events = await SupabaseService.fetchRecentGpsEvents();
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'notified_gps_idle_$driverId';
+      final done = (prefs.getStringList(key) ?? const <String>[]).toSet();
+      for (final event in events.reversed) {
+        if (event['kind']?.toString() != 'idle') continue;
+        final id = gpsNoticeKey(event);
+        if (done.contains(id)) continue;
+        done.add(id);
+        final text = gpsNoticeText(event);
+        await NotificationService.showTrackingNotice(id: 1003 + done.length, title: text.title, body: text.body);
+      }
+      final keep = done.length > 30 ? done.toList().sublist(done.length - 30) : done.toList();
+      await prefs.setStringList(key, keep);
+    } catch (e) {
+      debugPrint('idle background notice failed: $e');
+    }
+  }
 
   /// How often a position is uploaded while a shift is running. Was 2
   /// minutes; the client asked for 3 (Oct 2026) to ease battery and data.

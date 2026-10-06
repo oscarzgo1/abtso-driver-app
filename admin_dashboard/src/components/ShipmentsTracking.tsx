@@ -2,6 +2,8 @@ import NoData from './ui/no-data';
 import { MemberAvatar } from './ui/member-cell';
 import { driverPinHtml, trailerPinHtml, escapeHtml, DRIVER_PIN_SIZE, DRIVER_PIN_ANCHOR, TRAILER_PIN_SIZE, TRAILER_PIN_ANCHOR } from '../lib/map-pins';
 import { useSectionRefresh } from '../lib/section-refresh';
+import { buildJourney, type Ping } from '../lib/journey';
+import { drawJourney } from '../lib/journey-map';
 import TableFilter from './ui/table-filter';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
@@ -208,7 +210,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [urls, setUrls] = useState<Record<string, string>>({});
-  const [trail, setTrail] = useState<[number, number][]>([]);
+  const [trail, setTrail] = useState<Ping[]>([]);
 
   const load = useCallback(async () => {
     if (isMockMode || !supabase) return;
@@ -364,7 +366,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
     let cancelled = false;
     supabase
       .from('gps_locations')
-      .select('latitude, longitude, recorded_at')
+      .select('latitude, longitude, speed, recorded_at')
       .eq('driver_id', selected.driverId)
       .gte('recorded_at', from)
       .lte('recorded_at', to)
@@ -372,7 +374,10 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
       .limit(700)
       .then(({ data }) => {
         if (cancelled || !data) return;
-        setTrail((data as Raw[]).filter(p => p.latitude != null && p.longitude != null).map(p => [Number(p.latitude), Number(p.longitude)] as [number, number]));
+        const toMs = (ts: string) => new Date(/Z$|[+-]\d\d(:?\d\d)?$/.test(String(ts).trim()) ? String(ts).trim() : `${String(ts).trim().replace(' ', 'T')}Z`).getTime();
+        setTrail((data as Raw[]).filter(p => p.latitude != null && p.longitude != null).map(p => ({
+          lat: Number(p.latitude), lng: Number(p.longitude), speed: p.speed == null ? null : Number(p.speed), t: toMs(p.recorded_at as string),
+        })));
       });
     return () => { cancelled = true; };
   }, [selected?.key, selected?.driverId, selected?.departure, selected?.delivered, selected?.shiftStart, selected?.createdAt]);
@@ -405,14 +410,12 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
       L.circle([d.latitude, d.longitude], { radius: d.geofence_radius_m >= 1_000_000 ? 300 : d.geofence_radius_m, color: '#CC0000', weight: 2, fillColor: '#CC0000', fillOpacity: 0.08 }).addTo(layer);
       L.circleMarker([d.latitude, d.longitude], { radius: 6, color: '#fff', weight: 2, fillColor: '#CC0000', fillOpacity: 1 }).bindTooltip(d.name).addTo(layer);
     }
-    const pts: [number, number][] = [...trail];
-    if (live && selected?.status !== 'completed') pts.push([live.latitude, live.longitude]);
-    if (pts.length > 1) {
-      L.polyline(pts, { color: '#fff', weight: 8, opacity: 0.9 }).addTo(layer);
-      L.polyline(pts, { color: '#3B4BD8', weight: 4, opacity: 1 }).addTo(layer);
-      pts.forEach(p => bounds.push(p));
-      const start = pts[0];
-      L.circleMarker(start, { radius: 6, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindTooltip('Departed').addTo(layer);
+    // The route as dots (one per recorded position) with the stops marked,
+    // the same as Journey History.
+    if (trail.length > 0) {
+      const endMs = selected?.delivered ? new Date(selected.delivered).getTime() : Date.now();
+      drawJourney(layer, buildJourney(trail, Math.max(endMs, trail[trail.length - 1].t))).forEach(p => bounds.push(p));
+      L.circleMarker([trail[0].lat, trail[0].lng], { radius: 6, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindTooltip('Departed').addTo(layer);
     }
     // Where each proof photo was taken (GPS stamped by the driver's phone).
     for (const pr of selected?.proofs ?? []) {

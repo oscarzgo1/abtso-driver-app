@@ -89,6 +89,19 @@ class NotificationService {
         ?.requestPermissions(alert: true, badge: true, sound: true);
   }
 
+  /// An idle / tracking notice while the app is in the background (the open
+  /// app shows a pop-up instead). One id per event so two notices don't replace each other.
+  static Future<void> showTrackingNotice({required int id, required String title, required String body}) async {
+    if (kIsWeb) return;
+    await initialize();
+    await _plugin.show(
+      id,
+      title,
+      body,
+      const NotificationDetails(android: _trackingLostChannel, iOS: DarwinNotificationDetails(interruptionLevel: InterruptionLevel.timeSensitive)),
+    );
+  }
+
   static Future<void> showLoadReminder({required String title, required String body}) async {
     if (kIsWeb) return;
     await initialize();
