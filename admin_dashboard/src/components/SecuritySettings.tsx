@@ -1,3 +1,4 @@
+import NoData from './ui/no-data';
 import { useCallback, useEffect, useState } from 'react';
 import { AlertTriangle, Check, KeyRound, Shield, ShieldCheck, Trash2 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -121,7 +122,7 @@ export default function SecuritySettings() {
             ))}
           </div>
         ) : (
-          <button type="button" className="btn flex align-center mt-12" style={{ gap: '6px', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', padding: '8px 14px', fontWeight: 800 }} disabled={enrolling} onClick={beginEnrol}>
+          <button type="button" className="btn flex align-center mt-12" style={{ gap: '6px', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', padding: '6px 12px', fontWeight: 700 }} disabled={enrolling} onClick={beginEnrol}>
             <ShieldCheck size={14} /> {enrolling ? 'Setting up…' : 'Set up two-step sign-in'}
           </button>
         )}
@@ -137,7 +138,8 @@ export default function SecuritySettings() {
               <li>Enter the 6-digit code the app then shows.</li>
             </ol>
             <div className="flex align-center justify-center" style={{ marginTop: '14px', marginBottom: '10px' }}>
-              <div style={{ background: '#fff', padding: '10px', borderRadius: '8px' }} dangerouslySetInnerHTML={{ __html: enrolment.qr }} />
+              {/* Supabase returns qr_code as a data: URL, so it renders as an image, not HTML. */}
+              <img src={enrolment.qr} alt="Authenticator QR code" width={180} height={180} style={{ background: '#fff', padding: '10px', borderRadius: '8px' }} />
             </div>
             <p className="text-xs text-muted font-mono m-0 mb-12" style={{ textAlign: 'center', letterSpacing: '0.06em', wordBreak: 'break-all' }}>{enrolment.secret}</p>
             <input
@@ -163,7 +165,7 @@ export default function SecuritySettings() {
 
       <h4 className="font-bold text-xs text-muted mt-24 mb-8" style={{ textTransform: 'uppercase', letterSpacing: '0.02em' }}>Activity log</h4>
       {audit.length === 0 ? (
-        <p className="text-xs text-muted">No security events yet.</p>
+        <NoData />
       ) : (
         <div className="table-container" style={{ maxHeight: '320px', overflowY: 'auto' }}>
           <table className="data-table">

@@ -26,6 +26,8 @@ interface DispatchRow {
   id: string;
   carrier_load_id: string | null;
   carrier_name: string | null;
+  driver_id: string;
+  vrid: string | null;
   status: string;
   shipment_proofs: { pod_type: string; photo_path: string }[];
   drivers: { full_name: string } | null;
@@ -120,7 +122,7 @@ export default function DispatchLoadsModal({ drivers, initialDriverId = '', onCl
     if (isMockMode || !supabase) return;
     const [p, d] = await Promise.all([
       supabase.from('carrier_loads').select('id, vrid, origin, destination, booking_cutoff_at, trailer_number, carrier_name, status').order('imported_at', { ascending: false }).limit(1000),
-      supabase.from('dispatch_loads').select('id, carrier_load_id, carrier_name, status, shipment_proofs(pod_type, photo_path), drivers(full_name)').not('carrier_load_id', 'is', null).in('status', ['assigned', 'in_progress', 'completed']).order('created_at', { ascending: false }).limit(1000),
+      supabase.from('dispatch_loads').select('id, driver_id, vrid, carrier_load_id, carrier_name, status, shipment_proofs(pod_type, photo_path), drivers(full_name)').not('carrier_load_id', 'is', null).in('status', ['assigned', 'in_progress', 'completed']).order('created_at', { ascending: false }).limit(1000),
     ]);
     if (p.error) return setError(describeError(p.error, 'Could not load the load list.'));
     setPool((p.data ?? []) as PoolLoad[]);
@@ -180,6 +182,9 @@ export default function DispatchLoadsModal({ drivers, initialDriverId = '', onCl
     return Array.from(seen.values()).sort((a, b) => a.localeCompare(b));
   }, [pool, dispatch]);
 
+  // The driver's open load, if any — assigning another one switches to it.
+  const current = useMemo(() => dispatch.find(d => d.driver_id === driverId && (d.status === 'assigned' || d.status === 'in_progress')), [dispatch, driverId]);
+
   const assign = async () => {
     if (isMockMode || !supabase) return;
     setError(''); setNotice('');
@@ -191,16 +196,19 @@ export default function DispatchLoadsModal({ drivers, initialDriverId = '', onCl
     // Reuse the spelling of a company that already exists.
     const known = companies.find(c => c.toLowerCase() === companyName.toLowerCase()) ?? companyName;
     setIsSaving(true);
-    const { error: err } = await supabase.from('dispatch_loads').insert({
-      driver_id: driverId,
-      carrier_load_id: loadId,
-      trailer_number: trailer.trim().toUpperCase() || null,
-      carrier_name: known,
+    // One step on the server: whatever the driver has open is cancelled
+    // (its load goes back to waiting) and the new load is assigned, or
+    // nothing changes at all.
+    const { error: err } = await supabase.rpc('assign_dispatch_load', {
+      p_driver: driverId,
+      p_carrier_load_id: loadId,
+      p_trailer: trailer.trim().toUpperCase() || null,
+      p_carrier_name: known,
     });
     setIsSaving(false);
     if (err) return setError(describeError(err, 'Could not assign the load.'));
     const l = pool.find(x => x.id === loadId);
-    setNotice(`${l?.vrid ?? 'Load'} assigned to ${drivers.find(d => d.id === driverId)?.full_name ?? 'the driver'}.`);
+    setNotice(`${l?.vrid ?? 'Load'} ${current ? `now replaces ${current.vrid ?? 'the earlier load'} for` : 'assigned to'} ${drivers.find(d => d.id === driverId)?.full_name ?? 'the driver'}.`);
     setLoadId(''); setTrailer(''); setCompany('');
     changed();
   };
@@ -225,7 +233,7 @@ export default function DispatchLoadsModal({ drivers, initialDriverId = '', onCl
 
   return (
     <div className="modal-overlay" style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'flex-start', padding: '40px 16px', overflowY: 'auto' }} onClick={onClose}>
-      <div className="modal-content glass-panel" style={{ width: '980px', maxWidth: '100%', padding: '24px', borderRadius: '16px', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)' }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal-content glass-panel" style={{ width: '720px', maxWidth: '100%', minHeight: 'min(900px, calc(100vh - 32px))', padding: '24px', borderRadius: '16px', backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)' }} onClick={(e) => e.stopPropagation()}>
         <div className="flex align-center justify-between mb-16">
           <div>
             <h3 className="text-md font-bold text-primary m-0">Loads &amp; assignment</h3>
@@ -267,6 +275,11 @@ export default function DispatchLoadsModal({ drivers, initialDriverId = '', onCl
             </select>
           ))}
         </div>
+        {current && (
+          <p className="text-xs" style={{ margin: '0 0 12px', color: 'var(--brand-red)', fontWeight: 700 }}>
+            {drivers.find(d => d.id === driverId)?.full_name ?? 'This driver'} already has <span className="font-mono">{current.vrid ?? 'a load'}</span> ({current.status === 'in_progress' ? 'in progress' : 'assigned'}). Assigning another load switches them to it and puts the earlier load back on the waiting list.
+          </p>
+        )}
         {selectedLoad && (
           <p className="text-xs text-muted" style={{ margin: '0 0 12px' }}>
             Pickup <strong>{selectedLoad.origin ?? '—'}</strong> · Dropoff <strong>{selectedLoad.destination ?? '—'}</strong> · Cutoff <strong>{when(selectedLoad.booking_cutoff_at)}</strong> · Trailer <strong>{selectedLoad.trailer_number ?? '—'}</strong>
@@ -281,8 +294,8 @@ export default function DispatchLoadsModal({ drivers, initialDriverId = '', onCl
           ))}
           {field('TRAILER OVERRIDE (OPTIONAL)', <input className="input-field" style={{ width: '100%', boxSizing: 'border-box' }} placeholder={selectedLoad?.trailer_number ?? 'Use the trailer from the file'} value={trailer} onChange={(e) => setTrailer(e.target.value)} />)}
           <div style={{ gridColumn: '1 / -1' }}>
-            <button type="button" className="btn" disabled={isSaving} style={{ backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 800 }} onClick={assign}>
-              {isSaving ? 'Assigning…' : 'Assign load'}
+            <button type="button" className="btn" disabled={isSaving} style={{ backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 700 }} onClick={assign}>
+              {isSaving ? (current ? 'Switching…' : 'Assigning…') : (current ? 'Switch load' : 'Assign load')}
             </button>
           </div>
         </div>
@@ -295,7 +308,7 @@ export default function DispatchLoadsModal({ drivers, initialDriverId = '', onCl
             </button>
           ))}
         </div>
-        <div className="table-container" style={{ overflowX: 'auto', maxWidth: '100%', maxHeight: '320px', overflowY: 'auto' }}>
+        <div className="table-container" style={{ overflowX: 'auto', maxWidth: '100%', maxHeight: 'max(320px, 42vh)', overflowY: 'auto' }}>
           <table className="data-table data-table--nowrap">
             <thead>
               <tr><th>VRID</th><th>Route</th><th>Cutoff</th><th>Trailer</th><th>Driver</th><th>Status</th>{tab === 'completed' && <th>Completion photos</th>}<th /></tr>

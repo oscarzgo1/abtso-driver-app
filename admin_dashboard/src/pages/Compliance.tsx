@@ -1,3 +1,4 @@
+import NoData from '../components/ui/no-data';
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowRight, ShieldAlert, Plus, Camera, X, AlertTriangle, Wrench, Clock, CheckCircle2 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -297,7 +298,7 @@ export default function Compliance({ organizationId, thresholdDays, onViewGround
   // two-condition rule exactly.
   const vehiclesWithStatus = vehicles.map(v => ({
     ...v,
-    status: getAssetComplianceStatus(v.inspection_due_date, criticalDefectCounts[v.id] ?? 0, thresholdDays),
+    status: getAssetComplianceStatus(v.inspection_due_date, (criticalDefectCounts[v.id] ?? 0) + ((v as { manual_vor?: boolean }).manual_vor ? 1 : 0), thresholdDays),
   }));
   const compliantCount = vehiclesWithStatus.filter(v => v.status.tier === 'green').length;
   const actionRequiredCount = vehiclesWithStatus.filter(v => v.status.tier === 'amber').length;
@@ -500,7 +501,7 @@ export default function Compliance({ organizationId, thresholdDays, onViewGround
             <span className="font-mono tabular-nums text-xs text-muted">{totalActiveHotspotDefects} active</span>
           </div>
           {categoryBreakdown.length === 0 ? (
-            <p className="text-sm text-muted">No active defects logged yet.</p>
+            <NoData />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {categoryBreakdown.map(({ group, count }, i) => {
@@ -755,7 +756,7 @@ export default function Compliance({ organizationId, thresholdDays, onViewGround
           <span className="text-xs text-muted">{filteredDefects.length} of {defects.length} defects</span>
         </div>
         {compactDefects.length === 0 ? (
-          <p className="text-sm text-muted p-16 m-0">No defects match this filter.</p>
+          <NoData />
         ) : (
           <div className="table-container">
             <table className="data-table">

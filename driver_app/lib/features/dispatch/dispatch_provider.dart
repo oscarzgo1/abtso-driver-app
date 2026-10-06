@@ -38,7 +38,9 @@ class DispatchNotifier extends StateNotifier<DispatchState> {
       // Only this driver's rows — a change to anyone else's load never
       // reaches this device.
       _channel = SupabaseService.client
-          .channel('dispatch_loads_$_driverId')
+          // Unique per instance so a channel still being torn down can't
+          // swallow the new subscription.
+          .channel('dispatch_loads_${_driverId}_${DateTime.now().microsecondsSinceEpoch}')
           .onPostgresChanges(
             event: PostgresChangeEvent.all,
             schema: 'public',
@@ -88,11 +90,14 @@ class DispatchNotifier extends StateNotifier<DispatchState> {
 }
 
 final dispatchProvider = StateNotifierProvider<DispatchNotifier, DispatchState>((ref) {
-  final auth = ref.watch(authProvider);
-  String? id;
-  if (auth.status == AuthStatus.authenticated) {
-    id = auth.driver?['id']?.toString();
-  }
+  // Only the driver id matters here. Watching the whole auth state rebuilt
+  // the notifier (and tore down its realtime channel) on every driver-row
+  // update, e.g. accepting terms, and the replacement subscription could be
+  // lost — so a newly assigned load only showed after an app restart.
+  final id = ref.watch(authProvider.select((auth) {
+    if (auth.status != AuthStatus.authenticated) return null;
+    return auth.driver?['id']?.toString();
+  }));
   return DispatchNotifier(id);
 });
 

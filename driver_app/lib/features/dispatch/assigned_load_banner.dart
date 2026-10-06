@@ -257,7 +257,26 @@ void showDispatchLoadSheet(BuildContext context, WidgetRef ref, DispatchLoad loa
             }
           }
 
+          Future<void> markLoading(String event) async {
+            setSheetState(() {
+              busy = true;
+              error = null;
+            });
+            final err = await SupabaseService.recordLoadLoading('dispatch', load.id, event);
+            if (err == null) {
+              await ref.read(dispatchProvider.notifier).refresh();
+              if (sheetContext.mounted) Navigator.pop(sheetContext);
+            } else if (sheetContext.mounted) {
+              setSheetState(() {
+                busy = false;
+                error = err;
+              });
+            }
+          }
+
           final isAssigned = load.status == 'assigned';
+          final loadingStarted = load.loadingStartedAt != null;
+          final loadingDone = load.loadingCompletedAt != null;
           return Padding(
             padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.of(sheetContext).viewInsets.bottom),
             child: SingleChildScrollView(
@@ -273,11 +292,33 @@ void showDispatchLoadSheet(BuildContext context, WidgetRef ref, DispatchLoad loa
                   row('Booking cutoff', load.bookingCutoffAt == null ? null : fmt.format(load.bookingCutoffAt!)),
                   row('Trailer', load.trailerNumber),
                   if (!isAssigned) row('Start odometer', load.odometerStart?.toString()),
+                  row(
+                    'Loading',
+                    loadingDone
+                        ? 'Finished ${DateFormat('HH:mm').format(load.loadingCompletedAt!)}'
+                        : loadingStarted
+                            ? 'Started ${DateFormat('HH:mm').format(load.loadingStartedAt!)}'
+                            : 'Not started',
+                  ),
                   if (error != null) ...[
                     const SizedBox(height: 8),
                     Text(error!, style: const TextStyle(color: Color(0xFFFF3333), fontSize: 12.5, fontWeight: FontWeight.w600)),
                   ],
                   const SizedBox(height: 14),
+                  if (!loadingDone) ...[
+                    OutlinedButton.icon(
+                      onPressed: busy ? null : () => markLoading(loadingStarted ? 'finished' : 'started'),
+                      icon: Icon(loadingStarted ? Icons.check_circle_outline_rounded : Icons.inventory_2_outlined, size: 18),
+                      label: Text(loadingStarted ? 'Finished loading' : 'Start loading', style: const TextStyle(fontWeight: FontWeight.w800)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFF111111),
+                        side: const BorderSide(color: Color(0xFF111111), width: 1.5),
+                        minimumSize: const Size(double.infinity, 46),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                   ElevatedButton(
                     onPressed: busy
                         ? null

@@ -105,7 +105,7 @@ export default function TrueProfitSection({
             ))}
           </div>
           {onManageCosts && (
-            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '6px', padding: '7px 12px', fontSize: '12px' }} onClick={onManageCosts}>
+            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '6px', padding: '6px 12px', fontSize: '11px' }} onClick={onManageCosts}>
               <Settings2 size={14} /> Costs &amp; targets
             </button>
           )}

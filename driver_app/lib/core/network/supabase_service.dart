@@ -328,6 +328,40 @@ class SupabaseService {
     }
   }
 
+  /// Asks the company to delete this employee's account and everything
+  /// attached to it (migration 100). Signed in: from Settings.
+  static Future<Map<String, dynamic>> requestAccountDeletion({String? reason}) async {
+    if (isMockMode) return {'success': true};
+    try {
+      await client.rpc('request_account_deletion', params: {'p_reason': (reason == null || reason.trim().isEmpty) ? null : reason.trim()});
+      return {'success': true};
+    } on PostgrestException catch (e) {
+      return {'success': false, 'error': e.message};
+    } catch (e) {
+      debugPrint('requestAccountDeletion failed: $e');
+      return {'success': false, 'error': 'Could not send the request — check your signal and try again.'};
+    }
+  }
+
+  /// Same request from the login screen, signed out. The company code and
+  /// Driver ID identify the account; the answer never says whether they matched.
+  static Future<Map<String, dynamic>> requestAccountDeletionPublic({required String companyCode, required String driverId, String? reason}) async {
+    if (isMockMode) return {'success': true};
+    try {
+      await client.rpc('request_account_deletion_public', params: {
+        'p_company_code': companyCode.trim(),
+        'p_driver_id': driverId.trim(),
+        'p_reason': (reason == null || reason.trim().isEmpty) ? null : reason.trim(),
+      });
+      return {'success': true};
+    } on PostgrestException catch (e) {
+      return {'success': false, 'error': e.message};
+    } catch (e) {
+      debugPrint('requestAccountDeletionPublic failed: $e');
+      return {'success': false, 'error': 'Could not send the request — check your signal and try again.'};
+    }
+  }
+
   /// Sign out the current driver
   static Future<void> signOut() async {
     if (isMockMode) {
@@ -996,7 +1030,7 @@ class SupabaseService {
     if (isMockMode || driverId == null) return [];
     final rows = await client
         .from('dispatch_loads')
-        .select('id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at, shipment_proofs(id, pod_type, photo_path, taken_at)')
+        .select('id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at, loading_started_at, loading_completed_at, shipment_proofs(id, pod_type, photo_path, taken_at)')
         .eq('driver_id', driverId)
         .inFilter('status', statuses)
         .order('created_at', ascending: false)
@@ -1048,6 +1082,22 @@ class SupabaseService {
     } catch (e) {
       debugPrint('fetchSignedDeliveryPhotoUrls failed: $e');
       return {};
+    }
+  }
+
+  /// Marks loading as started or finished on one of the driver's loads
+  /// (migration 092) so the office can see the shipment is being loaded.
+  /// [kind] is 'dispatch' (office-assigned) or 'shift' (attached by the
+  /// driver); [event] is 'started' or 'finished'. Returns null on success.
+  static Future<String?> recordLoadLoading(String kind, String loadId, String event) async {
+    if (isMockMode) return null;
+    try {
+      await client.rpc('record_load_loading', params: {'p_kind': kind, 'p_load_id': loadId, 'p_event': event});
+      return null;
+    } on PostgrestException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'No connection — try again when you have signal.';
     }
   }
 
@@ -1217,6 +1267,36 @@ class SupabaseService {
     } catch (e) {
       debugPrint('cancelHolidayRequest failed: $e');
       return {'success': false, 'error': 'Could not cancel the request — check your connection and try again.'};
+    }
+  }
+
+  /// The signed-in employee's rota for the seven days from [weekStart]
+  /// (migration 094). Each row: work_date, day_off, start_time, end_time, note.
+  static Future<List<Map<String, dynamic>>> fetchMyRota(DateTime weekStart) async {
+    final driverId = currentDriverId;
+    if (isMockMode || driverId == null) return [];
+    final rows = await client
+        .from('employee_rota')
+        .select('work_date, day_off, start_time, end_time, note')
+        .eq('driver_id', driverId)
+        .gte('work_date', _isoDate(weekStart))
+        .lte('work_date', _isoDate(weekStart.add(const Duration(days: 6))))
+        .order('work_date');
+    return List<Map<String, dynamic>>.from(rows as List);
+  }
+
+  /// Replaces the employee's rota for the week. [days] holds
+  /// {date, off, start, end, note}; validation happens in save_my_rota().
+  static Future<Map<String, dynamic>> saveMyRota(DateTime weekStart, List<Map<String, dynamic>> days) async {
+    if (isMockMode) return {'success': true};
+    try {
+      await client.rpc('save_my_rota', params: {'p_week_start': _isoDate(weekStart), 'p_days': days});
+      return {'success': true};
+    } on PostgrestException catch (e) {
+      return {'success': false, 'error': e.message};
+    } catch (e) {
+      debugPrint('saveMyRota failed: $e');
+      return {'success': false, 'error': 'Could not save your rota — check your connection and try again.'};
     }
   }
 

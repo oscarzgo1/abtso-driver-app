@@ -20,6 +20,7 @@ import 'walkaround_check_screen.dart';
 import 'walkaround_history_screen.dart';
 import 'asset_picker.dart';
 import '../../holidays/presentation/holiday_screen.dart';
+import '../../rota/presentation/rota_screen.dart';
 import '../../../core/network/supabase_service.dart';
 import '../../../core/utils/role_helper.dart';
 import '../../../core/network/entitlements_provider.dart';
@@ -1438,6 +1439,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
                     title: 'Book Holiday',
                     subtitle: 'Request time off and track approval',
                     onSelect: () => Navigator.of(hubContext).push(MaterialPageRoute(builder: (_) => const HolidayScreen())),
+                  ),
+                  buildActionRow(
+                    icon: Icons.calendar_view_week_outlined,
+                    title: 'Weekly Rota',
+                    subtitle: 'Add the days and hours you will work',
+                    onSelect: () => Navigator.of(hubContext).push(MaterialPageRoute(builder: (_) => const RotaScreen())),
                   ),
                   // Conditional on the org's own Settings -> Alerts toggle
                   // (migration 050) — completely absent from the hub, not

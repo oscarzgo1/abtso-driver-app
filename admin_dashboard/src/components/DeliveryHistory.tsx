@@ -1,5 +1,6 @@
+import NoData from './ui/no-data';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Search, X, MapPin, Camera, PenLine, Printer } from 'lucide-react';
+import { X, MapPin, Camera, PenLine, Printer } from 'lucide-react';
 import TableFilter, { type TableFilterGroup } from './ui/table-filter';
 import { supabase, isMockMode } from '../App';
 
@@ -288,16 +289,7 @@ export default function DeliveryHistory() {
     <div className="mt-16" style={{ maxWidth: '1600px', width: '100%' }}>
       <div className="analytics-chart-card">
         <div className="flex align-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
-          <TableFilter groups={filterGroups} />
-          <div className="telemetry-search-wrap" style={{ minWidth: '240px', flex: '1 1 240px', maxWidth: '360px' }}>
-            <Search size={14} />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search load, driver, route"
-            />
-          </div>
+          <TableFilter groups={filterGroups} search={{ value: search, onChange: setSearch, placeholder: 'Search load, driver, route' }} />
         </div>
 
         {error && <div className="login-notice login-notice--error mb-16">{error}</div>}
@@ -319,7 +311,7 @@ export default function DeliveryHistory() {
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={9} className="text-xs text-muted" style={{ padding: '18px' }}>{isLoading ? 'Loading' : 'No deliveries match.'}</td></tr>
+                <tr><td colSpan={9}>{isLoading ? <span className="text-xs text-muted" style={{ padding: '18px', display: 'block' }}>Loading</span> : <NoData />}</td></tr>
               ) : filtered.map(r => {
                 const from = splitStop(r.originFull);
                 const to = splitStop(r.destinationFull);

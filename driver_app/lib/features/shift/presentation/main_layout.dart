@@ -16,6 +16,7 @@ import 'shift_provider.dart';
 import 'widgets/progress_ring.dart';
 import '../../dispatch/load_history_screen.dart';
 import '../../auth/presentation/auth_provider.dart';
+import '../../auth/presentation/account_deletion_dialog.dart';
 import '../../legal/presentation/legal_compliance_screen.dart';
 import 'dvsa_compliance.dart' as dvsa;
 
@@ -2268,6 +2269,13 @@ class _SettingsTabState extends ConsumerState<SettingsTab> with WidgetsBindingOb
             // ── GROUP 5: ACCOUNT (DESTRUCTIVE) ──
             _buildSectionHeader('ACCOUNT'),
             _buildSettingsGroup([
+              _buildSettingsRow(
+                icon: Icons.delete_outline_rounded,
+                title: 'Request Account Deletion',
+                isDestructive: true,
+                onTap: () => showAccountDeletionRequest(context, signedIn: true),
+              ),
+              _buildDivider(),
               _buildSettingsRow(
                 icon: Icons.logout_rounded,
                 title: 'Log out',

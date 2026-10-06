@@ -1,7 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react';
-import { PieChart as PieChartIcon } from 'lucide-react';
 import { Cell, Pie, PieChart, Tooltip, type TooltipContentProps } from 'recharts';
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from './empty';
+import NoData from './no-data';
 
 export interface DonutSlice {
   label: string;
@@ -35,8 +34,8 @@ export function FleetStatusDonutChart({
   data,
   centerLabel = 'Total',
   height = 220,
-  emptyTitle = 'No Data Yet',
-  emptyDescription = 'Nothing to show here yet.',
+  emptyTitle: _emptyTitle,
+  emptyDescription: _emptyDescription,
   innerRadius = 55,
   outerRadius = 75,
 }: FleetStatusDonutChartProps) {
@@ -86,13 +85,7 @@ export function FleetStatusDonutChart({
   if (!hasData) {
     return (
       <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Empty className="py-0">
-          <EmptyHeader>
-            <EmptyMedia variant="icon"><PieChartIcon /></EmptyMedia>
-            <EmptyTitle>{emptyTitle}</EmptyTitle>
-            <EmptyDescription>{emptyDescription}</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <NoData className="py-0" />
       </div>
     );
   }

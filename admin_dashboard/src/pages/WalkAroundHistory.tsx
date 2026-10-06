@@ -1,7 +1,7 @@
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, ChevronDown, Clock, ClipboardCheck, AlertTriangle, Search, X, Users, CalendarDays, PenTool } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ChevronDown, Clock, ClipboardCheck, AlertTriangle, Users, PenTool } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../components/ui/empty';
+import NoData from '../components/ui/no-data';
 import TableFilter, { type TableFilterGroup } from '../components/ui/table-filter';
 import { computeShiftCompliance, formatCheckDuration, type ComplianceShift, type WalkaroundCheckType } from '../lib/walkaround-compliance';
 
@@ -421,40 +421,23 @@ export default function WalkAroundHistory({ organizationId, targetMinutes, shift
 
       {/* ── Shared filters: who and when ───────────────────────────── */}
       <div className="flex align-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
-        <div className="telemetry-search-wrap" style={{ minWidth: '240px', flex: '1 1 240px', maxWidth: '360px' }}>
-          <Search size={14} />
-          <input
-            type="text"
-            placeholder="Search employee, tractor or trailer…"
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-          />
-        </div>
-        <div className="telemetry-pill-select-wrap">
-          <span className="telemetry-pill-icon"><Users size={13} color="#94A3B8" /></span>
-          <select aria-label="Employee" className="telemetry-pill-select" value={employeeId} onChange={(e) => { setEmployeeId(e.target.value); setPage(0); }}>
-            <option value="">All employees</option>
-            {employeeOptions.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-          </select>
-          <ChevronDown size={12} className="telemetry-pill-chevron" />
-        </div>
-        <div className="telemetry-pill-select-wrap">
-          <span className="telemetry-pill-icon"><CalendarDays size={13} color="#94A3B8" /></span>
-          <select aria-label="Period" className="telemetry-pill-select" value={period} onChange={(e) => { setPeriod(e.target.value as Period); setPage(0); }}>
-            {PERIODS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-          </select>
-          <ChevronDown size={12} className="telemetry-pill-chevron" />
-        </div>
-        {(employeeId || search) && (
-          <button
-            type="button"
-            onClick={() => { setEmployeeId(''); setSearch(''); setPage(0); }}
-            className="flex align-center text-xs font-bold"
-            style={{ gap: '4px', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--brand-red)', fontFamily: 'inherit' }}
-          >
-            <X size={13} /> Clear
-          </button>
-        )}
+        <TableFilter
+          groups={[
+            {
+              key: 'employee', label: 'Employee', single: true, neutral: '',
+              options: [{ value: '', label: 'All employees' }, ...employeeOptions.map(([id, name]) => ({ value: id, label: name }))],
+              selected: [employeeId],
+              onChange: (v) => { setEmployeeId(v[0] ?? ''); setPage(0); },
+            },
+            {
+              key: 'period', label: 'Period', single: true, neutral: '14',
+              options: PERIODS.map(p => ({ value: p.value, label: p.label })),
+              selected: [period],
+              onChange: (v) => { if (v[0]) { setPeriod(v[0] as Period); setPage(0); } },
+            },
+          ]}
+          search={{ value: search, onChange: (v) => { setSearch(v); setPage(0); }, placeholder: 'Search employee, tractor or trailer…' }}
+        />
       </div>
 
       {/* ── By employee ─────────────────────────────────────────────── */}
@@ -541,15 +524,7 @@ export default function WalkAroundHistory({ organizationId, targetMinutes, shift
         </div>
 
         {pageRows.length === 0 ? (
-          <Empty className="py-24">
-            <EmptyHeader>
-              <EmptyMedia variant="icon"><ClipboardCheck /></EmptyMedia>
-              <EmptyTitle>No Walk-Around Checks</EmptyTitle>
-              <EmptyDescription>
-                {allRows.length === 0 ? 'Checks submitted from the app will show up here.' : 'Nothing matches the current search and filters.'}
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <NoData className="py-24" />
         ) : (
           <>
             <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>

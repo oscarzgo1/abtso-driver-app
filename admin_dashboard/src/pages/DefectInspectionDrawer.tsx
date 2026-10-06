@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, Camera, ZoomIn, ShieldAlert, Search, CheckCircle2 } from 'lucide-react';
+import { X, Camera, ZoomIn, ShieldAlert, ShieldCheck, Search, CheckCircle2 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
 import { ImageLightbox } from '../components/ui/image-lightbox';
 
@@ -40,9 +40,11 @@ interface DefectInspectionDrawerProps {
   /// separate action from status, since VOR is a property of the asset,
   /// not a workflow state of this one defect report.
   onSetVor: (defectId: string, vehicleId: string | null) => void;
+  /** Sign off that the unit can go back on the road. */
+  onAuthorise?: () => void;
 }
 
-export default function DefectInspectionDrawer({ defect, onClose, onUpdateStatus, onSetVor }: DefectInspectionDrawerProps) {
+export default function DefectInspectionDrawer({ defect, onClose, onUpdateStatus, onSetVor, onAuthorise }: DefectInspectionDrawerProps) {
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [signedUrls, setSignedUrls] = useState<string[]>([]);
   const [isLoadingPhotos, setIsLoadingPhotos] = useState(false);
@@ -155,6 +157,16 @@ export default function DefectInspectionDrawer({ defect, onClose, onUpdateStatus
               style={{ gap: '6px', justifyContent: 'center', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }}
             >
               <ShieldAlert size={14} /> Set VOR
+            </button>
+          )}
+          {onAuthorise && defect.severity === 'critical_vor' && defect.status !== 'closed' && (
+            <button
+              type="button"
+              onClick={onAuthorise}
+              className="btn flex align-center"
+              style={{ gap: '6px', justifyContent: 'center', backgroundColor: 'var(--charcoal)', color: '#fff', borderColor: 'var(--charcoal)' }}
+            >
+              <ShieldCheck size={14} /> Authorise for road use
             </button>
           )}
         </div>

@@ -1,15 +1,19 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, Plus, X, Trash2, CalendarDays, CheckCircle2, CircleX } from 'lucide-react';
+import NoData from '../components/ui/no-data';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { ChevronLeft, Plus, X, CheckCircle2, CircleX, GripVertical } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../components/ui/empty';
+import TableFilter from '../components/ui/table-filter';
+import WeeklyRota from '../components/WeeklyRota';
+import { EarningsDateRangePicker } from '../components/ui/earnings-date-range-picker';
 
 // ============================================================
-// Employee Holidays — calendar of who's off and when (migration 057)
-// plus holiday requests employees send from the app (migration 061).
-// Requests show dashed on the calendar and wait in "Awaiting
-// approval" (and the Alert Panel) until approved or declined; holidays
-// an admin adds here are approved straight away. No entitlement/balance
-// tracking. Sits under the Driver Profiles accordion.
+// Employee Holidays — a full-width timeline (employees down the side,
+// one column per day) showing the exact dates of booked holidays
+// (migration 057) and requests waiting for approval (migration 061).
+// Requests employees send from the app show dashed until approved or
+// declined; holidays an admin adds here are approved straight away.
+// No entitlement/balance tracking. Sits under the Driver Profiles
+// accordion.
 // ============================================================
 
 interface HolidayDriverLite {
@@ -30,6 +34,7 @@ interface HolidayRow {
   status: HolidayStatus;
   leave_type: string;
   created_at: string;
+  reviewed_at?: string | null;
 }
 
 const LEAVE_LABEL: Record<string, string> = { annual: 'Annual leave', unpaid: 'Unpaid leave', other: 'Other leave' };
@@ -37,8 +42,6 @@ const LEAVE_LABEL: Record<string, string> = { annual: 'Annual leave', unpaid: 'U
 function dayCount(start: string, end: string): number {
   return Math.round((new Date(end).getTime() - new Date(start).getTime()) / 86_400_000) + 1;
 }
-
-const DRIVER_COLORS = ['#CC0000', '#2563EB', '#10B981', '#F59E0B', '#8B5CF6', '#0891B2', '#DB2777', '#65A30D'];
 
 function dateKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -52,6 +55,14 @@ function addMonths(d: Date, n: number): Date {
   return new Date(d.getFullYear(), d.getMonth() + n, 1);
 }
 
+const NAME_W = 150;
+// Holidays approved in the last week stand out in their own colour.
+const NEW_COLOR = '#0F9D58';
+const NEW_DAYS = 7;
+const isNewlyApproved = (h: { status: string; reviewed_at?: string | null }) =>
+  h.status === 'approved' && !!h.reviewed_at && Date.now() - new Date(h.reviewed_at).getTime() < NEW_DAYS * 86_400_000;
+const ROW_H = 46;
+
 interface EmployeeHolidaysProps {
   organizationId: string | null;
   /** App.tsx's shared approve/decline handler (also used by the Alert Panel). */
@@ -64,7 +75,18 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
   const [holidays, setHolidays] = useState<HolidayRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [monthAnchor, setMonthAnchor] = useState(() => startOfMonth(new Date()));
+  // Visible window of the timeline, chosen with the shared date-range picker.
+  const defaultWindow = () => {
+    const from = startOfMonth(new Date());
+    const to = new Date(addMonths(from, 3).getTime() - 86_400_000);
+    return { from: dateKey(from), to: dateKey(to) };
+  };
+  const [win, setWin] = useState(defaultWindow);
+  const monthAnchor = useMemo(() => new Date(`${win.from}T00:00:00`), [win.from]);
+  const setMonthAnchor = (d: Date) => {
+    const to = new Date(addMonths(startOfMonth(d), 3).getTime() - 86_400_000);
+    setWin({ from: dateKey(d), to: dateKey(to) });
+  };
   const [isAddOpen, setIsAddOpen] = useState(false);
 
   const [formDriverId, setFormDriverId] = useState('');
@@ -78,6 +100,15 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
   const [declineNote, setDeclineNote] = useState('');
   const [reviewingId, setReviewingId] = useState<string | null>(null);
 
+  const [zoom, setZoom] = useState(32);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [subTab, setSubTab] = useState<'bookings' | 'rota'>('bookings');
+  // Drag & drop of a waiting request onto the timeline.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [drop, setDrop] = useState<{ driverId: string; idx: number } | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
   const load = useCallback(async () => {
     if (isMockMode || !supabase || !organizationId) return;
     setIsLoading(true);
@@ -85,7 +116,7 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
     try {
       const [{ data: driverRows, error: drErr }, { data: holidayRows, error: hErr }] = await Promise.all([
         supabase.from('drivers').select('id, driver_id, full_name').eq('organization_id', organizationId).eq('is_active', true).order('full_name'),
-        supabase.from('employee_holidays').select('id, driver_id, start_date, end_date, note, status, leave_type, created_at, drivers(full_name)').eq('organization_id', organizationId).in('status', ['pending', 'approved']).order('start_date', { ascending: false }),
+        supabase.from('employee_holidays').select('id, driver_id, start_date, end_date, note, status, leave_type, created_at, reviewed_at, drivers(full_name)').eq('organization_id', organizationId).in('status', ['pending', 'approved']).order('start_date', { ascending: false }),
       ]);
       if (drErr || hErr) throw drErr ?? hErr;
       setDrivers((driverRows ?? []) as HolidayDriverLite[]);
@@ -108,30 +139,37 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
     return () => { supabase!.removeChannel(channel); };
   }, [organizationId, load]);
 
-  const colorByDriver = useMemo(() => {
-    const map: Record<string, string> = {};
-    drivers.forEach((d, i) => { map[d.id] = DRIVER_COLORS[i % DRIVER_COLORS.length]; });
-    return map;
-  }, [drivers]);
+  // Three months from the anchor, one column per day.
+  const windowDays = useMemo(() => {
+    const out: Date[] = [];
+    const end = new Date(`${win.to || win.from}T00:00:00`);
+    for (const d = new Date(monthAnchor); d <= end && out.length < 400; d.setDate(d.getDate() + 1)) out.push(new Date(d));
+    return out;
+  }, [monthAnchor, win.to, win.from]);
+  const winStartUtc = Date.UTC(monthAnchor.getFullYear(), monthAnchor.getMonth(), monthAnchor.getDate());
+  const idxOf = (k: string) => {
+    const [y, m, d] = k.split('-').map(Number);
+    return Math.round((Date.UTC(y, m - 1, d) - winStartUtc) / 86_400_000);
+  };
 
-  const weeks = useMemo(() => {
-    const firstOfMonth = monthAnchor;
-    const gridStart = new Date(firstOfMonth);
-    gridStart.setDate(gridStart.getDate() - gridStart.getDay());
-    const days: Date[] = Array.from({ length: 42 }, (_, i) => {
-      const d = new Date(gridStart);
-      d.setDate(d.getDate() + i);
-      return d;
+  const monthSegments = useMemo(() => {
+    const segs: { label: string; days: number }[] = [];
+    windowDays.forEach(d => {
+      const label = d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+      if (segs.length && segs[segs.length - 1].label === label) segs[segs.length - 1].days++;
+      else segs.push({ label, days: 1 });
     });
-    const rows: Date[][] = [];
-    for (let i = 0; i < 6; i++) rows.push(days.slice(i * 7, i * 7 + 7));
-    return rows;
-  }, [monthAnchor]);
+    return segs;
+  }, [windowDays]);
 
-  const holidaysForDay = useCallback((d: Date) => {
-    const k = dateKey(d);
-    return holidays.filter(h => h.start_date <= k && h.end_date >= k);
-  }, [holidays]);
+  // Jump to today whenever the visible months change.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const i = idxOf(dateKey(new Date()));
+    el.scrollLeft = i >= 0 && i < windowDays.length ? Math.max(0, i * zoom - 120) : 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [win.from, isLoading]);
 
   const openAddModal = () => {
     setFormDriverId('');
@@ -193,26 +231,101 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
     }
   };
 
-  const monthLabel = monthAnchor.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-  const today = new Date();
+  const todayKey = dateKey(new Date());
+  const todayIdx = idxOf(todayKey);
   const pendingRequests = useMemo(
     () => holidays.filter(h => h.status === 'pending').sort((a, b) => a.start_date.localeCompare(b.start_date)),
     [holidays],
   );
-  const upcoming = useMemo(() => {
-    const k = dateKey(today);
-    return holidays
-      .filter(h => h.status === 'approved' && h.end_date >= k)
-      .sort((a, b) => a.start_date.localeCompare(b.start_date))
-      .slice(0, 8);
-  }, [holidays]);
+  const fmt = (k: string) => new Date(k + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const range = (h: { start_date: string; end_date: string }) => (h.end_date !== h.start_date ? `${fmt(h.start_date)} – ${fmt(h.end_date)}` : fmt(h.start_date));
+  const plural = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
+  const addDaysKey = (k: string, n: number) => {
+    const [y, m, d] = k.split('-').map(Number);
+    return dateKey(new Date(y, m - 1, d + n));
+  };
+
+  const rows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return drivers
+      .filter(d => !q || `${d.full_name} ${d.driver_id}`.toLowerCase().includes(q))
+      .map(d => ({
+        driver: d,
+        items: holidays.filter(h => h.driver_id === d.id && (statusFilter.length === 0 || statusFilter.includes(h.status))),
+      }))
+      .filter(r => statusFilter.length === 0 || r.items.length > 0 || (dragId !== null && holidays.find(h => h.id === dragId)?.driver_id === r.driver.id));
+  }, [drivers, holidays, search, statusFilter, dragId]);
+
+  const dragged = holidays.find(h => h.id === dragId) ?? null;
+  const trackW = windowDays.length * zoom;
+
+  // Dropping a waiting request on its employee's row confirms it from the
+  // dropped day, keeping the number of days they asked for.
+  const confirmDrop = async (h: HolidayRow, dayIdx: number) => {
+    if (isMockMode || !supabase) return;
+    const length = dayCount(h.start_date, h.end_date);
+    const start = dateKey(new Date(monthAnchor.getFullYear(), monthAnchor.getMonth(), monthAnchor.getDate() + dayIdx));
+    const end = addDaysKey(start, length - 1);
+    setReviewingId(h.id);
+    try {
+      const { error: upErr } = await supabase.from('employee_holidays').update({ start_date: start, end_date: end }).eq('id', h.id);
+      if (upErr) throw upErr;
+      await review(h.id, 'approved');
+    } catch (err: any) {
+      setError(err?.message ?? 'Could not confirm these dates.');
+    } finally {
+      setReviewingId(null);
+      setDragId(null);
+      setDrop(null);
+    }
+  };
+
+  const removeHoliday = (h: HolidayRow) => {
+    if (window.confirm(`Remove ${h.driver_name ?? 'this employee'}'s holiday (${range(h)})?`)) handleDelete(h.id);
+  };
+
+  const reviewButtons = (h: HolidayRow) => {
+    const busy = reviewingId === h.id;
+    if (decliningId === h.id) {
+      return (
+        <div className="flex flex-col" style={{ gap: '6px' }}>
+          <input
+            type="text"
+            className="input-field"
+            style={{ width: '100%', padding: '6px 8px', fontSize: '12px' }}
+            placeholder="Reason (optional) — the employee sees this"
+            value={declineNote}
+            onChange={(e) => setDeclineNote(e.target.value)}
+            autoFocus
+          />
+          <div className="flex" style={{ gap: '6px' }}>
+            <button type="button" className="alert-ack-btn" disabled={busy} onClick={() => review(h.id, 'declined', declineNote)}>
+              <CircleX size={12} /> {busy ? 'Declining…' : 'Confirm'}
+            </button>
+            <button type="button" className="alert-dismiss-btn" disabled={busy} onClick={() => { setDecliningId(null); setDeclineNote(''); }}>Cancel</button>
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="flex" style={{ gap: '6px', flexWrap: 'wrap' }}>
+        <button type="button" className="alert-ack-btn" disabled={busy || !onReviewRequest} onClick={() => review(h.id, 'approved')}>
+          <CheckCircle2 size={12} /> {busy ? 'Approving…' : 'Approve'}
+        </button>
+        <button type="button" className="alert-dismiss-btn" disabled={busy || !onReviewRequest} onClick={() => { setDecliningId(h.id); setDeclineNote(''); }}>
+          <CircleX size={12} /> Decline
+        </button>
+      </div>
+    );
+  };
+
 
   return (
-    <div className="flex-1">
+    <div className="flex-1" style={{ minWidth: 0 }}>
       <div className="flex align-center justify-between mb-16">
         <div>
-          <h2 className="text-xl font-black text-primary m-0">EMPLOYEE HOLIDAYS</h2>
-          <p className="text-xs text-muted m-0 mt-4">Who's off and when. Requests sent from the app appear dashed until you approve them.</p>
+          <h2 className="text-xl font-black text-primary m-0">EMPLOYEES SCHEDULE</h2>
+          <p className="text-xs text-muted m-0 mt-4">Holiday bookings and the weekly rota.</p>
         </div>
         <div className="flex align-center" style={{ gap: '8px' }}>
           {onBack && (
@@ -225,175 +338,238 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
               <ChevronLeft size={14} /> Back
             </button>
           )}
-          <button
-            type="button"
-            onClick={openAddModal}
-            className="btn flex align-center"
-            style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
-          >
-            <Plus size={15} /> Add Holiday
-          </button>
+          {subTab === 'bookings' && (
+            <button
+              type="button"
+              onClick={openAddModal}
+              className="btn flex align-center"
+              style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
+            >
+              <Plus size={15} /> Add Holiday
+            </button>
+          )}
         </div>
+      </div>
+
+      <div className="live-subtabs" role="tablist" style={{ marginTop: 0, marginBottom: '16px' }}>
+        <button type="button" role="tab" aria-selected={subTab === 'bookings'} className={`live-subtab${subTab === 'bookings' ? ' live-subtab--active' : ''}`} onClick={() => setSubTab('bookings')}>
+          Holidays Bookings{pendingRequests.length > 0 ? ` (${pendingRequests.length})` : ''}
+        </button>
+        <button type="button" role="tab" aria-selected={subTab === 'rota'} className={`live-subtab${subTab === 'rota' ? ' live-subtab--active' : ''}`} onClick={() => setSubTab('rota')}>
+          Weekly Rota
+        </button>
       </div>
 
       {error && <div className="login-notice login-notice--error mb-16">{error}</div>}
 
-      <div className="grid grid-cols-3 gap-16" style={{ alignItems: 'start' }}>
-        <div className="glass-card" style={{ gridColumn: 'span 2', padding: '16px', overflow: 'hidden' }}>
-          <div className="flex align-center justify-between mb-16">
-            <button type="button" onClick={() => setMonthAnchor(m => addMonths(m, -1))} style={{ background: 'none', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '6px', cursor: 'pointer', color: 'var(--charcoal)' }}>
-              <ChevronLeft size={16} />
-            </button>
-            <span className="font-black text-primary" style={{ fontSize: '15px' }}>{monthLabel}</span>
-            <button type="button" onClick={() => setMonthAnchor(m => addMonths(m, 1))} style={{ background: 'none', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '6px', cursor: 'pointer', color: 'var(--charcoal)' }}>
-              <ChevronRight size={16} />
-            </button>
+      {subTab === 'rota' && <WeeklyRota organizationId={organizationId} drivers={drivers} />}
+
+      {subTab === 'bookings' && (
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 3fr) minmax(230px, 1fr)', gap: '16px', alignItems: 'start' }}>
+        {/* ── Timeline (left half) ── */}
+        <div className="glass-card" style={{ padding: '14px 16px', minWidth: 0 }}>
+          <div className="flex align-center justify-between mb-12" style={{ gap: '10px', flexWrap: 'wrap' }}>
+            <div className="flex align-center" style={{ gap: '8px' }}>
+              <span style={{ minWidth: '250px' }}>
+                <EarningsDateRangePicker
+                  startDate={win.from}
+                  endDate={win.to}
+                  onChange={(from, to) => { if (from) setWin({ from, to: to || from }); }}
+                />
+              </span>
+              <button type="button" className="comp-edit-btn" onClick={() => setWin(defaultWindow())}>Today</button>
+            </div>
+            <label className="flex align-center text-xs font-bold text-secondary" style={{ gap: '8px' }}>
+              Zoom
+              <input type="range" min={16} max={72} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} style={{ width: '100px', accentColor: 'var(--charcoal)' }} />
+            </label>
+          </div>
+          <div className="mb-12">
+            <TableFilter
+              groups={[{
+                key: 'status', label: 'Status',
+                options: [{ value: 'approved', label: 'Booked' }, { value: 'pending', label: 'Awaiting approval' }],
+                selected: statusFilter,
+                onChange: setStatusFilter,
+              }]}
+              search={{ value: search, onChange: setSearch, placeholder: 'Search employee…' }}
+            />
           </div>
 
-          <div className="grid grid-cols-7" style={{ gap: '4px', marginBottom: '4px' }}>
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-              <div key={d} className="text-xs font-bold text-muted text-center" style={{ padding: '4px 0' }}>{d}</div>
-            ))}
+          <div className="flex align-center text-xs text-secondary mb-12" style={{ gap: '16px', flexWrap: 'wrap' }}>
+            <span className="flex align-center" style={{ gap: '6px' }}><i style={{ width: 14, height: 10, borderRadius: 3, background: 'var(--charcoal)', display: 'inline-block' }} /> Booked</span>
+            <span className="flex align-center" style={{ gap: '6px' }}><i style={{ width: 14, height: 10, borderRadius: 3, background: NEW_COLOR, display: 'inline-block' }} /> Newly approved</span>
+            <span className="flex align-center" style={{ gap: '6px' }}><i style={{ width: 14, height: 10, borderRadius: 3, border: '1.5px dashed var(--brand-red)', background: 'rgba(204,0,0,0.08)', display: 'inline-block' }} /> Awaiting approval</span>
+            <span className="flex align-center" style={{ gap: '6px' }}><i style={{ width: 2, height: 12, background: 'var(--brand-red)', display: 'inline-block' }} /> Today</span>
           </div>
 
           {isLoading ? (
             <p className="text-xs text-muted text-center py-24">Loading…</p>
+          ) : rows.length === 0 ? (
+            <NoData />
           ) : (
-            weeks.map((week, wi) => (
-              <div key={wi} className="grid grid-cols-7" style={{ gap: '4px', marginBottom: '4px' }}>
-                {week.map(day => {
-                  const inMonth = day.getMonth() === monthAnchor.getMonth();
-                  const isToday = dateKey(day) === dateKey(today);
-                  const dayHolidays = holidaysForDay(day);
+            <div ref={scrollRef} style={{ overflowX: 'auto', border: '1px solid var(--border-color)', borderRadius: '10px' }}>
+              <div style={{ width: NAME_W + trackW, position: 'relative' }}>
+                {/* Header: months, then days */}
+                <div className="flex" style={{ borderBottom: '1px solid var(--border-color)', background: 'var(--card-bg-hover)' }}>
+                  <div className="text-xs font-bold text-primary" style={{ width: NAME_W, flexShrink: 0, position: 'sticky', left: 0, zIndex: 4, background: 'var(--card-bg-hover)', borderRight: '1px solid var(--border-color)', padding: '8px 12px' }}>Employees</div>
+                  <div>
+                    <div className="flex">
+                      {monthSegments.map(seg => (
+                        <div key={seg.label} className="text-xs font-bold text-primary" style={{ width: seg.days * zoom, padding: '6px 8px', borderRight: '1px solid var(--border-color)', whiteSpace: 'nowrap', overflow: 'hidden' }}>{seg.label}</div>
+                      ))}
+                    </div>
+                    <div className="flex">
+                      {windowDays.map(d => {
+                        const k = dateKey(d);
+                        const weekend = d.getDay() === 0 || d.getDay() === 6;
+                        return (
+                          <div key={k} className="font-mono text-center" style={{ width: zoom, flexShrink: 0, fontSize: '10px', padding: '3px 0', color: k === todayKey ? 'var(--brand-red)' : 'var(--charcoal-light)', fontWeight: k === todayKey ? 800 : 500, background: weekend ? 'rgba(0,0,0,0.05)' : undefined, borderRight: '1px solid var(--border-color)' }}>
+                            {zoom >= 26 && <div>{d.toLocaleDateString('en-GB', { weekday: 'narrow' })}</div>}
+                            <div>{d.getDate()}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Today marker */}
+                {todayIdx >= 0 && todayIdx < windowDays.length && (
+                  <div style={{ position: 'absolute', top: 0, bottom: 0, left: NAME_W + todayIdx * zoom + zoom / 2 - 1, width: 2, background: 'var(--brand-red)', opacity: 0.55, zIndex: 3, pointerEvents: 'none' }} />
+                )}
+
+                {rows.map(({ driver, items }) => {
+                  const isTarget = dragged?.driver_id === driver.id;
+                  const preview = isTarget && drop?.driverId === driver.id && dragged ? drop.idx : null;
+                  const previewLen = dragged ? dayCount(dragged.start_date, dragged.end_date) : 0;
                   return (
-                    <div
-                      key={dateKey(day)}
-                      style={{
-                        minHeight: '68px', borderRadius: '8px', padding: '4px',
-                        background: isToday ? 'var(--card-bg-hover)' : 'transparent',
-                        border: isToday ? '1px solid var(--brand-red)' : '1px solid var(--border-color)',
-                        opacity: inMonth ? 1 : 0.35,
-                      }}
-                    >
-                      <span className="font-mono text-xs" style={{ color: 'var(--charcoal-light)' }}>{day.getDate()}</span>
-                      <div className="flex flex-col" style={{ gap: '2px', marginTop: '2px' }}>
-                        {dayHolidays.slice(0, 3).map(h => {
-                          const color = colorByDriver[h.driver_id] ?? '#888';
+                    <div key={driver.id} className="flex" style={{ height: ROW_H, borderBottom: '1px solid var(--border-color)', opacity: dragged && !isTarget ? 0.45 : 1 }}>
+                      <div style={{ width: NAME_W, flexShrink: 0, position: 'sticky', left: 0, zIndex: 2, background: 'var(--card-bg)', borderRight: '1px solid var(--border-color)', padding: '6px 12px', display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0 }}>
+                        <span className="font-bold text-primary" style={{ fontSize: '12.5px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{driver.full_name}</span>
+                        <span className="text-xs text-muted font-mono">{driver.driver_id}</span>
+                      </div>
+                      <div
+                        style={{
+                          position: 'relative', width: trackW,
+                          backgroundColor: isTarget ? 'rgba(204,0,0,0.04)' : undefined,
+                          backgroundImage: `repeating-linear-gradient(to right, transparent 0, transparent ${zoom - 1}px, var(--border-color) ${zoom - 1}px, var(--border-color) ${zoom}px)`,
+                        }}
+                        onDragOver={(e) => {
+                          if (!isTarget) return;
+                          e.preventDefault();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const idx = Math.max(0, Math.min(windowDays.length - 1, Math.floor((e.clientX - rect.left) / zoom)));
+                          if (!drop || drop.idx !== idx || drop.driverId !== driver.id) setDrop({ driverId: driver.id, idx });
+                        }}
+                        onDrop={(e) => {
+                          if (!isTarget || !dragged) return;
+                          e.preventDefault();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          const idx = Math.max(0, Math.min(windowDays.length - 1, Math.floor((e.clientX - rect.left) / zoom)));
+                          confirmDrop(dragged, idx);
+                        }}
+                      >
+                        {items.map(h => {
+                          const s0 = Math.max(0, idxOf(h.start_date));
+                          const e0 = Math.min(windowDays.length - 1, idxOf(h.end_date));
+                          if (e0 < 0 || s0 > windowDays.length - 1) return null;
                           const pending = h.status === 'pending';
+                          const fresh = isNewlyApproved(h);
+                          const days = dayCount(h.start_date, h.end_date);
+                          const width = (e0 - s0 + 1) * zoom - 2;
+                          const label = width > 150 ? `${range(h)} · ${plural(days)}` : width > 80 ? range(h) : width > 40 ? `${days}d` : '';
                           return (
-                            <span
+                            <div
                               key={h.id}
-                              title={`${h.driver_name ?? 'Employee'}${pending ? ' — awaiting approval' : ''}`}
+                              title={`${driver.full_name}: ${range(h)} (${plural(days)})${pending ? ' — awaiting approval' : fresh ? ' — newly approved' : ''}`}
                               style={{
-                                fontSize: '9.5px', fontWeight: 700, padding: '1px 4px', borderRadius: '3px',
-                                background: pending ? 'transparent' : `${color}22`, color,
-                                border: pending ? `1px dashed ${color}` : '1px solid transparent',
-                                fontStyle: pending ? 'italic' : 'normal',
-                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                position: 'absolute', top: 8, height: ROW_H - 16, left: s0 * zoom + 1, width,
+                                borderRadius: 6, padding: '0 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4,
+                                fontSize: '11px', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden',
+                                background: pending ? 'rgba(204,0,0,0.08)' : fresh ? NEW_COLOR : 'var(--charcoal)',
+                                color: pending ? 'var(--brand-red)' : '#fff',
+                                border: pending ? '1.5px dashed var(--brand-red)' : `1px solid ${fresh ? NEW_COLOR : 'var(--charcoal)'}`,
+                                pointerEvents: dragged ? 'none' : 'auto',
                               }}
                             >
-                              {h.driver_name ?? 'Employee'}
-                            </span>
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+                              {!pending && width > 60 && (
+                                <button type="button" aria-label="Remove holiday" title="Remove" onClick={() => removeHoliday(h)} style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0, display: 'flex', opacity: 0.75 }}>
+                                  <X size={12} />
+                                </button>
+                              )}
+                            </div>
                           );
                         })}
-                        {dayHolidays.length > 3 && (
-                          <span className="text-xs text-muted" style={{ fontSize: '9px' }}>+{dayHolidays.length - 3} more</span>
+                        {preview !== null && (
+                          <div
+                            style={{
+                              position: 'absolute', top: 8, height: ROW_H - 16, left: preview * zoom + 1,
+                              width: Math.min(previewLen, windowDays.length - preview) * zoom - 2,
+                              borderRadius: 6, border: '2px solid var(--charcoal)', background: 'rgba(51,51,51,0.15)',
+                              display: 'flex', alignItems: 'center', padding: '0 8px', fontSize: '11px', fontWeight: 800, color: 'var(--charcoal)',
+                              pointerEvents: 'none', whiteSpace: 'nowrap', overflow: 'hidden', zIndex: 2,
+                            }}
+                          >
+                            {fmt(dateKey(windowDays[preview]))} – {fmt(addDaysKey(dateKey(windowDays[preview]), previewLen - 1))}
+                          </div>
                         )}
                       </div>
                     </div>
                   );
                 })}
               </div>
-            ))
+            </div>
           )}
         </div>
 
-        <div className="flex flex-col" style={{ gap: '16px' }}>
-        {pendingRequests.length > 0 && (
-          <div className="glass-card" style={{ padding: '16px', border: '1px solid var(--brand-red)' }}>
-            <p className="text-xs font-bold mb-12" style={{ textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--brand-red)' }}>
-              Awaiting Approval ({pendingRequests.length})
-            </p>
-            <div className="flex flex-col" style={{ gap: '10px' }}>
-              {pendingRequests.map(h => {
-                const days = dayCount(h.start_date, h.end_date);
-                const busy = reviewingId === h.id;
-                return (
-                  <div key={h.id} style={{ padding: '10px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                    <p className="font-semibold text-primary m-0" style={{ fontSize: '12.5px' }}>{h.driver_name ?? 'Employee'}</p>
-                    <p className="font-mono text-xs text-muted m-0">
-                      {new Date(h.start_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
-                      {h.end_date !== h.start_date ? ` – ${new Date(h.end_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}` : ''}
-                      {` · ${days} day${days === 1 ? '' : 's'}`}
-                    </p>
-                    <p className="text-xs text-secondary m-0 mt-4">{LEAVE_LABEL[h.leave_type] ?? 'Leave'}{h.note ? ` — ${h.note}` : ''}</p>
-                    {decliningId === h.id ? (
-                      <div className="flex flex-col mt-8" style={{ gap: '6px' }}>
-                        <input
-                          type="text"
-                          className="input-field"
-                          style={{ width: '100%', padding: '6px 8px', fontSize: '12px' }}
-                          placeholder="Reason (optional) — the employee sees this"
-                          value={declineNote}
-                          onChange={(e) => setDeclineNote(e.target.value)}
-                          autoFocus
-                        />
-                        <div className="flex" style={{ gap: '6px' }}>
-                          <button type="button" className="alert-ack-btn" disabled={busy} onClick={() => review(h.id, 'declined', declineNote)}>
-                            <CircleX size={12} /> {busy ? 'Declining…' : 'Confirm'}
-                          </button>
-                          <button type="button" className="alert-dismiss-btn" disabled={busy} onClick={() => { setDecliningId(null); setDeclineNote(''); }}>Cancel</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex mt-8" style={{ gap: '6px' }}>
-                        <button type="button" className="alert-ack-btn" disabled={busy || !onReviewRequest} onClick={() => review(h.id, 'approved')}>
-                          <CheckCircle2 size={12} /> {busy ? 'Approving…' : 'Approve'}
-                        </button>
-                        <button type="button" className="alert-dismiss-btn" disabled={busy || !onReviewRequest} onClick={() => { setDecliningId(h.id); setDeclineNote(''); }}>
-                          <CircleX size={12} /> Decline
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+        {/* ── Holiday bookings waiting for approval (right half) ── */}
+        <div className="glass-card" style={{ padding: '14px 16px', minWidth: 0 }}>
+          <div className="flex align-center justify-between" style={{ marginBottom: '4px' }}>
+            <p className="font-black text-primary m-0" style={{ fontSize: '14px' }}>Holidays Bookings</p>
+            <span className="text-xs text-muted">{pendingRequests.length} waiting</span>
           </div>
-        )}
-
-        <div className="glass-card" style={{ padding: '16px' }}>
-          <p className="text-xs font-bold text-muted mb-12" style={{ textTransform: 'uppercase', letterSpacing: '0.04em' }}>Upcoming &amp; Current</p>
-          {upcoming.length === 0 ? (
-            <Empty className="py-16">
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><CalendarDays /></EmptyMedia>
-                <EmptyTitle>No Upcoming Holidays</EmptyTitle>
-                <EmptyDescription>Approved requests and holidays you add show here.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+          <p className="text-xs text-muted" style={{ margin: '0 0 12px' }}>
+            Approve, or drag a booking onto its employee&apos;s row to set the exact dates.
+          </p>
+          {pendingRequests.length === 0 ? (
+            <NoData />
           ) : (
-            <div className="flex flex-col" style={{ gap: '8px' }}>
-              {upcoming.map(h => (
-                <div key={h.id} className="flex align-center justify-between" style={{ padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
-                  <div style={{ minWidth: 0 }}>
-                    <p className="font-semibold text-primary m-0" style={{ fontSize: '12.5px' }}>{h.driver_name ?? 'Driver'}</p>
-                    <p className="font-mono text-xs text-muted m-0">
-                      {new Date(h.start_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}
-                      {h.end_date !== h.start_date ? ` – ${new Date(h.end_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}` : ''}
-                    </p>
-                    <p className="text-xs text-secondary m-0 mt-4">{LEAVE_LABEL[h.leave_type] ?? 'Leave'}{h.note ? ` — ${h.note}` : ''}</p>
+            <div className="flex flex-col" style={{ gap: '10px' }}>
+              {pendingRequests.map(h => (
+                <div
+                  key={h.id}
+                  draggable={decliningId !== h.id && reviewingId !== h.id}
+                  onDragStart={(e) => {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', h.id);
+                    setDragId(h.id);
+                    // Open the months the employee asked for so the drop target is visible.
+                    const s = new Date(h.start_date + 'T00:00:00');
+                    setMonthAnchor(startOfMonth(s));
+                  }}
+                  onDragEnd={() => { setDragId(null); setDrop(null); }}
+                  style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', cursor: 'grab', opacity: dragId === h.id ? 0.5 : 1 }}
+                >
+                  <div className="flex align-start" style={{ gap: '8px' }}>
+                    <GripVertical size={15} style={{ color: 'var(--charcoal-light)', marginTop: '2px', flexShrink: 0 }} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <p className="font-semibold text-primary m-0" style={{ fontSize: '12.5px' }}>{h.driver_name ?? 'Employee'}</p>
+                      <p className="font-mono text-xs m-0" style={{ color: 'var(--charcoal)', fontWeight: 700 }}>
+                        {range(h)} · {plural(dayCount(h.start_date, h.end_date))}
+                      </p>
+                      <p className="text-xs text-secondary m-0 mt-4">{LEAVE_LABEL[h.leave_type] ?? 'Leave'}{h.note ? ` — ${h.note}` : ''}</p>
+                      <div className="mt-8">{reviewButtons(h)}</div>
+                    </div>
                   </div>
-                  <button type="button" onClick={() => handleDelete(h.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)', flexShrink: 0 }} title="Remove">
-                    <Trash2 size={13} />
-                  </button>
                 </div>
               ))}
             </div>
           )}
         </div>
-        </div>
       </div>
+      )}
 
       {isAddOpen && (
         <div
@@ -436,7 +612,6 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
               <span className="input-label">LEAVE TYPE</span>
               <select className="select-field" style={{ width: '100%' }} value={formLeaveType} onChange={(e) => setFormLeaveType(e.target.value)}>
                 <option value="annual">Annual leave</option>
-                <option value="unpaid">Unpaid leave</option>
                 <option value="other">Other leave</option>
               </select>
             </div>

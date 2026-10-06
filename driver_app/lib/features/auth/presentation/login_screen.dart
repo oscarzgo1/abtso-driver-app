@@ -8,6 +8,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'auth_provider.dart';
 import 'activation_screen.dart';
+import 'account_deletion_dialog.dart';
 import 'widgets/pin_boxes.dart';
 import 'widgets/tachyo_brand.dart';
 import '../../legal/presentation/legal_review_screen.dart';
@@ -596,7 +597,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                                 return;
                               }
                               final messenger = ScaffoldMessenger.of(context);
-                              final result = await SupabaseService.requestPinReset(driverId: id);
+                              final result = await SupabaseService.requestPinReset(driverId: id, companyCode: _companyCodeController.text.trim());
                               messenger.showSnackBar(SnackBar(
                                 content: Text(result['success'] == true
                                     ? 'Your manager will send you a new activation code shortly.'
@@ -611,7 +612,22 @@ class _LoginScreenState extends ConsumerState<LoginScreen> with TickerProviderSt
                         ],
                       ),
 
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 4),
+
+                      Center(
+                        child: TextButton(
+                          onPressed: () => showAccountDeletionRequest(
+                            context,
+                            companyCode: _companyCodeController.text,
+                            driverId: _driverIdController.text,
+                            signedIn: false,
+                          ),
+                          style: _linkButtonStyle(TachyoTheme.charcoalMid),
+                          child: const Text('Request Account Deletion'),
+                        ),
+                      ),
+
+                      const SizedBox(height: 8),
 
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,

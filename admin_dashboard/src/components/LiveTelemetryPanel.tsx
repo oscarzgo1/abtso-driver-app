@@ -1,6 +1,8 @@
+import NoData from './ui/no-data';
+import TableFilter from './ui/table-filter';
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Activity, Clock, Gauge, MapPinned, Radio, RefreshCw, Search, SignalZero, Truck, Container } from 'lucide-react';
+import { Activity, RefreshCw, Truck, Container, UserRound } from 'lucide-react';
 
 // Live Map -> Telemetry status. Sits in the right-hand column beside the map.
 // Every driver is a card with a pulsing status ring (the ring pattern comes
@@ -21,8 +23,6 @@ interface LiveLoc {
   last_ping: string;
   status: 'moving' | 'stationary' | 'idle';
 }
-
-interface Employee { id: string; full_name: string; driver_id?: string | null }
 
 interface ActiveShift {
   driver_id?: string | null;
@@ -47,6 +47,10 @@ interface Row {
   trailer: string | null;
   load: string | null;
   onShift: boolean;
+  /** a trailer is coupled to this driver's tractor */
+  hasTrailer: boolean;
+  /** an assigned or in-progress load exists for this driver right now */
+  hasLoad: boolean;
 }
 
 const STATUS_META: Record<TelemetryStatus, { label: string; color: string; soft: string; pulse: boolean }> = {
@@ -54,7 +58,7 @@ const STATUS_META: Record<TelemetryStatus, { label: string; color: string; soft:
   stationary: { label: 'Stationary', color: '#D97706', soft: 'rgba(217,119,6,0.12)', pulse: false },
   idle: { label: 'Idle', color: '#DC2626', soft: 'rgba(220,38,38,0.12)', pulse: true },
   no_signal: { label: 'No GPS signal', color: '#7C2D12', soft: 'rgba(124,45,18,0.14)', pulse: true },
-  offline: { label: 'Off shift', color: '#94A3B8', soft: 'rgba(148,163,184,0.16)', pulse: false },
+  offline: { label: 'Off shift', color: '#888888', soft: 'rgba(136,136,136,0.14)', pulse: false },
 };
 
 const SUMMARY_ORDER: TelemetryStatus[] = ['moving', 'stationary', 'idle', 'no_signal'];
@@ -90,6 +94,25 @@ function PulseDot({ status, size = 12 }: { status: TelemetryStatus; size?: numbe
   );
 }
 
+/** Driver avatar: a person icon inside a ring in the driver's status colour. */
+function DriverBadge({ status }: { status: TelemetryStatus }) {
+  const meta = STATUS_META[status];
+  return (
+    <span className="tp-avatar" style={{ borderColor: meta.color, background: meta.soft, color: meta.color }} title="Driver">
+      {meta.pulse && (
+        <motion.span
+          className="tp-avatar-ring"
+          style={{ borderColor: meta.color }}
+          initial={{ scale: 1, opacity: 0.6 }}
+          animate={{ scale: 1.5, opacity: 0 }}
+          transition={{ duration: 2, repeat: Infinity, ease: 'easeOut' }}
+        />
+      )}
+      <UserRound size={17} strokeWidth={2.2} />
+    </span>
+  );
+}
+
 function SummaryTile({ status, count, active, onClick }: { status: TelemetryStatus; count: number; active: boolean; onClick: () => void }) {
   const meta = STATUS_META[status];
   return (
@@ -120,9 +143,11 @@ function SummaryTile({ status, count, active, onClick }: { status: TelemetryStat
 }
 
 export interface LiveTelemetryPanelProps {
+  /** Every driver currently on shift with a GPS position. */
   liveLocations: LiveLoc[];
-  employees: Employee[];
   shifts: ActiveShift[];
+  /** driver id -> reference of the load assigned to them right now (office-assigned loads) */
+  assignedLoads: Record<string, string>;
   depots: Depot[];
   /** Drivers on shift whose GPS has stopped (an open gps_offline_events row). */
   noSignalDriverIds: Set<string>;
@@ -131,8 +156,7 @@ export interface LiveTelemetryPanelProps {
   onSelectDriver: (driverId: string) => void;
 }
 
-export default function LiveTelemetryPanel({ liveLocations, employees, shifts, depots, noSignalDriverIds, isRefreshing, onRefresh, onSelectDriver }: LiveTelemetryPanelProps) {
-  const [view, setView] = useState<'live' | 'all'>('live');
+export default function LiveTelemetryPanel({ liveLocations, shifts, assignedLoads, depots, noSignalDriverIds, isRefreshing, onRefresh, onSelectDriver }: LiveTelemetryPanelProps) {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<TelemetryStatus | 'all'>('all');
   const [locationFilter, setLocationFilter] = useState('all');
@@ -157,17 +181,20 @@ export default function LiveTelemetryPanel({ liveLocations, employees, shifts, d
 
   const rows: Row[] = useMemo(() => {
     const shiftFor = (driverId: string) => shifts.find(s => s.driver_id === driverId && !s.end_time && s.status !== 'completed');
-    const build = (driverId: string, name: string, loc: LiveLoc | undefined): Row => {
+    const build = (loc: LiveLoc): Row => {
+      const driverId = loc.driver_id;
       const sh = shiftFor(driverId);
+      const load = sh?.load_reference || assignedLoads[driverId] || null;
       const base = {
         driver_id: driverId,
-        driver_name: name,
+        driver_name: loc.driver_name,
         vehicle: sh?.vehicle_number ?? null,
         trailer: sh?.trailer_number ?? null,
-        load: sh?.load_reference ?? null,
+        load,
         onShift: !!sh,
+        hasTrailer: !!sh?.trailer_number,
+        hasLoad: !!load,
       };
-      if (!loc) return { ...base, latitude: null, longitude: null, speed_mph: null, status: 'offline', last_ping: null };
       return {
         ...base,
         latitude: loc.latitude,
@@ -177,12 +204,8 @@ export default function LiveTelemetryPanel({ liveLocations, employees, shifts, d
         last_ping: loc.last_ping,
       };
     };
-    if (view === 'live') return liveLocations.map(l => build(l.driver_id, l.driver_name, l));
-    return employees.map(emp => {
-      const live = liveLocations.find(l => l.driver_id === emp.id || l.driver_code === emp.driver_id);
-      return build(live?.driver_id ?? emp.id, live?.driver_name ?? emp.full_name, live);
-    });
-  }, [view, liveLocations, employees, shifts, noSignalDriverIds]);
+    return liveLocations.map(build);
+  }, [liveLocations, shifts, assignedLoads, noSignalDriverIds]);
 
   const counts = useMemo(() => {
     const c: Record<TelemetryStatus, number> = { moving: 0, stationary: 0, idle: 0, no_signal: 0, offline: 0 };
@@ -209,8 +232,6 @@ export default function LiveTelemetryPanel({ liveLocations, employees, shifts, d
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, query, statusFilter, locationFilter, speedFilter, depots]);
 
-  const filtersActive = query !== '' || statusFilter !== 'all' || locationFilter !== 'all' || speedFilter !== 'all';
-
   return (
     <div className="tp-card">
       <div className="tp-header">
@@ -227,52 +248,41 @@ export default function LiveTelemetryPanel({ liveLocations, employees, shifts, d
         ))}
       </div>
 
-      <div className="tp-tabs">
-        <button type="button" className={`tp-tab ${view === 'live' ? 'tp-tab--active' : ''}`} onClick={() => setView('live')}>
-          <Radio size={12} /> Live
-        </button>
-        <button type="button" className={`tp-tab ${view === 'all' ? 'tp-tab--active' : ''}`} onClick={() => setView('all')}>
-          <Clock size={12} /> All drivers
-        </button>
-      </div>
-
       <div className="tp-filters">
-        <div className="telemetry-search-wrap" style={{ minWidth: 0 }}>
-          <Search size={14} />
-          <input type="text" placeholder="Search driver, unit, load" value={query} onChange={e => setQuery(e.target.value)} />
-        </div>
-        <div className="tp-select-row">
-          <label className="tp-select">
-            <MapPinned size={12} />
-            <select value={locationFilter} onChange={e => setLocationFilter(e.target.value)}>
-              <option value="all">All locations</option>
-              {depots.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
-            </select>
-          </label>
-          <label className="tp-select">
-            <Gauge size={12} />
-            <select value={speedFilter} onChange={e => setSpeedFilter(e.target.value as typeof speedFilter)}>
-              <option value="all">All speeds</option>
-              <option value="stationary">Stationary</option>
-              <option value="moving">Under 40 mph</option>
-              <option value="fast">40 mph and over</option>
-            </select>
-          </label>
-        </div>
-        {filtersActive && (
-          <button type="button" className="tp-clear" onClick={() => { setQuery(''); setStatusFilter('all'); setLocationFilter('all'); setSpeedFilter('all'); }}>
-            Clear filters
-          </button>
-        )}
+        <TableFilter
+          className="fg--block"
+          groups={[
+            {
+              key: 'location', label: 'Location', single: true, neutral: 'all',
+              options: [{ value: 'all', label: 'All locations' }, ...depots.map(d => ({ value: d.name, label: d.name }))],
+              selected: [locationFilter],
+              onChange: v => setLocationFilter(v[0] ?? 'all'),
+            },
+            {
+              key: 'speed', label: 'Speed', single: true, neutral: 'all',
+              options: [
+                { value: 'all', label: 'All speeds' },
+                { value: 'stationary', label: 'Stationary' },
+                { value: 'moving', label: 'Under 40 mph' },
+                { value: 'fast', label: '40 mph and over' },
+              ],
+              selected: [speedFilter],
+              onChange: v => setSpeedFilter((v[0] ?? 'all') as typeof speedFilter),
+            },
+            {
+              key: 'status', label: 'Status', single: true, neutral: 'all',
+              options: [{ value: 'all', label: 'All statuses' }, ...SUMMARY_ORDER.map(s => ({ value: s, label: STATUS_META[s].label }))],
+              selected: [statusFilter],
+              onChange: v => setStatusFilter((v[0] ?? 'all') as typeof statusFilter),
+            },
+          ]}
+          search={{ value: query, onChange: setQuery, placeholder: 'Search driver, unit, load' }}
+        />
       </div>
 
       <div className="tp-list">
         {shown.length === 0 ? (
-          <div className="tp-empty">
-            <SignalZero size={22} />
-            <strong>No telemetry yet</strong>
-            <span>{filtersActive ? 'No drivers match the current filters.' : 'No drivers are on shift, or no GPS has been received.'}</span>
-          </div>
+          <NoData />
         ) : (
           <AnimatePresence initial={false}>
             {shown.map(r => {
@@ -291,11 +301,23 @@ export default function LiveTelemetryPanel({ liveLocations, employees, shifts, d
                   disabled={r.latitude == null}
                 >
                   <div className="tp-driver-top">
-                    <PulseDot status={r.status} />
+                    <DriverBadge status={r.status} />
                     <div className="tp-driver-name">
                       <strong>{r.driver_name}</strong>
                       <span>{ago(r.last_ping, now)}</span>
                     </div>
+                    <span className="tp-unit-icons">
+                      {r.hasTrailer && (
+                        <span className="tp-unit-icon tp-unit-icon--trailer" title={`Trailer attached: ${r.trailer}`}>
+                          <Container size={15} />
+                        </span>
+                      )}
+                      {!r.hasLoad && (
+                        <span className="tp-unit-icon tp-unit-icon--solo" title="Solo unit: no load assigned right now">
+                          <Truck size={15} />
+                        </span>
+                      )}
+                    </span>
                     <span className="tp-badge" style={{ color: meta.color, background: meta.soft }}>{meta.label}</span>
                   </div>
 
@@ -306,7 +328,7 @@ export default function LiveTelemetryPanel({ liveLocations, employees, shifts, d
                     </div>
                     <div>
                       <span className="tp-k">Load</span>
-                      <span className="tp-v tp-mono">{r.load ?? (r.onShift ? 'No load' : '-')}</span>
+                      <span className="tp-v tp-mono">{r.load ?? 'No load'}</span>
                     </div>
                     <div>
                       <span className="tp-k">Tractor</span>
@@ -341,6 +363,12 @@ export default function LiveTelemetryPanel({ liveLocations, employees, shifts, d
             })}
           </AnimatePresence>
         )}
+      </div>
+
+      <div className="tp-legend">
+        <span><span className="tp-unit-icon tp-unit-icon--driver"><UserRound size={13} /></span> Driver</span>
+        <span><span className="tp-unit-icon tp-unit-icon--trailer"><Container size={13} /></span> Trailer attached</span>
+        <span><span className="tp-unit-icon tp-unit-icon--solo"><Truck size={13} /></span> Solo unit, no load</span>
       </div>
     </div>
   );

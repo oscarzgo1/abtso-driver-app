@@ -54,7 +54,7 @@ export function EarningsDateRangePicker({ startDate, endDate, onChange }: Earnin
           </span>
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-auto p-0" align="start">
+      <PopoverContent className="w-auto p-0" align="start" style={{ zIndex: 1100 }}>
         <Calendar
           mode="range"
           selected={range}

@@ -150,7 +150,7 @@ export default function CsvImportPanel({ organizationId, onImported }: CsvImport
             type="button"
             onClick={handleDownloadTemplate}
             className="btn"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '8px 14px', fontSize: '12.5px', fontWeight: 700, marginBottom: '16px' }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700, marginBottom: '16px' }}
           >
             <Download size={14} /> Download CSV Template
           </button>

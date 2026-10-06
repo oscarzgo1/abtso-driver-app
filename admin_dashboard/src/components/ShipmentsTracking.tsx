@@ -1,7 +1,9 @@
+import NoData from './ui/no-data';
+import TableFilter from './ui/table-filter';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import '@maplibre/maplibre-gl-leaflet';
-import { Search, SlidersHorizontal, Package, Clock, ChevronDown, Phone, Truck, Camera, MapPin, PackageCheck, Timer, ShieldCheck, X } from 'lucide-react';
+import { Package, Clock, ChevronDown, Phone, Truck, Camera, MapPin, PackageCheck, Timer, ShieldCheck, X, Route, ListChecks, Flag, ShieldAlert } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
 import type { TimelineStep } from './ui/tracking-timeline';
 import ShipmentStages from './ShipmentStages';
@@ -40,10 +42,15 @@ interface Shipment {
   shiftEnd: string | null;
   odoStart: number | null;
   odoEnd: number | null;
+  /** when the driver marked loading started / finished (migration 092) */
+  loadingStart: string | null;
+  loadingEnd: string | null;
   notes: string | null;
   cargoPath: string | null;
   sealed: boolean;
   proofs: Proof[];
+  /** On-phone signature taken at delivery (delivery_signatures, migration 081). */
+  signature: { name: string; svg: string; signedAt: string; lat: number | null; lng: number | null } | null;
   sortTime: number;
 }
 
@@ -71,7 +78,15 @@ const STATUS_META: Record<SStatus, { label: string; badge: string }> = {
 
 const POD_LABEL: Record<PodType, string> = { solo_departure: 'Solo departure', empty_trailer: 'Empty trailer', paper_pod: 'Paper POD' };
 
-const PROOF_SELECT = 'shipment_proofs(id, pod_type, photo_path, taken_at, gps_lat, gps_lng)';
+const PROOF_SELECT = 'shipment_proofs(id, pod_type, photo_path, taken_at, gps_lat, gps_lng), delivery_signatures(signer_first_name, signer_last_name, signature_svg, signed_at, gps_lat, gps_lng)';
+
+function signatureOf(r: Raw): Shipment['signature'] {
+  const raw = Array.isArray(r.delivery_signatures) ? r.delivery_signatures[0] : r.delivery_signatures;
+  if (!raw?.signature_svg) return null;
+  return { name: `${raw.signer_first_name ?? ''} ${raw.signer_last_name ?? ''}`.trim(), svg: raw.signature_svg, signedAt: raw.signed_at, lat: raw.gps_lat ?? null, lng: raw.gps_lng ?? null };
+}
+// An <img> never runs scripts, so a stored signature is safe to show this way.
+const signatureSrc = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 
 const dtShort = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) + ' — ' + new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '—';
@@ -97,6 +112,69 @@ function proofsOf(r: Raw, legacy: { paper?: string | null; evidence?: string | n
   return out;
 }
 
+const minsText = (m: number) => {
+  const a = Math.abs(Math.round(m));
+  return a >= 60 ? `${Math.floor(a / 60)}h ${String(a % 60).padStart(2, '0')}m` : `${a} min`;
+};
+
+/** The three stages the list card's bar shows, and how far each has got (0-100). */
+const BAR_STAGES = [
+  { key: 'loading', label: 'Loading', color: 'var(--brand-red)', weight: 30 },
+  { key: 'transit', label: 'In transit', color: '#E8908A', weight: 50 },
+  { key: 'delivered', label: 'Delivered', color: '#2E7D32', weight: 20 },
+] as const;
+
+function barFill(s: Shipment): Record<'loading' | 'transit' | 'delivered', number> {
+  if (s.kind === 'awaiting') return { loading: 0, transit: 0, delivered: 0 };
+  const loaded = !!s.loadingEnd || s.status === 'completed';
+  const loading = loaded ? 100 : s.loadingStart ? 50 : 0;
+  const loadingNow = !!s.loadingStart && !loaded;
+  const transit = s.status === 'completed' ? 100 : s.status === 'in_transit' ? (loadingNow ? 0 : loaded ? 55 : 30) : 0;
+  return { loading, transit, delivered: s.status === 'completed' ? 100 : 0 };
+}
+
+/** none = not started, loading = being loaded right now, loaded = loading finished. */
+type LoadingState = 'none' | 'loading' | 'loaded';
+function loadingStateOf(s: Shipment): LoadingState {
+  if (s.kind === 'awaiting') return 'none';
+  if (s.loadingEnd || s.status === 'completed') return 'loaded';
+  return s.loadingStart ? 'loading' : 'none';
+}
+
+function LoadingChip({ s }: { s: Shipment }) {
+  const st = loadingStateOf(s);
+  if (st === 'none') return null;
+  return (
+    <span className={`si-live si-live--${st}`}>
+      {st === 'loading' ? <><i className="si-live-dot" /> Loading now</> : <>Loaded{s.loadingEnd ? ` ${timeOnly(s.loadingEnd)}` : ''}</>}
+    </span>
+  );
+}
+
+/** "12 min ahead" / "20 min late" against the booking cut-off. */
+function scheduleOf(s: Shipment): { text: string; late: boolean } {
+  if (!s.cutoff) return { text: '—', late: false };
+  const cut = new Date(s.cutoff).getTime();
+  if (s.status === 'completed' && s.delivered) {
+    const diff = (new Date(s.delivered).getTime() - cut) / 60000;
+    return diff <= 0 ? { text: `${minsText(diff)} ahead`, late: false } : { text: `${minsText(diff)} late`, late: true };
+  }
+  const left = (cut - Date.now()) / 60000;
+  return left >= 0 ? { text: `${minsText(left)} to cut-off`, late: false } : { text: `Cut-off passed ${minsText(left)} ago`, late: true };
+}
+
+/** "2 completed · 3 remaining" */
+function stagesOf(s: Shipment): string {
+  if (s.kind === 'awaiting') return 'Waiting for a load';
+  const done = s.status === 'completed';
+  const loaded = !!s.loadingEnd || done;
+  const flags = s.kind === 'assigned'
+    ? [true, !!s.departure, loaded, done || (s.status === 'in_transit' && loaded), done]
+    : [true, loaded, done || (s.status === 'in_transit' && loaded), done];
+  const completed = flags.filter(Boolean).length;
+  return `${completed} completed · ${flags.length - completed} remaining`;
+}
+
 function Delta({ current, previous }: { current: number; previous: number }) {
   if (previous === 0) return <span style={{ color: 'var(--charcoal-light)' }}>{current === 0 ? '—' : 'New'}</span>;
   const pct = ((current - previous) / previous) * 100;
@@ -104,20 +182,23 @@ function Delta({ current, previous }: { current: number; previous: number }) {
   return <span style={{ color: up ? '#2E7D32' : 'var(--brand-red)', fontWeight: 800 }}>{up ? '+' : ''}{pct.toFixed(1)}%</span>;
 }
 
-export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations, depots, employees, onAssign }: {
+export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}, liveLocations, depots, employees, onAssign, onOpenFleet }: {
   /** 'live' = open work; 'history' = completed deliveries and their proof. */
   mode?: 'live' | 'history';
   shifts: TrackingShift[];
+  /** registration -> reasons it cannot be on the road (lib/roadworthy). */
+  unitRisk?: Record<string, string[]>;
   liveLocations: TrackingLive[];
   depots: TrackingDepot[];
   employees: TrackingEmployee[];
   onAssign: (driverId: string) => void;
+  /** Opens Fleet Roadworthiness (the icon on a not-roadworthy unit). */
+  onOpenFleet?: (unit: string) => void;
 }) {
   const [dispatchRows, setDispatchRows] = useState<Raw[]>([]);
   const [manualRows, setManualRows] = useState<Raw[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | SStatus>('all');
-  const [showFilter, setShowFilter] = useState(false);
   const [period, setPeriod] = useState<'7' | '30' | '90'>('30');
   const [lightbox, setLightbox] = useState<string | null>(null);
   const history = mode === 'history';
@@ -132,14 +213,14 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
     const [d, m] = await Promise.all([
       supabase
         .from('dispatch_loads')
-        .select(`id, driver_id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at, delivery_notes, cargo_photo_path, trailer_sealed, drivers(full_name), ${PROOF_SELECT}`)
+        .select(`id, driver_id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at, loading_started_at, loading_completed_at, delivery_notes, cargo_photo_path, trailer_sealed, drivers(full_name), ${PROOF_SELECT}`)
         .neq('status', 'cancelled')
         .gte('created_at', since)
         .order('created_at', { ascending: false })
         .limit(400),
       supabase
         .from('shift_loads')
-        .select(`id, load_reference, carrier_name, booked_departure_at, booked_delivery_at, delivered_at, created_at, delivery_notes, cargo_photo_path, trailer_sealed, delivery_paperwork_path, delivery_evidence_path, shifts(driver_id, start_time, end_time, vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), drivers(full_name)), ${PROOF_SELECT}`)
+        .select(`id, load_reference, carrier_name, booked_departure_at, booked_delivery_at, delivered_at, created_at, loading_started_at, loading_completed_at, delivery_notes, cargo_photo_path, trailer_sealed, delivery_paperwork_path, delivery_evidence_path, shifts(driver_id, start_time, end_time, vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), drivers(full_name)), ${PROOF_SELECT}`)
         .gte('created_at', since)
         .order('created_at', { ascending: false })
         .limit(400),
@@ -160,6 +241,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
       .on('postgres_changes', { event: '*', schema: 'public', table: 'dispatch_loads' }, soon)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_loads' }, soon)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'shipment_proofs' }, soon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_signatures' }, soon)
       .subscribe();
     return () => { clearTimeout(timer); supabase!.removeChannel(channel); };
   }, [load]);
@@ -178,20 +260,24 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
         origin: r.origin, destination: r.destination, cutoff: r.booking_cutoff_at, carrier: null, trailer: r.trailer_number,
         unit: sh?.vehicle_number ?? null, createdAt: r.created_at, departure: r.accepted_at, delivered: r.completed_at,
         shiftStart: sh?.start_time ?? null, shiftEnd: sh?.end_time ?? null, odoStart: r.odometer_start, odoEnd: r.odometer_end,
-        notes: r.delivery_notes, cargoPath: r.cargo_photo_path, sealed: !!r.trailer_sealed, proofs: proofsOf(r, {}, r.completed_at ?? r.created_at),
+        loadingStart: r.loading_started_at ?? null, loadingEnd: r.loading_completed_at ?? null,
+        notes: r.delivery_notes, cargoPath: r.cargo_photo_path, sealed: !!r.trailer_sealed, proofs: proofsOf(r, {}, r.completed_at ?? r.created_at), signature: signatureOf(r),
         sortTime: new Date(r.completed_at ?? r.accepted_at ?? r.created_at).getTime(),
       });
     }
     for (const r of manualRows) {
       const done = !!r.delivered_at;
+      // A manual load only counts as on the road while its own shift is still open.
+      const shiftOpen = !r.shifts?.end_time;
       out.push({
         key: `m-${r.id}`, kind: 'manual', ref: r.load_reference, driverId: r.shifts?.driver_id ?? '', driver: r.shifts?.drivers?.full_name ?? '—',
-        status: done ? 'completed' : 'in_transit', progress: done ? 100 : 55, typeLabel: 'Manual load',
+        status: done || !shiftOpen ? 'completed' : 'in_transit', progress: done || !shiftOpen ? 100 : 55, typeLabel: 'Manual load',
         origin: null, destination: null, cutoff: r.booked_delivery_at, carrier: r.carrier_name, trailer: r.shifts?.trailer?.vehicle_number ?? null,
         unit: r.shifts?.vehicle?.vehicle_number ?? null, createdAt: r.created_at, departure: r.booked_departure_at ?? r.created_at, delivered: r.delivered_at,
         shiftStart: r.shifts?.start_time ?? null, shiftEnd: r.shifts?.end_time ?? null, odoStart: null, odoEnd: null,
+        loadingStart: r.loading_started_at ?? null, loadingEnd: r.loading_completed_at ?? null,
         notes: r.delivery_notes, cargoPath: r.cargo_photo_path, sealed: !!r.trailer_sealed,
-        proofs: proofsOf(r, { paper: r.delivery_paperwork_path, evidence: r.delivery_evidence_path }, r.delivered_at ?? r.created_at),
+        proofs: proofsOf(r, { paper: r.delivery_paperwork_path, evidence: r.delivery_evidence_path }, r.delivered_at ?? r.created_at), signature: signatureOf(r),
         sortTime: new Date(r.delivered_at ?? r.created_at).getTime(),
       });
     }
@@ -203,7 +289,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
         key: `w-${s.id}`, kind: 'awaiting', ref: `Shift ${new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`, driverId, driver: s.driver_name ?? '—',
         status: 'awaiting', progress: 10, typeLabel: 'No load yet', origin: null, destination: null, cutoff: null, carrier: null,
         trailer: s.trailer_number ?? null, unit: s.vehicle_number ?? null, createdAt: s.start_time, departure: null, delivered: null,
-        shiftStart: s.start_time, shiftEnd: null, odoStart: null, odoEnd: null, notes: null, cargoPath: null, sealed: false, proofs: [],
+        shiftStart: s.start_time, shiftEnd: null, odoStart: null, odoEnd: null, loadingStart: null, loadingEnd: null, notes: null, cargoPath: null, sealed: false, proofs: [], signature: null,
         sortTime: new Date(s.start_time).getTime(),
       });
     }
@@ -349,24 +435,25 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
     const s = selected;
     const list: TimelineStep[] = [];
     list.push({ title: 'Clocked in', detail: [s.unit, s.trailer].filter(Boolean).join(' / ') || 'No unit recorded', time: timeOnly(s.shiftStart), status: s.shiftStart ? 'completed' : 'pending' });
-    if (s.kind === 'assigned') {
-      list.push({ title: 'Load assigned', detail: `${s.ref} · ${s.origin ?? '—'} → ${s.destination ?? '—'}`, time: timeOnly(s.createdAt), status: 'completed' });
-      list.push({
-        title: 'Accepted & coupled',
-        detail: s.departure ? `${s.odoStart != null ? `Odometer ${s.odoStart}` : 'Accepted'}${s.sealed ? ' · trailer sealed' : ''}` : 'Waiting for the driver to accept',
-        time: timeOnly(s.departure),
-        status: s.departure ? 'completed' : 'active',
-      });
-    } else if (s.kind === 'manual') {
-      list.push({ title: 'Load attached', detail: `${s.ref}${s.carrier ? ` · ${s.carrier}` : ''}${s.sealed ? ' · trailer sealed' : ''}`, time: timeOnly(s.createdAt), status: 'completed' });
-    } else {
+    // One stage at a time for the load: "Loading" while the driver is being
+    // loaded, then "Load attached" (immediately, if no loading was tracked).
+    const loaded = !!s.loadingEnd || s.status === 'completed';
+    const loadingNow = !!s.loadingStart && !loaded && s.kind !== 'awaiting';
+    if (s.kind === 'awaiting') {
       list.push({ title: 'Load', detail: 'Waiting for a load — assign one', status: 'active' });
+    } else if (loadingNow) {
+      list.push({ title: 'Loading', detail: `${s.ref} · in progress since ${timeOnly(s.loadingStart)}`, time: timeOnly(s.loadingStart), status: 'active' });
+    } else {
+      const bits = [s.ref, s.kind === 'assigned' ? `${s.origin ?? '—'} → ${s.destination ?? '—'}` : s.carrier].filter(Boolean).join(' · ');
+      const took = s.loadingStart && s.loadingEnd ? ` · loaded in ${span(s.loadingStart, s.loadingEnd)}` : '';
+      const waiting = s.kind === 'assigned' && !s.departure ? ' · waiting for the driver to accept' : '';
+      list.push({ title: 'Load attached', detail: `${bits}${took}${s.sealed ? ' · trailer sealed' : ''}${waiting}`, time: timeOnly(s.loadingEnd ?? s.createdAt), status: 'completed' });
     }
     if (s.kind !== 'awaiting') {
       list.push({
         title: 'On the road',
         detail: s.status === 'completed' ? `Took ${span(s.departure, s.delivered)}` : live ? (live.status === 'moving' ? `Moving at ${Math.round(live.speed_mph)} mph` : live.status === 'idle' ? 'Idle' : 'Stopped') : 'No live signal',
-        status: s.status === 'completed' ? 'completed' : s.status === 'in_transit' ? 'active' : 'pending',
+        status: s.status === 'completed' ? 'completed' : s.status === 'in_transit' && !loadingNow ? 'active' : 'pending',
       });
       list.push({
         title: 'Delivered',
@@ -379,7 +466,47 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
     return list;
   }, [selected, live]);
 
+  const riskOf = (num: string | null) => (num ? unitRisk[num.trim().toUpperCase()] : undefined);
+  const riskUnits = (sh: Shipment) => [sh.unit, sh.trailer]
+    .filter((n): n is string => !!n && !!riskOf(n))
+    .map(n => ({ num: n, issues: riskOf(n)!.join(' · ') }));
+  const riskLines = (sh: Shipment) => riskUnits(sh).map(u => `${u.num} (${u.issues})`);
+
+  // One icon per unit/trailer that can't be on the road; each opens that
+  // exact asset in Fleet Roadworthiness.
+  const riskIcon = (sh: Shipment) => (
+    <>
+      {riskUnits(sh).map(u => (
+        <button
+          key={u.num}
+          type="button"
+          className="rw-icon"
+          title={`${u.num}: ${u.issues} — open it in Fleet Roadworthiness`}
+          aria-label={`${u.num} cannot be on the road — open in Fleet Roadworthiness`}
+          onClick={(e) => { e.stopPropagation(); onOpenFleet?.(u.num); }}
+        >
+          <ShieldAlert size={15} />
+        </button>
+      ))}
+    </>
+  );
+
   const phone = selected ? employees.find(e => e.id === selected.driverId)?.phone : null;
+
+  // The driver marks loading from the app. If they forget (or the office
+  // sees the trailer being loaded), the office can set it here by hand.
+  const [settingLoading, setSettingLoading] = useState(false);
+  const setLoading = async (sh: Shipment, event: 'started' | 'finished') => {
+    if (isMockMode || !supabase || sh.kind === 'awaiting') return;
+    setSettingLoading(true);
+    const now = new Date().toISOString();
+    const patch = event === 'started'
+      ? { loading_started_at: now }
+      : { loading_started_at: sh.loadingStart ?? now, loading_completed_at: now };
+    await supabase.from(sh.kind === 'assigned' ? 'dispatch_loads' : 'shift_loads').update(patch).eq('id', sh.key.slice(2));
+    setSettingLoading(false);
+    load();
+  };
   const distance = selected && selected.odoStart != null && selected.odoEnd != null ? `${selected.odoEnd - selected.odoStart} mi` : '—';
 
   const kpiCard = (label: string, value: React.ReactNode, footer: React.ReactNode, icon: React.ReactNode) => (
@@ -408,11 +535,25 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
   );
 
   // Photos + cargo evidence for the selected shipment (used by both modes).
+  const signatureCard = selected?.signature ? (
+    <div style={{ border: '1px solid var(--border-color)', borderRadius: '12px', background: 'var(--card-bg)', padding: '12px', marginBottom: '12px' }}>
+      <div style={{ background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '6px' }}>
+        <img src={signatureSrc(selected.signature.svg)} alt="Signature" style={{ display: 'block', width: '100%', maxHeight: '130px', objectFit: 'contain' }} />
+      </div>
+      <p className="text-xs font-bold text-primary m-0 mt-4">Signed by {selected.signature.name}</p>
+      <p className="text-xs text-muted m-0" style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap' }}>
+        {dtShort(selected.signature.signedAt)}
+        {selected.signature.lat != null && selected.signature.lng != null && <><MapPin size={11} /> {selected.signature.lat.toFixed(4)}, {selected.signature.lng.toFixed(4)}</>}
+      </p>
+    </div>
+  ) : null;
+
   const proofBlock = selected ? (
-    selected.proofs.length === 0 && !selected.cargoPath && !selected.sealed ? (
+    selected.proofs.length === 0 && !selected.cargoPath && !selected.sealed && !selected.signature ? (
       <p className="text-xs text-muted m-0">{selected.status === 'completed' ? 'No proof photos were recorded.' : 'Proof photos appear here once the driver completes the load.'}</p>
     ) : history ? (
       <>
+        {signatureCard}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '12px' }}>
           {selected.proofs.map(p => (
             <button key={p.id} type="button" onClick={() => urls[p.photo_path] && setLightbox(urls[p.photo_path])} style={{ textAlign: 'left', padding: 0, border: '1px solid var(--border-color)', borderRadius: '12px', overflow: 'hidden', background: 'var(--card-bg)', cursor: urls[p.photo_path] ? 'zoom-in' : 'default' }}>
@@ -440,6 +581,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
       </>
     ) : (
       <div className="flex flex-col" style={{ gap: '10px' }}>
+        {signatureCard}
         {selected.cargoPath && urls[selected.cargoPath] && (
           <a href={urls[selected.cargoPath]} target="_blank" rel="noreferrer" className="flex items-center" style={{ gap: '10px', textDecoration: 'none' }}>
             <img src={urls[selected.cargoPath]} alt="Cargo" style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--border-color)' }} />
@@ -474,6 +616,22 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
         {info('Pick Up Location', selected.origin ?? selected.carrier ?? '—')}
         {info('Drop Off Location', selected.destination ?? '—')}
         {info('Ship Time', dtShort(selected.departure))}
+        {info('Loading', (() => {
+          const st = loadingStateOf(selected);
+          return (
+            <span className="flex items-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
+              {st === 'none' && <span className="text-muted">{selected.kind === 'awaiting' ? '—' : 'Not started'}</span>}
+              <LoadingChip s={selected} />
+              {st === 'loading' && selected.loadingStart && <span className="text-xs text-muted">since {timeOnly(selected.loadingStart)}</span>}
+              {st === 'loaded' && selected.loadingStart && selected.loadingEnd && <span className="text-xs text-muted">took {span(selected.loadingStart, selected.loadingEnd)}</span>}
+              {selected.kind !== 'awaiting' && selected.status !== 'completed' && st !== 'loaded' && (
+                <button type="button" className="comp-edit-btn" disabled={settingLoading} onClick={() => setLoading(selected, st === 'none' ? 'started' : 'finished')}>
+                  {st === 'none' ? 'Mark loading' : 'Mark loaded'}
+                </button>
+              )}
+            </span>
+          );
+        })())}
         {info('Delivery Cut-off', dtShort(selected.cutoff))}
         {info('Delivered', dtShort(selected.delivered))}
         {info('Duration', span(selected.departure, selected.delivered))}
@@ -481,9 +639,9 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
         {info('Trailer', selected.sealed ? 'Sealed (plomba)' : selected.trailer ?? '—')}
       </div>
       {selected.notes && <p className="text-xs text-muted" style={{ margin: '14px 0 0' }}><strong>Driver notes:</strong> {selected.notes}</p>}
-      {selected.kind === 'awaiting' && (
-        <button type="button" className="btn" style={{ marginTop: '14px', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 800 }} onClick={() => onAssign(selected.driverId)}>
-          <Truck size={14} style={{ marginRight: 6 }} /> Assign load
+      {selected.status !== 'completed' && selected.driverId && (
+        <button type="button" className="btn" style={{ marginTop: '14px', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 700 }} onClick={() => onAssign(selected.driverId)}>
+          <Truck size={14} style={{ marginRight: 6 }} /> {selected.kind === 'awaiting' ? 'Assign load' : 'Switch load'}
         </button>
       )}
     </>
@@ -498,7 +656,21 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
     </div>
   );
 
-  const stagesPanel = panel('Delivery Stages', selected ? <ShipmentStages steps={steps} /> : <p className="text-xs text-muted">Select a shipment.</p>, { overflowY: 'auto', maxHeight: '460px' });
+  // One panel: shipment details on top, delivery stages underneath.
+  const activityPanel = panel('Shipment Activity', (
+    <>
+      {selected && selected.status !== 'completed' && riskLines(selected).length > 0 && (
+        <div className="flex items-center" style={{ gap: '8px', margin: '0 0 14px', fontSize: '12.5px', color: 'var(--brand-red)', fontWeight: 700 }}>
+          {riskIcon(selected)} <span>{riskLines(selected).join(' · ')}</span>
+        </div>
+      )}
+      {infoBlock}
+      <div style={{ borderTop: '1px solid var(--border-color)', marginTop: '18px', paddingTop: '16px' }}>
+        <p className="font-black text-primary m-0" style={{ fontSize: '14px', marginBottom: '10px' }}>Delivery Stages</p>
+        {selected ? <ShipmentStages steps={steps} /> : <p className="text-xs text-muted">Select a shipment.</p>}
+      </div>
+    </>
+  ));
 
   return (
     <div className="ship-grid mt-16">
@@ -508,30 +680,26 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
           <p className="font-black text-primary m-0" style={{ fontSize: '17px', marginRight: 'auto' }}>{history ? 'Delivery History' : 'Tracking List'}</p>
           <span className="text-xs text-muted tabular-nums">{filtered.length}</span>
         </div>
-        <div className="flex items-center" style={{ gap: '8px', marginBottom: '10px' }}>
-          <div className="telemetry-search-wrap" style={{ flex: 1 }}>
-            <Search size={14} />
-            <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search load, driver, route…" />
-          </div>
-          <button type="button" className="telemetry-filter-icon-btn" onClick={() => setShowFilter(v => !v)} aria-label="Filter" style={{ background: showFilter ? 'var(--charcoal)' : undefined, color: showFilter ? '#fff' : undefined }}>
-            <SlidersHorizontal size={14} />
-          </button>
+        <div style={{ marginBottom: '10px' }}>
+          <TableFilter
+            className="fg--block"
+            groups={history ? [{
+              key: 'period', label: 'Period', single: true, neutral: '30',
+              options: [{ value: '7', label: 'Last 7 days' }, { value: '30', label: 'Last 30 days' }, { value: '90', label: 'Last 90 days' }],
+              selected: [period],
+              onChange: (v) => setPeriod((v[0] ?? '30') as '7' | '30' | '90'),
+            }] : [{
+              key: 'status', label: 'Status', single: true, neutral: 'all',
+              options: [{ value: 'all', label: 'All shipments' }, ...(Object.keys(STATUS_META) as SStatus[]).map(k => ({ value: k, label: STATUS_META[k].label }))],
+              selected: [statusFilter],
+              onChange: (v) => setStatusFilter((v[0] ?? 'all') as 'all' | SStatus),
+            }]}
+            search={{ value: search, onChange: setSearch, placeholder: 'Search load, driver, route…' }}
+          />
         </div>
-        {showFilter && (history ? (
-          <select className="select-field" style={{ width: '100%', marginBottom: '10px' }} value={period} onChange={(e) => setPeriod(e.target.value as '7' | '30' | '90')}>
-            <option value="7">Last 7 days</option>
-            <option value="30">Last 30 days</option>
-            <option value="90">Last 90 days</option>
-          </select>
-        ) : (
-          <select className="select-field" style={{ width: '100%', marginBottom: '10px' }} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as 'all' | SStatus)}>
-            <option value="all">All shipments</option>
-            {(Object.keys(STATUS_META) as SStatus[]).map(k => <option key={k} value={k}>{STATUS_META[k].label}</option>)}
-          </select>
-        ))}
         <div className="ship-list-scroll">
           {filtered.length === 0 ? (
-            <p className="text-xs text-muted" style={{ padding: '16px 4px' }}>{history ? 'No completed deliveries in this period.' : 'No shipments match.'}</p>
+            <NoData />
           ) : filtered.map(s => {
             const active = selected?.key === s.key;
             return (
@@ -549,7 +717,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
                       <span className="text-xs text-muted">{s.typeLabel}</span>
                       <span className={`badge ${STATUS_META[s.status].badge}`}>{STATUS_META[s.status].label}</span>
                     </div>
-                    <p className="font-mono font-bold text-primary m-0" style={{ fontSize: '13.5px', overflowWrap: 'anywhere' }}>{s.ref}</p>
+                    <p className="font-mono font-bold text-primary m-0" style={{ fontSize: '13.5px', overflowWrap: 'anywhere' }}>{s.ref} <LoadingChip s={s} />{s.status !== 'completed' && riskLines(s).length > 0 && riskIcon(s)}</p>
                     <p className="text-xs text-muted m-0 mt-4" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                       <Clock size={11} /> {dtShort(s.delivered ?? s.departure ?? s.createdAt)}
                     </p>
@@ -558,19 +726,40 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
                     <ChevronDown size={16} style={{ transform: expanded === s.key ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }} />
                   </button>
                 </div>
-                <div className="flex items-center" style={{ gap: '8px', marginTop: '10px' }}>
-                  <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'var(--border-color)', overflow: 'hidden' }}>
-                    <div style={{ width: `${s.progress}%`, height: '100%', background: s.status === 'completed' ? '#2E7D32' : 'var(--brand-red)' }} />
-                  </div>
-                  <span className="text-xs font-mono tabular-nums text-muted">{history ? `${s.proofs.length} photo${s.proofs.length === 1 ? '' : 's'}` : `${s.progress}%`}</span>
-                </div>
+                {(() => {
+                  const fill = barFill(s);
+                  const sched = scheduleOf(s);
+                  return (
+                    <>
+                      <div className="si-legend">
+                        {BAR_STAGES.map(b => <span key={b.key}><i style={{ background: b.color }} />{b.label}</span>)}
+                      </div>
+                      <div className="si-bar" aria-hidden="true">
+                        {BAR_STAGES.map(b => (
+                          <span key={b.key} className="si-seg" style={{ width: `${b.weight}%` }}>
+                            <span style={{ width: `${fill[b.key]}%`, background: b.color }} />
+                          </span>
+                        ))}
+                      </div>
+                      <div className="si-rows">
+                        <div className="si-row"><span><Route size={13} /> Distance</span><strong>{s.odoStart != null && s.odoEnd != null ? `${s.odoEnd - s.odoStart} mi` : '—'}</strong></div>
+                        <div className="si-row"><span><Timer size={13} /> Schedule</span><strong style={{ color: sched.late ? 'var(--brand-red)' : undefined }}>{sched.text}</strong></div>
+                        <div className="si-row"><span><ListChecks size={13} /> Stages</span><strong>{stagesOf(s)}</strong></div>
+                        <div className="si-row"><span><Flag size={13} /> {s.status === 'completed' ? 'Delivered' : 'Cut-off'}</span><strong>{s.status === 'completed' ? (timeOnly(s.delivered) ?? '—') : (timeOnly(s.cutoff) ?? '—')}</strong></div>
+                        {history && <div className="si-row"><span><Camera size={13} /> Proof</span><strong>{s.proofs.length} photo{s.proofs.length === 1 ? '' : 's'}</strong></div>}
+                      </div>
+                    </>
+                  );
+                })()}
+                {!history && s.status !== 'completed' && s.driverId && (
+                  <button type="button" className="comp-edit-btn" style={{ marginTop: '10px', width: '100%', justifyContent: 'center' }} onClick={(e) => { e.stopPropagation(); onAssign(s.driverId); }}>
+                    <Truck size={12} /> {s.kind === 'awaiting' ? 'Assign load' : 'Switch load'}
+                  </button>
+                )}
                 {expanded === s.key && (
                   <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--border-color)' }} className="text-xs">
                     <p className="m-0"><strong>{s.driver}</strong>{s.unit ? ` · ${[s.unit, s.trailer].filter(Boolean).join(' / ')}` : ''}</p>
                     {(s.origin || s.destination) && <p className="text-muted m-0 mt-4">{s.origin ?? '—'} → {s.destination ?? '—'}</p>}
-                    {s.kind === 'awaiting' && (
-                      <button type="button" className="comp-edit-btn" style={{ marginTop: '8px' }} onClick={(e) => { e.stopPropagation(); onAssign(s.driverId); }}><Truck size={12} /> Assign load</button>
-                    )}
                   </div>
                 )}
               </div>
@@ -597,29 +786,11 @@ export default function ShipmentsTracking({ mode = 'live', shifts, liveLocations
           )}
         </div>
 
-        {history ? (
-          <>
-            <div className="ship-map-row">
-              {panel('Proof of Delivery', proofBlock, { minHeight: '360px' })}
-              {mapCard}
-            </div>
-            <div className="ship-info-row">
-              {panel('Shipment Info', infoBlock)}
-              {stagesPanel}
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="ship-map-row">
-              {mapCard}
-              {stagesPanel}
-            </div>
-            <div className="ship-info-row">
-              {panel('Shipment Info', infoBlock)}
-              {panel('Proof of Delivery', proofBlock)}
-            </div>
-          </>
-        )}
+        <div className="ship-map-row">
+          {mapCard}
+          {panel('Proof of Delivery', proofBlock, { minHeight: '360px' })}
+        </div>
+        {activityPanel}
       </div>
 
       {lightbox && (

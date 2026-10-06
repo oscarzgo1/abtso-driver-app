@@ -436,12 +436,12 @@ export default function AnalyticsBreakdowns(p: Props) {
           )}
           {p.canExport ? (
             <>
-            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '7px 11px', fontSize: '12px' }} onClick={exportExcel}><FileSpreadsheet size={14} /> Excel</button>
-            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '7px 11px', fontSize: '12px' }} onClick={printPdf}><FileText size={14} /> PDF report</button>
+            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '6px 12px', fontSize: '11px' }} onClick={exportExcel}><FileSpreadsheet size={14} /> Excel</button>
+            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '6px 12px', fontSize: '11px' }} onClick={printPdf}><FileText size={14} /> PDF report</button>
             {p.canManageReports && p.canExport && (
               <>
-                <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '7px 11px', fontSize: '12px' }} onClick={() => setPanel('share')}><Link2 size={14} /> Share link</button>
-                <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '7px 11px', fontSize: '12px' }} onClick={() => setPanel('email')}><Mail size={14} /> Weekly email</button>
+                <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '6px 12px', fontSize: '11px' }} onClick={() => setPanel('share')}><Link2 size={14} /> Share link</button>
+                <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '6px 12px', fontSize: '11px' }} onClick={() => setPanel('email')}><Mail size={14} /> Weekly email</button>
               </>
             )}
             </>
@@ -708,7 +708,7 @@ function SharePanel({ onClose, periodLabel, buildSnapshot }: { onClose: () => vo
         <select className="select-field" style={{ padding: '8px 10px', fontSize: '12.5px' }} value={days} onChange={e => setDays(e.target.value)}>
           <option value="7">7 days</option><option value="30">30 days</option><option value="90">90 days</option><option value="0">No expiry</option>
         </select>
-        <button type="button" className="btn" style={{ padding: '8px 12px', fontSize: '12.5px', fontWeight: 800, background: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }} onClick={create}>Create link</button>
+        <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: '11px', fontWeight: 700, background: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }} onClick={create}>Create link</button>
       </div>
       <div className="flex flex-col" style={{ gap: '8px', maxHeight: '260px', overflowY: 'auto' }}>
         {links.length === 0 && <p className="text-xs text-muted m-0">No share links yet.</p>}
@@ -769,7 +769,7 @@ function WeeklyEmailPanel({ onClose }: { onClose: () => void }) {
         <textarea className="input-field" style={{ width: '100%', minHeight: '60px' }} placeholder="you@company.co.uk, accountant@firm.co.uk" value={emails} onChange={e => setEmails(e.target.value)} />
       </div>
       <div className="flex items-center" style={{ gap: '10px' }}>
-        <button type="button" className="btn" style={{ padding: '8px 14px', fontSize: '12.5px', fontWeight: 800, background: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }} onClick={save}>Save</button>
+        <button type="button" className="btn" style={{ padding: '6px 12px', fontSize: '11px', fontWeight: 700, background: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }} onClick={save}>Save</button>
         {status && <span className="text-xs text-secondary">{status}</span>}
       </div>
     </Modal>

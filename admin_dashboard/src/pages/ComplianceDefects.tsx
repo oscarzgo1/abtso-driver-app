@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Camera, ChevronLeft, ChevronRight, Search } from 'lucide-react';
+import { Camera, ChevronLeft, ChevronRight } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../components/ui/empty';
+import NoData from '../components/ui/no-data';
 import TableFilter, { type TableFilterGroup } from '../components/ui/table-filter';
 import DefectInspectionDrawer from './DefectInspectionDrawer';
+import AuthorizeUnitModal from '../components/AuthorizeUnitModal';
+import StatusLedger from './StatusLedger';
 
 // ============================================================
 // Compliance & Safety — full Defect Registry. The Overview page only
@@ -35,6 +37,9 @@ interface DefectRow {
   note: string | null;
   vehicle_id: string | null;
   vehicle_number?: string;
+  /** The unit or trailer this defect is against (whichever was reported). */
+  unit_id: string | null;
+  registration?: string;
   driver_id: string;
   driver_name?: string;
   photo_urls: string[];
@@ -59,9 +64,13 @@ const PAGE_SIZE = 15;
 interface ComplianceDefectsProps {
   organizationId: string | null;
   onBack?: () => void;
+  /** Arrive filtered to one registration (the status badge in Fleet Roadworthiness). */
+  focusUnit?: { number: string; nonce: number } | null;
 }
 
-export default function ComplianceDefects({ organizationId, onBack }: ComplianceDefectsProps) {
+export default function ComplianceDefects({ organizationId, onBack, focusUnit }: ComplianceDefectsProps) {
+  const [subTab, setSubTab] = useState<'defects' | 'history'>('defects');
+  const [authorizing, setAuthorizing] = useState<{ vehicleId: string; registration: string } | null>(null);
   const [defects, setDefects] = useState<DefectRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -83,13 +92,15 @@ export default function ComplianceDefects({ organizationId, onBack }: Compliance
     try {
       const { data, error: fetchError } = await supabase
         .from('incident_reports')
-        .select('id, category, severity, status, created_at, note, vehicle_id, driver_id, photo_urls, vehicles!vehicle_id(vehicle_number), drivers(full_name)')
+        .select('id, category, severity, status, created_at, note, vehicle_id, trailer_id, driver_id, photo_urls, vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), drivers(full_name)')
         .eq('organization_id', organizationId)
         .order('created_at', { ascending: false });
       if (fetchError) throw fetchError;
       setDefects((data ?? []).map((d: any) => ({
         ...d,
-        vehicle_number: d.vehicles?.vehicle_number,
+        vehicle_number: d.vehicles?.vehicle_number ?? d.trailer?.vehicle_number,
+        unit_id: d.vehicle_id ?? d.trailer_id ?? null,
+        registration: (d.vehicles?.vehicle_number ?? d.trailer?.vehicle_number ?? '').toString().toUpperCase(),
         driver_name: d.drivers?.full_name,
         photo_urls: d.photo_urls ?? [],
       })) as DefectRow[]);
@@ -139,6 +150,16 @@ export default function ComplianceDefects({ organizationId, onBack }: Compliance
       setError(err?.message ?? 'Could not ground this vehicle.');
     }
   };
+
+  // Arriving from a status badge: show just that unit's defects.
+  useEffect(() => {
+    if (!focusUnit) return;
+    setSubTab('defects');
+    setVehicleSearchQuery(focusUnit.number);
+    setSeverityFilter([]); setCategoryFilter([]); setStatusFilterMulti([]);
+    setPage(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusUnit?.nonce]);
 
   const filterGroups: TableFilterGroup[] = [
     {
@@ -205,21 +226,26 @@ export default function ComplianceDefects({ organizationId, onBack }: Compliance
         )}
       </div>
 
+      <div className="live-subtabs" role="tablist" style={{ marginTop: 0, marginBottom: '16px' }}>
+        <button type="button" role="tab" aria-selected={subTab === 'defects'} className={`live-subtab${subTab === 'defects' ? ' live-subtab--active' : ''}`} onClick={() => setSubTab('defects')}>Defects</button>
+        <button type="button" role="tab" aria-selected={subTab === 'history'} className={`live-subtab${subTab === 'history' ? ' live-subtab--active' : ''}`} onClick={() => setSubTab('history')}>Authorization History</button>
+      </div>
+
       {error && <div className="login-notice login-notice--error mb-16">{error}</div>}
 
+      {subTab === 'history' && (
+        <StatusLedger
+          organizationId={organizationId}
+          embedded
+          onOpenUnit={(reg) => { setVehicleSearchQuery(reg); setSubTab('defects'); setPage(0); }}
+        />
+      )}
+
+      {subTab === 'defects' && (
       <div className="glass-card" style={{ overflow: 'hidden' }}>
         <div className="p-16 flex align-center justify-between" style={{ borderBottom: '1px solid var(--border-color)', flexWrap: 'wrap', gap: '10px' }}>
           <div className="flex align-center" style={{ gap: '10px', flexWrap: 'wrap' }}>
-            <div className="telemetry-search-wrap" style={{ minWidth: '220px' }}>
-              <Search size={14} />
-              <input
-                type="text"
-                placeholder="Search by truck or trailer registration…"
-                value={vehicleSearchQuery}
-                onChange={(e) => { setVehicleSearchQuery(e.target.value); setPage(0); }}
-              />
-            </div>
-            <TableFilter groups={filterGroups} />
+            <TableFilter groups={filterGroups} search={{ value: vehicleSearchQuery, onChange: (v) => { setVehicleSearchQuery(v); setPage(0); }, placeholder: 'Search by truck or trailer registration…' }} />
           </div>
           <span className="text-xs text-muted">
             {isLoading ? 'Loading…' : `${filteredDefects.length} of ${defects.length} defects`}
@@ -227,15 +253,7 @@ export default function ComplianceDefects({ organizationId, onBack }: Compliance
         </div>
 
         {pageDefects.length === 0 ? (
-          <Empty className="py-24">
-            <EmptyHeader>
-              <EmptyMedia variant="icon"><Camera /></EmptyMedia>
-              <EmptyTitle>No Defects Found</EmptyTitle>
-              <EmptyDescription>
-                {defects.length === 0 ? 'Driver-reported defects will show up here.' : 'No defects match the current filters.'}
-              </EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <NoData className="py-24" />
         ) : (
           <>
             <div className="table-container">
@@ -272,6 +290,7 @@ export default function ComplianceDefects({ organizationId, onBack }: Compliance
                           <Camera size={12} /> {d.photo_urls.length > 0 ? `${d.photo_urls.length} Photo${d.photo_urls.length === 1 ? '' : 's'}` : 'No Photos'}
                         </button>
                       </td>
+
                     </tr>
                   ))}
                 </tbody>
@@ -306,6 +325,20 @@ export default function ComplianceDefects({ organizationId, onBack }: Compliance
           </>
         )}
       </div>
+      )}
+
+      {authorizing && (
+        <AuthorizeUnitModal
+          organizationId={organizationId}
+          vehicleId={authorizing.vehicleId}
+          registration={authorizing.registration}
+          defects={defects
+            .filter(x => x.severity === 'critical_vor' && x.status !== 'closed' && x.registration === authorizing.registration)
+            .map(x => ({ id: x.id, categoryLabel: CATEGORY_LABELS[x.category], created_at: x.created_at, driver_name: x.driver_name, note: x.note, photoCount: x.photo_urls.length }))}
+          onClose={() => setAuthorizing(null)}
+          onDone={() => { setAuthorizing(null); loadDefects(); }}
+        />
+      )}
 
       {inspectingDefectId && (() => {
         const d = defects.find(x => x.id === inspectingDefectId);
@@ -328,6 +361,7 @@ export default function ComplianceDefects({ organizationId, onBack }: Compliance
             onClose={() => setInspectingDefectId(null)}
             onUpdateStatus={handleUpdateDefectStatus}
             onSetVor={handleSetVor}
+            onAuthorise={d.unit_id ? () => { setInspectingDefectId(null); setAuthorizing({ vehicleId: d.unit_id!, registration: d.registration ?? '' }); } : undefined}
           />
         );
       })()}

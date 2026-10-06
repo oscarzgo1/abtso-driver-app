@@ -1,26 +1,26 @@
 import { useState } from 'react';
-import { X, Truck, FileSpreadsheet, User } from 'lucide-react';
+import { X, Truck, FileSpreadsheet, User, Plus, Trash2, Settings2 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
 import CreatableCombobox from '../components/ui/creatable-combobox';
-import CalendarPicker from '../components/ui/calendar-picker';
+import { EarningsDateRangePicker } from '../components/ui/earnings-date-range-picker';
+import InspectionTypeSelect from '../components/InspectionTypeSelect';
+import ManageInspectionTypes from '../components/ManageInspectionTypes';
+import { useInspectionTypes } from '../lib/inspection-types';
 import CsvImportPanel from './CsvImportPanel';
 
 // ============================================================
-// AddAssetModal — the single centered "+ Add Asset" modal, replacing
-// the two previously-separate entry points (an inline manual-add panel
-// and a standalone "Import CSV" button/modal). Two tabs share this one
-// shell: Manual Entry (a single-asset form) and Batch CSV Import
-// (CsvImportPanel, unchanged internally, just no longer owns its own
-// overlay).
+// AddAssetModal — the single centered "+ Add Asset" modal. Two tabs share
+// one shell: Manual Entry and Batch CSV Import.
 //
-// Asset Type / Inspection Type are creatable comboboxes: picking one of
-// the standard choices stores the same internal value the rest of the
-// app already keys off (vehicle_type 'truck'/'trailer',
-// inspection_type 'mot'/'pmi'/...), so existing label/icon lookups
-// keep working unchanged. Typing something else (e.g. "Company Van")
-// stores that raw text instead — migration 046 widened both columns'
-// CHECK constraints from a fixed enum to "non-empty text" specifically
-// so this doesn't silently fail at the database.
+// Every MOT / PMI / tacho / road tax / insurance … is an *inspection*: it
+// is picked from one dropdown (no free typing) and given a date range (when
+// it started → when it expires), with the same range picker used across the
+// dashboard. A unit can have several inspections; each becomes one register
+// row. Companies can add their own inspection types (Manage types).
+//
+// Asset Type is still a creatable combobox: the standard choices store the
+// internal value the app keys off (vehicle_type 'truck'/'trailer'), anything
+// else (e.g. "Company Van") is stored as typed (migration 046).
 // ============================================================
 
 const ASSET_TYPE_OPTIONS: { label: string; value: string }[] = [
@@ -29,13 +29,6 @@ const ASSET_TYPE_OPTIONS: { label: string; value: string }[] = [
   { label: 'Rigid Truck', value: 'Rigid Truck' },
   { label: 'Company Van', value: 'Company Van' },
 ];
-const INSPECTION_TYPE_OPTIONS: { label: string; value: string }[] = [
-  { label: 'MOT', value: 'mot' },
-  { label: 'PMI', value: 'pmi' },
-  { label: 'Tacho Calibration', value: 'tacho_calibration' },
-  { label: 'Roller Brake Test', value: 'roller_brake_test' },
-  { label: 'LOLER', value: 'loler' },
-];
 
 function resolveComboValue(typedLabel: string, options: { label: string; value: string }[]): string {
   const trimmed = typedLabel.trim();
@@ -43,68 +36,60 @@ function resolveComboValue(typedLabel: string, options: { label: string; value: 
   return matched ? matched.value : trimmed;
 }
 
+interface DraftInspection { id: number; type: string; from: string; to: string }
+
 interface AddAssetModalProps {
   organizationId: string | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
+let draftSeq = 1;
+
 export default function AddAssetModal({ organizationId, onClose, onSaved }: AddAssetModalProps) {
   const [activeTab, setActiveTab] = useState<'manual' | 'csv'>('manual');
+  const { types, custom, reload } = useInspectionTypes(organizationId);
+  const [manageOpen, setManageOpen] = useState(false);
 
   const [vehicleNumber, setVehicleNumber] = useState('');
-  // Deliberately no default — a prefilled exact match (e.g. "Trailer")
-  // made the combobox's own suggestion list filter down to just that
-  // one entry the moment it opened, which looked like a locked
-  // single-choice field rather than "pick one of a few, or type your
-  // own". Starting empty means opening it always shows every standard
-  // choice.
+  // Deliberately no default, so opening the combobox always lists every choice.
   const [assetTypeLabel, setAssetTypeLabel] = useState('');
-  const [inspectionTypeLabel, setInspectionTypeLabel] = useState('');
-  const [dueDate, setDueDate] = useState<Date | null>(null);
+  const [inspections, setInspections] = useState<DraftInspection[]>([{ id: draftSeq++, type: '', from: '', to: '' }]);
   // Fuel theft/anomaly detection (migration 055) needs a real per-vehicle
-  // capacity to catch an over-capacity fuel log — optional here since an
-  // admin may not know it yet; left null (not a guessed default like 450
-  // or 700) skips that specific check until it's actually set.
+  // capacity; optional here, null skips that check until it's set.
   const [fuelTankCapacity, setFuelTankCapacity] = useState('');
-  // Road-legal dates (migration 063) — the driver app warns, and asks for
-  // a signed acceptance, when any of these has passed.
-  const [motDue, setMotDue] = useState('');
-  const [taxDue, setTaxDue] = useState('');
-  const [insuranceExpiry, setInsuranceExpiry] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState('');
+
+  const patch = (id: number, p: Partial<DraftInspection>) => setInspections(list => list.map(i => (i.id === id ? { ...i, ...p } : i)));
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isMockMode || !supabase || !organizationId) return;
     const registration = vehicleNumber.trim();
     setFormError('');
-    if (!registration) {
-      setFormError('Enter a registration or fleet number.');
-      return;
+    if (!registration) { setFormError('Enter a registration or fleet number.'); return; }
+    if (!assetTypeLabel.trim()) { setFormError('Enter an asset type.'); return; }
+    if (inspections.length === 0) { setFormError('Add at least one inspection.'); return; }
+    for (const i of inspections) {
+      if (!i.type) { setFormError('Choose an inspection type for every inspection.'); return; }
+      if (!i.to) { setFormError('Pick the date range (start and expiry) for every inspection.'); return; }
     }
-    if (!assetTypeLabel.trim()) {
-      setFormError('Enter an asset type.');
-      return;
-    }
-    if (!inspectionTypeLabel.trim()) {
-      setFormError('Enter an inspection type.');
-      return;
-    }
+    if (new Set(inspections.map(i => i.type)).size !== inspections.length) { setFormError('Each inspection type can only be added once per asset.'); return; }
+
     setIsSaving(true);
     try {
-      const { error: insertError } = await supabase.from('vehicles').insert({
+      const vehicleType = resolveComboValue(assetTypeLabel, ASSET_TYPE_OPTIONS);
+      const tank = fuelTankCapacity.trim() ? parseInt(fuelTankCapacity, 10) : null;
+      const { error: insertError } = await supabase.from('vehicles').insert(inspections.map(i => ({
         organization_id: organizationId,
         vehicle_number: registration,
-        vehicle_type: resolveComboValue(assetTypeLabel, ASSET_TYPE_OPTIONS),
-        inspection_type: resolveComboValue(inspectionTypeLabel, INSPECTION_TYPE_OPTIONS),
-        inspection_due_date: dueDate ? dueDate.toISOString().slice(0, 10) : null,
-        fuel_tank_capacity_litres: fuelTankCapacity.trim() ? parseInt(fuelTankCapacity, 10) : null,
-        mot_due_date: motDue || null,
-        tax_due_date: taxDue || null,
-        insurance_expiry_date: insuranceExpiry || null,
-      });
+        vehicle_type: vehicleType,
+        inspection_type: i.type,
+        inspection_start_date: i.from || null,
+        inspection_due_date: i.to,
+        fuel_tank_capacity_litres: tank,
+      })));
       if (insertError) throw insertError;
       onSaved();
       onClose();
@@ -116,13 +101,15 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
   };
 
   return (
+    <>
     <div
+      className="modal-overlay"
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 998, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}
       onClick={onClose}
     >
       <div
-        className="glass-panel"
-        style={{ width: '720px', maxWidth: '100%', maxHeight: '88vh', display: 'flex', flexDirection: 'column', borderRadius: '18px', background: 'var(--card-bg)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', overflow: 'hidden' }}
+        className="glass-panel modal-content"
+        style={{ width: '720px', maxWidth: '100%', maxHeight: '90vh', display: 'flex', flexDirection: 'column', borderRadius: '18px', background: 'var(--card-bg)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)', border: '1px solid var(--border-color)', overflow: 'hidden' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex align-center justify-between p-16" style={{ borderBottom: '1px solid var(--border-color)' }}>
@@ -163,63 +150,56 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
                   <span className="input-label">REGISTRATION / FLEET NUMBER</span>
                   <div className="login-field">
                     <span className="login-field-icon"><Truck size={15} /></span>
-                    <input
-                      type="text"
-                      className="login-input"
-                      placeholder="e.g. YK23 ABC"
-                      value={vehicleNumber}
-                      onChange={(e) => setVehicleNumber(e.target.value)}
-                    />
+                    <input type="text" className="login-input" placeholder="e.g. YK23 ABC" value={vehicleNumber} onChange={(e) => setVehicleNumber(e.target.value)} />
                   </div>
                 </div>
                 <div className="input-group">
                   <span className="input-label">ASSET TYPE</span>
-                  <CreatableCombobox
-                    value={assetTypeLabel}
-                    onChange={setAssetTypeLabel}
-                    options={ASSET_TYPE_OPTIONS.map(o => o.label)}
-                    placeholder="Tractor Unit, Trailer, or type your own…"
-                  />
-                </div>
-                <div className="input-group">
-                  <span className="input-label">INSPECTION TYPE</span>
-                  <CreatableCombobox
-                    value={inspectionTypeLabel}
-                    onChange={setInspectionTypeLabel}
-                    options={INSPECTION_TYPE_OPTIONS.map(o => o.label)}
-                    placeholder="MOT, PMI, Tacho… or type your own"
-                  />
-                </div>
-                <div className="input-group">
-                  <span className="input-label">DUE DATE</span>
-                  <CalendarPicker value={dueDate} onChange={setDueDate} placeholder="Select due date" />
+                  <CreatableCombobox value={assetTypeLabel} onChange={setAssetTypeLabel} options={ASSET_TYPE_OPTIONS.map(o => o.label)} placeholder="Tractor Unit, Trailer, or type your own…" />
                 </div>
                 <div className="input-group">
                   <span className="input-label">FUEL TANK CAPACITY (L) — OPTIONAL</span>
-                  <input
-                    type="number"
-                    className="input-field"
-                    placeholder="e.g. 450"
-                    value={fuelTankCapacity}
-                    onChange={(e) => setFuelTankCapacity(e.target.value)}
-                  />
-                </div>
-                <div className="input-group">
-                  <span className="input-label">MOT DUE</span>
-                  <input type="date" className="input-field" value={motDue} onChange={(e) => setMotDue(e.target.value)} />
-                </div>
-                <div className="input-group">
-                  <span className="input-label">ROAD TAX DUE</span>
-                  <input type="date" className="input-field" value={taxDue} onChange={(e) => setTaxDue(e.target.value)} />
-                </div>
-                <div className="input-group">
-                  <span className="input-label">INSURANCE EXPIRES</span>
-                  <input type="date" className="input-field" value={insuranceExpiry} onChange={(e) => setInsuranceExpiry(e.target.value)} />
+                  <input type="number" className="input-field" placeholder="e.g. 450" value={fuelTankCapacity} onChange={(e) => setFuelTankCapacity(e.target.value)} />
                 </div>
               </div>
-              <button type="submit" className="btn btn-primary" disabled={isSaving}>
-                {isSaving ? 'Saving…' : 'Save Asset'}
+
+              <div className="flex align-center justify-between" style={{ marginBottom: '8px', gap: '8px', flexWrap: 'wrap' }}>
+                <span className="input-label" style={{ margin: 0 }}>INSPECTIONS &amp; DOCUMENTS</span>
+                <button type="button" className="comp-edit-btn" onClick={() => setManageOpen(true)}><Settings2 size={12} /> Manage types</button>
+              </div>
+              <div className="flex flex-col" style={{ gap: '10px', marginBottom: '12px' }}>
+                {inspections.map((i, idx) => (
+                  <div key={i.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1.2fr) auto', gap: '10px', alignItems: 'end', padding: '10px', border: '1px solid var(--border-color)', borderRadius: '10px', background: 'var(--card-bg-hover)' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <span className="input-label">TYPE</span>
+                      <InspectionTypeSelect types={types} value={i.type} onChange={(k) => patch(i.id, { type: k })} />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <span className="input-label">START → EXPIRY</span>
+                      <EarningsDateRangePicker startDate={i.from} endDate={i.to} onChange={(from, to) => patch(i.id, { from, to })} />
+                    </div>
+                    <button
+                      type="button"
+                      aria-label={`Remove inspection ${idx + 1}`}
+                      title="Remove"
+                      disabled={inspections.length === 1}
+                      onClick={() => setInspections(list => list.filter(x => x.id !== i.id))}
+                      style={{ background: 'none', border: '1px solid var(--border-color)', borderRadius: '8px', width: 34, height: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: inspections.length === 1 ? 'not-allowed' : 'pointer', color: 'var(--charcoal-light)', opacity: inspections.length === 1 ? 0.4 : 1 }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button type="button" className="comp-edit-btn" style={{ marginBottom: '16px' }} onClick={() => setInspections(list => [...list, { id: draftSeq++, type: '', from: '', to: '' }])}>
+                <Plus size={12} /> Add another inspection
               </button>
+
+              <div>
+                <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                  {isSaving ? 'Saving…' : 'Save Asset'}
+                </button>
+              </div>
             </form>
           ) : (
             <CsvImportPanel organizationId={organizationId} onImported={() => { onSaved(); }} />
@@ -227,5 +207,7 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
         </div>
       </div>
     </div>
+    {manageOpen && <ManageInspectionTypes organizationId={organizationId} custom={custom} onClose={() => setManageOpen(false)} onChanged={reload} />}
+    </>
   );
 }

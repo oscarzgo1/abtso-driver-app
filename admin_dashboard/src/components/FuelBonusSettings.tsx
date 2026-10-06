@@ -196,7 +196,7 @@ export default function FuelBonusSettings() {
       </div>
 
       <div className="flex align-center mt-16" style={{ gap: '10px' }}>
-        <button type="button" className="btn" disabled={isSaving} style={{ backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 800 }} onClick={save}>
+        <button type="button" className="btn" disabled={isSaving} style={{ backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 700 }} onClick={save}>
           {isSaving ? 'Saving…' : 'Save'}
         </button>
         {settings.enabled && (

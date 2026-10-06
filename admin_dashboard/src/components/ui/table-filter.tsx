@@ -1,20 +1,24 @@
-import { useState } from 'react';
-import { Filter, Check } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Check, ChevronDown, Search, X } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from './popover';
 
 // ============================================================
-// TableFilter — single source-of-truth filter popover, adapted from the
-// 21st.dev "Filters" component (@andrewlu0/filters, already the base of
-// this app's Analytics FilterBar) but deliberately simpler: that
-// component is a dynamic Linear-style filter *builder* (add a filter
-// type, then an operator, then values, from an open-ended type list) —
-// overkill for a table that only ever needs a couple of small, fixed
-// option groups. This is that same Popover-trigger-with-count-badge
-// shape, with a plain static checklist body instead of the Command/
-// operator-dropdown machinery.
+// FilterGroup (exported as TableFilter) — the one filter control used in
+// every section. Pattern from the 21st.dev "Search Bar with Category
+// Filter" (@cnippet-dev/v-group-18): ONE joined control made of
+//   [ category dropdown | value / search box | action button ].
 //
-// Fully generic — every table using this passes its own groups, so this
-// file itself never hardcodes "Tractor Units" or "VOR Grounded" etc.
+// The category dropdown lists only what makes sense for the section it is
+// placed in — each section passes its own `groups` (and optional text
+// `search`), so this file never hardcodes a section's options.
+//
+//   • "Search" category  → free-text box (when the section supplies `search`)
+//   • any other category → a value picker with that category's options
+//   • action button      → clears every active filter (shows the count),
+//                          or focuses the search box when nothing is active
+//
+// `single: true` on a group makes it pick one value (replaces a <select>);
+// otherwise it is a multi-select checklist.
 // ============================================================
 
 export interface TableFilterOption {
@@ -28,108 +32,158 @@ export interface TableFilterGroup {
   options: TableFilterOption[];
   selected: string[];
   onChange: (values: string[]) => void;
+  /** One value at a time (behaves like a <select>). */
+  single?: boolean;
+  /** Value that means "no filter" for a single group, e.g. 'all'. It is hidden from the active count. */
+  neutral?: string;
+}
+
+export interface TableFilterSearch {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
 }
 
 interface TableFilterProps {
   groups: TableFilterGroup[];
+  search?: TableFilterSearch;
+  /** Kept for older call sites; the joined bar no longer shows a title. */
   label?: string;
+  className?: string;
 }
 
-export default function TableFilter({ groups, label = 'Filters' }: TableFilterProps) {
-  const [open, setOpen] = useState(false);
-  const activeCount = groups.reduce((sum, g) => sum + g.selected.length, 0);
+const SEARCH_KEY = '__search';
+
+const activeOf = (g: TableFilterGroup) =>
+  g.neutral !== undefined ? g.selected.filter(v => v !== g.neutral) : g.selected;
+
+export default function TableFilter({ groups, search, className }: TableFilterProps) {
+  const [catOpen, setCatOpen] = useState(false);
+  const [valOpen, setValOpen] = useState(false);
+  const [active, setActive] = useState<string>(search ? SEARCH_KEY : groups[0]?.key ?? SEARCH_KEY);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [optQuery, setOptQuery] = useState('');
+
+  const group = groups.find(g => g.key === active);
+  const searching = !group && !!search;
+  const groupActive = groups.reduce((n, g) => n + activeOf(g).length, 0);
+  const activeCount = groupActive + (search?.value.trim() ? 1 : 0);
+
+  const clearAll = () => {
+    groups.forEach(g => g.onChange(g.neutral !== undefined ? [g.neutral] : []));
+    search?.onChange('');
+  };
+
+  const toggle = (g: TableFilterGroup, value: string) => {
+    if (g.single) {
+      g.onChange([value]);
+      setValOpen(false);
+      return;
+    }
+    g.onChange(g.selected.includes(value) ? g.selected.filter(v => v !== value) : [...g.selected, value]);
+  };
+
+  const summary = (g: TableFilterGroup) => {
+    const sel = activeOf(g);
+    if (sel.length === 0) return 'All';
+    if (sel.length === 1) return g.options.find(o => o.value === sel[0])?.label ?? sel[0];
+    return `${sel.length} selected`;
+  };
+
+  const catLabel = group ? group.label : 'Search';
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center text-xs font-bold"
-          style={{
-            gap: '6px', padding: '8px 14px', borderRadius: '8px',
-            border: activeCount > 0 ? '1px solid var(--charcoal)' : '1px solid var(--border-color)',
-            background: activeCount > 0 ? 'var(--card-bg-hover)' : 'var(--card-bg)',
-            color: 'var(--charcoal)', cursor: 'pointer',
-          }}
-        >
-          <Filter size={14} />
-          {label}
-          {activeCount > 0 && (
-            <span
-              className="font-mono tabular-nums"
-              style={{
-                fontSize: '10px', fontWeight: 800, minWidth: '16px', textAlign: 'center',
-                padding: '1px 5px', borderRadius: '999px', background: 'var(--brand-red)', color: '#fff',
-              }}
-            >
-              {activeCount}
-            </span>
+    <div className={`fg${className ? ` ${className}` : ''}`} role="group" aria-label="Filters">
+      <Popover open={catOpen} onOpenChange={setCatOpen}>
+        <PopoverTrigger asChild>
+          <button type="button" className="fg-seg fg-cat" aria-label="Filter by">
+            {catLabel}
+            <ChevronDown size={12} />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="p-1" style={{ width: '190px', zIndex: 1100 }}>
+          {search && (
+            <button type="button" className="fg-item" onClick={() => { setActive(SEARCH_KEY); setCatOpen(false); setTimeout(() => inputRef.current?.focus(), 0); }}>
+              <span>Search</span>
+              {active === SEARCH_KEY && <Check size={13} />}
+            </button>
           )}
-        </button>
-      </PopoverTrigger>
-      {/* Same z-index override as calendar-picker.tsx — this reusable
-          popover needs to out-rank any modal it might later open from. */}
-      <PopoverContent align="start" className="p-0" style={{ width: '240px', zIndex: 1100 }}>
-        {groups.map((group, i) => {
-          const toggle = (value: string) => {
-            group.onChange(
-              group.selected.includes(value) ? group.selected.filter(v => v !== value) : [...group.selected, value],
-            );
-          };
-          return (
-            <div key={group.key} style={i > 0 ? { borderTop: '1px solid var(--border-color)' } : undefined}>
-              <div
-                className="text-xs font-bold text-muted"
-                style={{ textTransform: 'uppercase', letterSpacing: '0.04em', padding: '10px 12px 4px' }}
-              >
-                {group.label}
-              </div>
-              <button
-                type="button"
-                onClick={() => group.onChange([])}
-                className="flex items-center text-sm"
-                style={{ gap: '8px', width: '100%', padding: '7px 12px', border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left', color: 'var(--charcoal)' }}
-              >
-                <span
-                  style={{
-                    width: '14px', height: '14px', borderRadius: '4px', flexShrink: 0,
-                    border: group.selected.length === 0 ? '1px solid var(--charcoal)' : '1px solid var(--border-color)',
-                    background: group.selected.length === 0 ? 'var(--charcoal)' : 'transparent',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
-                >
-                  {group.selected.length === 0 && <Check size={10} color="#fff" />}
-                </span>
-                All
+          {groups.map(g => {
+            const n = activeOf(g).length;
+            return (
+              <button key={g.key} type="button" className="fg-item" onClick={() => { setActive(g.key); setCatOpen(false); }}>
+                <span>{g.label}</span>
+                {n > 0 && <span className="fg-count">{n}</span>}
+                {active === g.key && <Check size={13} />}
               </button>
-              {group.options.map(opt => {
-                const checked = group.selected.includes(opt.value);
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => toggle(opt.value)}
-                    className="flex items-center text-sm"
-                    style={{ gap: '8px', width: '100%', padding: '7px 12px', border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left', color: 'var(--charcoal)' }}
-                  >
-                    <span
-                      style={{
-                        width: '14px', height: '14px', borderRadius: '4px', flexShrink: 0,
-                        border: checked ? '1px solid var(--charcoal)' : '1px solid var(--border-color)',
-                        background: checked ? 'var(--charcoal)' : 'transparent',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      }}
-                    >
-                      {checked && <Check size={10} color="#fff" />}
-                    </span>
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-          );
-        })}
-      </PopoverContent>
-    </Popover>
+            );
+          })}
+        </PopoverContent>
+      </Popover>
+
+      <span className="fg-sep" />
+
+      {searching && search ? (
+        <input
+          ref={inputRef}
+          className="fg-input"
+          type="search"
+          aria-label="Search"
+          placeholder={search.placeholder ?? 'Search…'}
+          value={search.value}
+          onChange={e => search.onChange(e.target.value)}
+        />
+      ) : group ? (
+        <Popover open={valOpen} onOpenChange={(o) => { setValOpen(o); if (!o) setOptQuery(''); }}>
+          <PopoverTrigger asChild>
+            <button type="button" className="fg-seg fg-val" aria-label={`${group.label} value`}>
+              <span className="fg-val-text">{summary(group)}</span>
+              <ChevronDown size={12} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="p-1" style={{ width: '220px', zIndex: 1100, maxHeight: '320px', overflowY: 'auto' }}>
+            {group.options.length > 8 && (
+              <input className="fg-opt-search" type="search" placeholder={`Search ${group.label.toLowerCase()}…`} value={optQuery} onChange={e => setOptQuery(e.target.value)} />
+            )}
+            {!group.single && (
+              <button type="button" className="fg-item" onClick={() => group.onChange([])}>
+                <span className={`fg-box${group.selected.length === 0 ? ' fg-box--on' : ''}`}>{group.selected.length === 0 && <Check size={10} color="#fff" />}</span>
+                <span>All</span>
+              </button>
+            )}
+            {group.options.filter(o => !optQuery.trim() || o.label.toLowerCase().includes(optQuery.trim().toLowerCase())).map(opt => {
+              const checked = group.selected.includes(opt.value);
+              return (
+                <button key={opt.value} type="button" className="fg-item" onClick={() => toggle(group, opt.value)}>
+                  {group.single
+                    ? <span className="fg-check">{checked && <Check size={13} />}</span>
+                    : <span className={`fg-box${checked ? ' fg-box--on' : ''}`}>{checked && <Check size={10} color="#fff" />}</span>}
+                  <span>{opt.label}</span>
+                </button>
+              );
+            })}
+          </PopoverContent>
+        </Popover>
+      ) : null}
+
+      <span className="fg-sep" />
+
+      <button
+        type="button"
+        className="fg-seg fg-go"
+        aria-label={activeCount > 0 ? 'Clear filters' : 'Search'}
+        title={activeCount > 0 ? 'Clear all filters' : 'Search'}
+        onClick={() => {
+          if (activeCount > 0) clearAll();
+          else if (searching) inputRef.current?.focus();
+          else if (group) setValOpen(true);
+        }}
+      >
+        {activeCount > 0 ? <X size={14} /> : <Search size={14} />}
+        {activeCount > 0 && <span className="fg-badge">{activeCount}</span>}
+      </button>
+    </div>
   );
 }
+
+export { TableFilter };

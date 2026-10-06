@@ -165,7 +165,10 @@ class WalkAroundCheckScreen extends StatefulWidget {
 }
 
 class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
-  late final DateTime _startedAt;
+  late DateTime _startedAt;
+  /// Set when a saved draft was restored, so saving/submitting updates
+  /// that row instead of leaving it behind as an orphan draft.
+  String? _draftId;
   bool _hasTrailer = false;
   bool _askedTrailerQuestion = false;
   /// The trailer on this check: `{'id': String?, 'vehicle_number': String, 'custom': bool?}`.
@@ -210,6 +213,37 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
     }
     _hasTrailer = _trailer != null;
     WidgetsBinding.instance.addPostFrameCallback((_) => _askTrailerQuestion());
+    _restoreDraft();
+  }
+
+  /// Picks up a "Save as Draft" from earlier: answers, photos already
+  /// uploaded, and the original start time (so the duration isn't reset).
+  Future<void> _restoreDraft() async {
+    final draft = await SupabaseService.fetchWalkaroundDraft(
+      checkType: widget.checkType,
+      shiftId: widget.shiftId,
+    );
+    if (draft == null || !mounted) return;
+    final items = (draft['items'] as List?) ?? const [];
+    setState(() {
+      _draftId = draft['id'] as String?;
+      final started = DateTime.tryParse(draft['started_at']?.toString() ?? '');
+      if (started != null) _startedAt = started.toLocal();
+      for (final raw in items) {
+        if (raw is! Map) continue;
+        final key = raw['key'] as String?;
+        final value = raw['value'];
+        // 'pending' was a photo that hadn't finished uploading — treat as missing.
+        if (key == null || value == null || value == 'pending') continue;
+        _values[key] = value;
+        if (value is String) {
+          _textControllers.putIfAbsent(key, () => TextEditingController()).text = value;
+        }
+      }
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Draft restored — carry on where you left off.')),
+    );
   }
 
   @override
@@ -418,7 +452,7 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
     setState(() => _isSavingDraft = true);
     try {
       final payload = await _buildItemsPayload();
-      await SupabaseService.submitWalkaroundCheck(
+      final savedId = await SupabaseService.submitWalkaroundCheck(
         driverId: widget.driverId,
         vehicleId: widget.vehicleId,
         trailerId: _hasTrailer ? (_trailer?['id'] as String?) : null,
@@ -429,8 +463,15 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
         completedAt: null,
         items: payload['items'] as List<Map<String, dynamic>>,
         overallResult: null,
+        existingId: _draftId,
       );
       if (!mounted) return;
+      if (savedId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Couldn't save the draft — check your signal and try again.")),
+        );
+        return;
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Saved as draft. It still needs submitting to count as a completed check.')),
       );
@@ -461,9 +502,18 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
         items: payload['items'] as List<Map<String, dynamic>>,
         overallResult: overallResult,
         defectNote: defectNote,
+        existingId: _draftId,
       );
 
       if (!mounted) return;
+      // A failed save must not close the screen or mark the check done —
+      // the driver keeps their answers and can retry.
+      if (checkId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Couldn't submit the check — check your signal and try again.")),
+        );
+        return;
+      }
       Navigator.of(context).pop();
       await widget.onComplete(checkId, _hasTrailer ? _trailer : null);
     } finally {
@@ -701,7 +751,9 @@ class _WalkAroundCheckScreenState extends State<WalkAroundCheckScreen> {
   }
 
   Widget _buildPhotoControl(WalkaroundFieldDef field, bool isDark) {
-    final hasPhoto = _pendingPhotoBytes.containsKey(field.key);
+    // A photo restored from a draft is already uploaded (a storage path in
+    // _values) rather than held as bytes.
+    final hasPhoto = _pendingPhotoBytes.containsKey(field.key) || _values[field.key] is String;
     // The photo gallery is allowed on the safety check and end-of-shift
     // inspection (and vehicle defect reports) — everywhere else in the app
     // photos must be taken live with the camera.

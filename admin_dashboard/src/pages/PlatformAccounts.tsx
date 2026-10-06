@@ -1,7 +1,8 @@
+import TableFilter from '../components/ui/table-filter';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
-import { Building2, ChevronDown, Copy, Check, Plus, Search, X, UserPlus, Inbox, Users, Trash2, TriangleAlert } from 'lucide-react';
+import { Building2, ChevronDown, Copy, Check, Plus, X, UserPlus, Inbox, Users, Trash2, TriangleAlert } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../components/ui/empty';
+import NoData from '../components/ui/no-data';
 
 // ============================================================
 // Accounts & Interest Buyers — platform owner only (migration 061).
@@ -89,7 +90,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
   const [tab, setTab] = useState<'requests' | 'accounts'>('requests');
   const [requests, setRequests] = useState<AccessRequest[]>([]);
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [showClosed, setShowClosed] = useState(false);
@@ -319,7 +320,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
           type="button"
           onClick={() => openCreate(null)}
           className="btn flex align-center"
-          style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
+          style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
         >
           <Plus size={15} /> New Account
         </button>
@@ -352,27 +353,14 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
               Show created &amp; declined
             </label>
           )}
-          <div className="telemetry-search-wrap" style={{ minWidth: '240px' }}>
-            <Search size={14} />
-            <input type="text" placeholder={tab === 'requests' ? 'Search company, name, email…' : 'Search company or admin email…'} value={search} onChange={(e) => setSearch(e.target.value)} />
-          </div>
+          <TableFilter groups={[]} search={{ value: search, onChange: setSearch, placeholder: tab === 'requests' ? 'Search company, name, email…' : 'Search company or admin email…' }} />
         </div>
       </div>
 
       {tab === 'requests' ? (
         <div className="glass-card" style={{ overflow: 'hidden' }}>
           {visibleRequests.length === 0 ? (
-            <Empty className="py-24">
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><Inbox /></EmptyMedia>
-                <EmptyTitle>{isLoading ? 'Loading…' : 'No Interest Buyers'}</EmptyTitle>
-                <EmptyDescription>
-                  {requests.length === 0
-                    ? 'Requests from the website contact form and the admin login page will appear here.'
-                    : 'Nothing matches — try "Show created & declined" or clear the search.'}
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <NoData className="py-24" />
           ) : (
             <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
               <table className="data-table">
@@ -431,7 +419,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
                                 type="button"
                                 onClick={() => openCreate(r)}
                                 className="btn flex align-center"
-                                style={{ display: 'inline-flex', gap: '5px', padding: '6px 10px', fontSize: '11.5px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)', marginRight: '8px' }}
+                                style={{ display: 'inline-flex', gap: '5px', padding: '6px 10px', fontSize: '11.5px', fontWeight: 700, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)', marginRight: '8px' }}
                               >
                                 <UserPlus size={13} /> Create account
                               </button>
@@ -466,7 +454,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
                                 <button
                                   type="button"
                                   className="btn btn-secondary"
-                                  style={{ padding: '6px 12px', fontSize: '12px' }}
+                                  style={{ padding: '6px 12px', fontSize: '11px' }}
                                   disabled={savingId === r.id || (notesDraft[r.id] ?? '') === (r.notes ?? '')}
                                   onClick={() => updateRequest(r, null, notesDraft[r.id] ?? '')}
                                 >
@@ -488,13 +476,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
       ) : (
         <div className="glass-card" style={{ overflow: 'hidden' }}>
           {visibleAccounts.length === 0 ? (
-            <Empty className="py-24">
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><Building2 /></EmptyMedia>
-                <EmptyTitle>{isLoading ? 'Loading…' : 'No Accounts'}</EmptyTitle>
-                <EmptyDescription>Companies you create will appear here.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <NoData className="py-24" />
           ) : (
             <div className="table-container" style={{ border: 'none', borderRadius: 0 }}>
               <table className="data-table">
@@ -556,7 +538,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
                           {isOwn ? null : a.is_active ? (
                             confirmSuspendId === a.organization_id ? (
                               <span className="flex align-center" style={{ gap: '6px', justifyContent: 'flex-end' }}>
-                                <button type="button" className="btn" disabled={busy} onClick={() => setAccountActive(a, false)} style={{ padding: '6px 10px', fontSize: '11.5px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }}>
+                                <button type="button" className="btn" disabled={busy} onClick={() => setAccountActive(a, false)} style={{ padding: '6px 10px', fontSize: '11.5px', fontWeight: 700, backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }}>
                                   {busy ? 'Suspending…' : 'Confirm suspend'}
                                 </button>
                                 <button type="button" className="btn btn-secondary" onClick={() => setConfirmSuspendId(null)} style={{ padding: '6px 10px', fontSize: '11.5px' }}>Cancel</button>
@@ -644,7 +626,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
                     <span className="input-label">{label.toUpperCase()}</span>
                     <div className="flex align-center" style={{ gap: '8px' }}>
                       <input readOnly className="input-field font-mono" style={{ flex: 1, minWidth: 0 }} value={value} onFocus={(e) => e.currentTarget.select()} />
-                      <button type="button" className="btn btn-secondary flex align-center" style={{ gap: '4px', padding: '8px 10px' }} onClick={() => copy(label, value)}>
+                      <button type="button" className="btn btn-secondary flex align-center" style={{ gap: '4px', padding: '6px 12px' }} onClick={() => copy(label, value)}>
                         {copied === label ? <Check size={14} /> : <Copy size={14} />}
                       </button>
                     </div>
@@ -827,7 +809,7 @@ function AccessModal({ account, onClose, onChanged }: { account: AccountRow; onC
               </div>
             </div>
             <div className="flex align-center" style={{ gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
-              <button type="button" className="btn" disabled={busy === 'limits'} style={{ backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 800 }} onClick={saveLimits}>
+              <button type="button" className="btn" disabled={busy === 'limits'} style={{ backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 700 }} onClick={saveLimits}>
                 {busy === 'limits' ? 'Saving…' : 'Save limits'}
               </button>
               {saved && <span className="text-xs text-muted">Saved</span>}

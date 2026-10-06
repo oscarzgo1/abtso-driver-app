@@ -170,5 +170,5 @@ export const LABEL_META: Record<JourneyLabel, { text: string; color: string }> =
   moving: { text: 'Moving', color: '#16A34A' },
   stationary: { text: 'Stationary', color: '#D97706' },
   stopped: { text: 'Stopped', color: '#DC2626' },
-  no_signal: { text: 'No signal', color: '#64748B' },
+  no_signal: { text: 'No signal', color: '#888888' },
 };

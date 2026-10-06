@@ -126,7 +126,7 @@ export default function CostLedgerModal({ costs, settings, onClose, onChanged }:
             ))}
           </div>
           <div className="flex items-center mt-8" style={{ gap: '10px' }}>
-            <button type="button" className="btn btn-secondary" style={{ padding: '7px 14px', fontSize: '12px' }} onClick={saveTargets}>Save targets</button>
+            <button type="button" className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '11px' }} onClick={saveTargets}>Save targets</button>
             {targetsSaved && <span className="text-xs text-muted">Saved</span>}
           </div>
         </div>
@@ -186,10 +186,10 @@ export default function CostLedgerModal({ costs, settings, onClose, onChanged }:
             <input type="checkbox" checked={form.vat_applicable} onChange={e => set({ vat_applicable: e.target.checked })} /> VAT is charged on this cost
           </label>
           <div className="flex items-center mt-12" style={{ gap: '8px' }}>
-            <button type="button" className="btn flex items-center" disabled={busy} onClick={saveCost} style={{ gap: '6px', padding: '8px 14px', fontSize: '12.5px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }}>
+            <button type="button" className="btn flex items-center" disabled={busy} onClick={saveCost} style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700, backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }}>
               <Plus size={14} /> {busy ? 'Saving…' : editing ? 'Save changes' : 'Add cost'}
             </button>
-            {editing && <button type="button" className="btn btn-secondary" style={{ padding: '8px 14px', fontSize: '12.5px' }} onClick={() => { setForm(blank()); setEditing(false); }}>Cancel</button>}
+            {editing && <button type="button" className="btn btn-secondary" style={{ padding: '6px 12px', fontSize: '11px' }} onClick={() => { setForm(blank()); setEditing(false); }}>Cancel</button>}
           </div>
         </div>
 

@@ -1,10 +1,11 @@
+import TableFilter from '../components/ui/table-filter';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  CircleCheck, Phone, MapPin, MoreVertical, X, ChevronLeft, ChevronRight,
+  Phone, MapPin, MoreVertical, X, ChevronLeft, ChevronRight,
   Clock, Truck, Calendar, AlertTriangle, CheckCircle2, PauseCircle, ShieldAlert, TrendingUp,
 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '../components/ui/empty';
+import NoData from '../components/ui/no-data';
 import { SegmentedClockBar, clockTier } from '../components/ui/segmented-clock-bar';
 
 // ============================================================
@@ -928,14 +929,15 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
 
       {/* ── Shared search filter — persists across both views. ────── */}
       <div className="flex align-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
-        <div className="telemetry-search-wrap" style={{ minWidth: '220px' }}>
-          <input
-            type="text"
-            placeholder="Filter by driver name or employee code…"
-            value={driverSearch}
-            onChange={(e) => setDriverSearch(e.target.value)}
-          />
-        </div>
+        <TableFilter
+          groups={view === 'cockpit' ? [{
+            key: 'show', label: 'Show', single: true, neutral: 'all',
+            options: [{ value: 'all', label: 'All drivers' }, ...(Object.keys(KPI_LABEL) as Exclude<KpiFilter, 'all'>[]).map(k => ({ value: k, label: KPI_LABEL[k] }))],
+            selected: [kpiFilter],
+            onChange: (v) => setKpiFilter((v[0] ?? 'all') as KpiFilter),
+          }] : []}
+          search={{ value: driverSearch, onChange: setDriverSearch, placeholder: 'Filter by driver name or employee code…' }}
+        />
 
         {view === 'timesheet' && (
           <div className="flex align-center" style={{ gap: '8px', marginLeft: 'auto' }}>
@@ -985,23 +987,11 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
       {view === 'cockpit' && (
         rows.length === 0 && !isLoading ? (
           <div className="glass-card">
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><CircleCheck /></EmptyMedia>
-                <EmptyTitle>No Active Shifts</EmptyTitle>
-                <EmptyDescription>Duty status appears here once a driver clocks in.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <NoData />
           </div>
         ) : visibleRows.length === 0 ? (
           <div className="glass-card">
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><CheckCircle2 /></EmptyMedia>
-                <EmptyTitle>Nothing Matches {KPI_LABEL[kpiFilter as Exclude<KpiFilter, 'all'>]}</EmptyTitle>
-                <EmptyDescription>No driver currently on shift meets this condition.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <NoData />
           </div>
         ) : (
           <div className="table-container">
@@ -1163,13 +1153,7 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
       {view === 'timesheet' && (
         filteredWeeklyRows.length === 0 && !isWeekLoading ? (
           <div className="glass-card">
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon"><Calendar /></EmptyMedia>
-                <EmptyTitle>No Drivers Found</EmptyTitle>
-                <EmptyDescription>Active drivers will appear here once added under Driver Profiles.</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <NoData />
           </div>
         ) : (
           <div className="table-container">

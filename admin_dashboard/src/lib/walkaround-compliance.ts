@@ -20,6 +20,8 @@ export interface ComplianceCheck {
   check_type: WalkaroundCheckType;
   completed_at: string | null;
   duration_seconds: number | null;
+  overall_result?: string | null;
+  defect_note?: string | null;
 }
 
 export type CheckStatus = 'done' | 'rushed' | 'missing' | 'not_due';
@@ -37,10 +39,12 @@ export interface ShiftCompliance {
 
 export interface WalkaroundIssue {
   key: string;
-  kind: 'missing_start' | 'missing_end' | 'rushed';
+  kind: 'missing_start' | 'missing_end' | 'rushed' | 'defects';
   shift: ComplianceShift;
   checkType: WalkaroundCheckType;
   durationSeconds: number | null;
+  /** The driver's own words, for kind 'defects'. */
+  defectNote?: string | null;
   /** When the issue arose — shift start, shift end, or check completion. */
   at: string;
 }
@@ -100,6 +104,19 @@ export function walkaroundIssues(compliance: ShiftCompliance[]): WalkaroundIssue
           shift,
           checkType: type,
           durationSeconds: state.check.duration_seconds,
+          at: state.check.completed_at ?? shift.start_time,
+        });
+      }
+      // A submitted check that found defects needs someone to act on it,
+      // whether or not it was also rushed.
+      if (state.check?.overall_result === 'defects_found') {
+        issues.push({
+          key: `${state.check.id}:defects`,
+          kind: 'defects',
+          shift,
+          checkType: type,
+          durationSeconds: state.check.duration_seconds,
+          defectNote: state.check.defect_note,
           at: state.check.completed_at ?? shift.start_time,
         });
       }

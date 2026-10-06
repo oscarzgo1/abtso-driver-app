@@ -8,73 +8,8 @@ import '@maplibre/maplibre-gl-leaflet';
 import { FlowButton } from './components/ui/flow-button';
 import { ImageLightbox } from './components/ui/image-lightbox';
 import { Sidebar, SidebarBody, SidebarLink } from './components/ui/sidebar';
-import {
-  Users,
-  FileSpreadsheet, 
-  Clock, 
-  ShieldAlert, 
-  LogOut, 
-  Download, 
-  Check, 
-  Volume2, 
-  VolumeX,
-  RefreshCw,
-  Mail,
-  Lock,
-  Shield,
-  Bell,
-  MapPinned,
-  Container,
-  FileText,
-  User,
-  Search,
-  X,
-  ChevronDown,
-  Wand2,
-  ListChecks,
-  BarChart3,
-  AlertOctagon,
-  Moon,
-  Building2,
-  Calendar,
-  AlertTriangle,
-  CreditCard,
-  LocateFixed,
-  Gauge,
-  Filter,
-  SatelliteDish,
-  Truck,
-  IdCard,
-  Settings,
-  KeyRound,
-  Palette,
-  Warehouse,
-  Wrench,
-  Phone,
-  Sparkles,
-  CircleCheck,
-  CircleX,
-  ShieldCheck,
-  UploadCloud,
-  ChevronRight,
-  Fuel,
-  Scale,
-  ExternalLink,
-  BellOff,
-  MapPin,
-  CheckCircle2,
-  Trash2,
-  UserPlus,
-  UserX,
-  Pencil,
-  MoreVertical,
-  Receipt,
-  ParkingCircle,
-  CalendarDays,
-  Inbox
-} from 'lucide-react';
+import { Users, FileSpreadsheet, Clock, ShieldAlert, LogOut, Download, Check, Volume2, VolumeX, RefreshCw, Mail, Lock, Shield, Bell, MapPinned, Radio, Route, LayoutGrid, Container, Banknote, FileText, User, X, ChevronDown, ListChecks, BarChart3, AlertOctagon, Moon, Building2, Calendar, AlertTriangle, CreditCard, LocateFixed, Gauge, SatelliteDish, Truck, IdCard, Settings, KeyRound, Palette, Warehouse, Wrench, Phone, Sparkles, CircleCheck, CircleX, ShieldCheck, UploadCloud, ChevronRight, Fuel, Scale, ExternalLink, BellOff, MapPin, CheckCircle2, Trash2, UserPlus, UserX, Pencil, MoreVertical, Receipt, ParkingCircle, CalendarDays, Inbox } from 'lucide-react';
 import Papa from 'papaparse';
-import * as XLSX from 'xlsx';
 import { BrandLogo } from './components/ui/brand-logo';
 import type { BadgeDeltaDirection, BadgeDeltaTone } from './components/ui/badge-delta';
 import TableFilter, { type TableFilterGroup } from './components/ui/table-filter';
@@ -84,9 +19,10 @@ import { ActivityList } from './components/ui/activity-list';
 import { EarningsDateRangePicker } from './components/ui/earnings-date-range-picker';
 import { NotificationIcon, EyeToggleIcon, VolumeIcon, SaveIcon, DownloadIcon } from './components/ui/animated-state-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from './components/ui/empty';
+import NoData from './components/ui/no-data';
 import { Switch } from './components/ui/switch-button';
 import { ThemeToggle } from './components/ui/theme-toggle';
+import { riskIssuesByNumber, unroadworthyInUse, type RiskVehicleRow } from './lib/roadworthy';
 import FilterBar, { FilterType, FilterOperator, AnimateChangeInHeight, type Filter as AnalyticsFilter, type FilterOption } from './components/ui/filters';
 import Compliance from './pages/Compliance';
 import ComplianceDefects from './pages/ComplianceDefects';
@@ -95,6 +31,9 @@ import DriverHours from './pages/DriverHours';
 import { type ShiftLoad } from './components/ShiftLoadsEditor';
 import WalkAroundHistory from './pages/WalkAroundHistory';
 import EmployeeHolidays from './pages/EmployeeHolidays';
+import FillTemplateModal from './components/FillTemplateModal';
+import ExportPreviewModal, { type PreviewColumn, type PreviewRow } from './components/ExportPreviewModal';
+import { type PayrollShift, type DayRates } from './lib/payroll-data';
 import PlatformAccounts from './pages/PlatformAccounts';
 import SecuritySettings from './components/SecuritySettings';
 import PlanSettings from './components/PlanSettings';
@@ -103,6 +42,7 @@ import DispatchLoadsModal from './components/DispatchLoadsModal';
 import ShipmentsTracking from './components/ShipmentsTracking';
 import DeliveryHistory from './components/DeliveryHistory';
 import LiveTelemetryPanel from './components/LiveTelemetryPanel';
+import PayRulesSettings from './components/PayRulesSettings';
 import JourneyHistory from './pages/JourneyHistory';
 import { buildJourney, formatDuration, LABEL_META, type Ping } from './lib/journey';
 import LockedFeature from './components/LockedFeature';
@@ -779,7 +719,7 @@ export default function App() {
     }
     if (role === 'logistics') setActiveTab('dashboard');
   };
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'journeys' | 'compliance-defects' | 'walkaround-history' | 'accounts'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'live' | 'alerts' | 'drivers' | 'rates' | 'holidays' | 'analytics' | 'shipments' | 'compliance' | 'fleet-roadworthiness' | 'driver-hours' | 'compliance-defects' | 'walkaround-history' | 'accounts'>('dashboard');
   // Sidebar expand/collapse — controlled here (not left to the component's
   // own internal state) so the brand header can also switch between the
   // full wordmark and the icon-only mark based on the same flag.
@@ -867,7 +807,7 @@ export default function App() {
   // Same popup pattern for Settings — off the "Settings" sidebar button,
   // not a nav tab.
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
-  const [activeSettingsSection, setActiveSettingsSection] = useState<'company' | 'access-codes' | 'depots' | 'alerts' | 'fuel-bonus' | 'appearance' | 'security' | 'plan' | 'legal'>('company');
+  const [activeSettingsSection, setActiveSettingsSection] = useState<'company' | 'access-codes' | 'depots' | 'alerts' | 'fuel-bonus' | 'payroll' | 'appearance' | 'security' | 'plan' | 'legal'>('company');
 
   /// Resolves the signed-in user's department from public.user_roles.
   /// Matched on email: the deployed table is keyed by email and has no
@@ -1003,6 +943,8 @@ export default function App() {
   // driver's; when trailers get their own GPS trackers, this is where their
   // own coordinates take over (see trailerSource below).
   const [showTrailers, setShowTrailers] = useState(false);
+  // Live Map page has two tabs: the live view and the stored journeys.
+  const [liveSubTab, setLiveSubTab] = useState<'live' | 'journey'>('live');
   const trailerMarkersRef = useRef<Record<string, L.Marker>>({});
   const trailFittedFor = useRef<string | null>(null);
   const [gpsOfflineEvents, setGpsOfflineEvents] = useState<GpsOfflineEvent[]>([]);
@@ -1010,11 +952,19 @@ export default function App() {
   const [gpsPolicyForm, setGpsPolicyForm] = useState({ afterMinutes: '10', clockOutMinutes: '60' });
   const [isSavingGpsPolicy, setIsSavingGpsPolicy] = useState(false);
   const [gpsPolicyMessage, setGpsPolicyMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null);
+  // Office-assigned load each driver has right now (in progress wins over waiting).
+  const assignedLoadByDriver = useMemo(() => {
+    const out: Record<string, string> = {};
+    [...dispatchBoard].sort((a, b) => (a.status === 'in_progress' ? -1 : 1) - (b.status === 'in_progress' ? -1 : 1)).forEach(l => {
+      if (!out[l.driver_id]) out[l.driver_id] = l.vrid;
+    });
+    return out;
+  }, [dispatchBoard]);
   const noSignalDriverIds = useMemo(
     () => new Set(gpsOfflineEvents.filter(e => !e.resolved_at).map(e => e.driver_id)),
     [gpsOfflineEvents],
   );
-  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'gps_offline' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending' | 'walkaround' | 'holiday_pending' | 'access_requests' | 'risk_signoffs' | 'pin_reset'>('all');
+  const [alertCategoryFilter, setAlertCategoryFilter] = useState<'all' | 'gps_offline' | 'sos' | 'idle50' | 'fuel_anomaly' | 'fuel_pending' | 'parking_pending' | 'walkaround' | 'holiday_pending' | 'access_requests' | 'risk_signoffs' | 'unroadworthy_use' | 'pin_reset' | 'account_deletion'>('all');
   const [depots, setDepots] = useState<Depot[]>([]);
   const [, setFleetVehicles] = useState<FleetVehicle[]>([]);
   const [mileageByShift, setMileageByShift] = useState<Record<string, number>>({});
@@ -1049,6 +999,8 @@ export default function App() {
   const [newDepotLat, setNewDepotLat] = useState('');
   const [newDepotLng, setNewDepotLng] = useState('');
   const [newDepotRadius, setNewDepotRadius] = useState('150');
+  // When set, the depot form edits this depot instead of adding a new one.
+  const [editingDepotId, setEditingDepotId] = useState<string | null>(null);
   const [isLocatingDepot, setIsLocatingDepot] = useState(false);
   const [analyticsFilters, setAnalyticsFilters] = useState<AnalyticsFilter[]>([
     { id: 'default-period', type: FilterType.PERIOD, operator: FilterOperator.IS, value: ['Last 30 days'] },
@@ -1276,10 +1228,9 @@ export default function App() {
 
   // Report Filters
   const [reportEmployeeFilter, setReportEmployeeFilter] = useState('all');
-  // Driver search combo (visual text shown in the field vs. the underlying
-  // filter, which stays keyed by driver id so filtering logic is unaffected).
-  const [driverSearchQuery, setDriverSearchQuery] = useState('');
-  const [isDriverSearchOpen, setIsDriverSearchOpen] = useState(false);
+  // Free-text search in the Compensation Summary filter bar: matches
+  // employee, ID, agency, depot, vehicle, trailer, load, notes and more.
+  const [summarySearch, setSummarySearch] = useState('');
   const [reportDateStart, setReportDateStart] = useState('');
   const [reportDateEnd, setReportDateEnd] = useState('');
   const [showOnlyNightOutRequested, setShowOnlyNightOutRequested] = useState(false);
@@ -1287,6 +1238,13 @@ export default function App() {
   const [summaryMenuOpen, setSummaryMenuOpen] = useState(false);
   const [flagsMenuOpen, setFlagsMenuOpen] = useState(false);
   const [selectedShiftIds, setSelectedShiftIds] = useState<Set<string>>(new Set());
+  // Compensation Summary -> "Fill in the template" dialog
+  const [fillTemplateOpen, setFillTemplateOpen] = useState(false);
+  // Compensation Summary -> preview before Export CSV / Excel / Summary
+  const [exportPreview, setExportPreview] = useState<null | {
+    title: string; subtitle: string; columns: PreviewColumn[]; rows: PreviewRow[];
+    defaultFormat: 'csv' | 'xlsx'; fileBase: string; storageKey: string; flash: 'csv' | 'excel';
+  }>(null);
 
   // Unified Payroll Action drawer (Night Out / Bonus / Deductions).
   // `shift` is only populated in 'single' mode — a bulk selection has no
@@ -1422,6 +1380,10 @@ export default function App() {
       total_pay: 144.0,
       week_number: 28,
     },
+    // On shift right now (live map demo): trailer + load, trailer without a load, and a solo unit
+    { id: 'sh-live-1', driver_id: 'drv-1', driver_name: 'John Smith', driver_code: 'DRV-001', depot_name: 'Rossington Depot', start_time: new Date(Date.now() - 4 * 3600000).toISOString(), end_time: null, status: 'active', vehicle_number: 'NX25 HLT', trailer_number: 'TRL-7412', load_reference: 'NL-208841' } as unknown as Shift,
+    { id: 'sh-live-2', driver_id: 'drv-2', driver_name: 'David Jones', driver_code: 'DRV-002', depot_name: 'Wheatley Depot', start_time: new Date(Date.now() - 3 * 3600000).toISOString(), end_time: null, status: 'active', vehicle_number: 'LK24 BRV', trailer_number: 'TRL-7413', load_reference: null } as unknown as Shift,
+    { id: 'sh-live-3', driver_id: 'drv-3', driver_name: 'Robert Taylor', driver_code: 'DRV-003', depot_name: 'Rossington Depot', start_time: new Date(Date.now() - 2 * 3600000).toISOString(), end_time: null, status: 'active', vehicle_number: 'YN73 GHT', trailer_number: null, load_reference: null } as unknown as Shift,
   ];
 
   const mockLocations: LiveLocation[] = [
@@ -1444,6 +1406,16 @@ export default function App() {
       speed_mph: 42,
       last_ping: new Date().toISOString(),
       status: 'moving',
+    },
+    {
+      driver_id: 'drv-3',
+      driver_name: 'Robert Taylor',
+      driver_code: 'DRV-003',
+      latitude: 53.4990,
+      longitude: -1.1210,
+      speed_mph: 0,
+      last_ping: new Date().toISOString(),
+      status: 'stationary',
     },
   ];
 
@@ -2327,6 +2299,62 @@ export default function App() {
     }
   };
 
+  // ── Account deletion requests (migration 100) ──────────────
+  // An employee asks, from the app's login screen or settings, for their
+  // account and everything attached to it to be removed. It waits here until
+  // an administrator confirms; confirming deletes the data for good.
+  const [deletionRequests, setDeletionRequests] = useState<{
+    id: string;
+    driver_name: string | null;
+    driver_ref: string | null;
+    reason: string | null;
+    source: 'login' | 'app';
+    requested_at: string;
+  }[]>([]);
+  const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
+  const loadDeletionRequests = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const { data, error } = await supabase
+      .from('account_deletion_requests')
+      .select('id, driver_name, driver_ref, reason, source, requested_at')
+      .eq('organization_id', currentOrgId)
+      .eq('status', 'pending')
+      .order('requested_at', { ascending: false });
+    if (error) { console.error('loadDeletionRequests failed:', error.message); return; }
+    setDeletionRequests((data ?? []) as typeof deletionRequests);
+  }, [isMockMode, currentOrgId]);
+
+  useEffect(() => { loadDeletionRequests(); }, [loadDeletionRequests]);
+
+  useEffect(() => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const channel = supabase
+      .channel('realtime_account_deletion')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'account_deletion_requests' }, () => loadDeletionRequests())
+      .subscribe();
+    return () => { supabase!.removeChannel(channel); };
+  }, [isMockMode, currentOrgId, loadDeletionRequests]);
+
+  const confirmAccountDeletion = async (r: { id: string; driver_name: string | null; driver_ref: string | null }) => {
+    if (isMockMode || !supabase) return;
+    const who = `${r.driver_name ?? 'this employee'}${r.driver_ref ? ` (${r.driver_ref})` : ''}`;
+    if (!window.confirm(`Permanently delete ${who} and everything attached to the account — shifts, locations, walk-around checks, defect reports, receipts, holidays, rota and their sign-in?\n\nThis cannot be undone. Only continue once you are sure the request really came from them.`)) return;
+    setDeletingRequestId(r.id);
+    const { error } = await supabase.rpc('complete_account_deletion', { p_request_id: r.id });
+    setDeletingRequestId(null);
+    if (error) { showToast(`Could not delete the account: ${error.message}`, 'error'); return; }
+    showToast(`${who} and all their data have been deleted.`, 'success');
+    loadDeletionRequests();
+  };
+
+  const dismissAccountDeletion = async (id: string) => {
+    if (isMockMode || !supabase) return;
+    const { error } = await supabase.from('account_deletion_requests')
+      .update({ status: 'dismissed', handled_at: new Date().toISOString() }).eq('id', id);
+    if (error) { showToast(`Could not dismiss it: ${error.message}`, 'error'); return; }
+    loadDeletionRequests();
+  };
+
   // ── PIN reset requests (migration 065) ─────────────────────
   const [pinResetRequests, setPinResetRequests] = useState<{
     id: string;
@@ -2441,6 +2469,73 @@ export default function App() {
     }
     setRiskSignoffs(prev => prev.filter(r => r.id !== id));
   };
+
+  // ── Not-roadworthy units in use (derived, always live) ─────────
+  // The sign-off above only exists once a driver signs. This watches every
+  // open shift against the fleet register, so the office sees a unit or
+  // trailer that can't be on the road for as long as the driver has it,
+  // whether or not anyone signed.
+  const [unitRiskRows, setUnitRiskRows] = useState<RiskVehicleRow[]>([]);
+  const [criticalVehicleIds, setCriticalVehicleIds] = useState<string[]>([]);
+  const loadUnitRisk = useCallback(async () => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const [v, d] = await Promise.all([
+      supabase.from('vehicles').select('id, vehicle_number, vehicle_type, inspection_type, inspection_due_date, mot_due_date, tax_due_date, insurance_expiry_date, manual_vor').eq('organization_id', currentOrgId).eq('is_active', true),
+      supabase.from('incident_reports').select('vehicle_id, trailer_id').eq('organization_id', currentOrgId).eq('severity', 'critical_vor').neq('status', 'closed'),
+    ]);
+    if (!v.error) setUnitRiskRows((v.data ?? []) as RiskVehicleRow[]);
+    if (!d.error) setCriticalVehicleIds((d.data ?? []).flatMap((r: any) => [r.vehicle_id, r.trailer_id]).filter(Boolean) as string[]);
+  }, [isMockMode, currentOrgId]);
+
+  useEffect(() => {
+    loadUnitRisk();
+    if (isMockMode || !supabase || !currentOrgId) return;
+    const channel = supabase
+      .channel('realtime_unit_risk')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicles' }, () => loadUnitRisk())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'incident_reports' }, () => loadUnitRisk())
+      .subscribe();
+    // Dates roll over at midnight without any row changing.
+    const timer = setInterval(loadUnitRisk, 10 * 60 * 1000);
+    return () => { clearInterval(timer); supabase!.removeChannel(channel); };
+  }, [isMockMode, currentOrgId, loadUnitRisk]);
+
+  // Roadworthy icon -> Fleet Roadworthiness, opened on that exact unit/trailer.
+  const [fleetFocus, setFleetFocus] = useState<{ number: string; nonce: number } | null>(null);
+  // Status badge -> the Defect Registry, filtered to that registration.
+  const [defectFocus, setDefectFocus] = useState<{ number: string; nonce: number } | null>(null);
+  const openUnitStatus = useCallback((reg: string) => {
+    setDefectFocus({ number: reg, nonce: Date.now() });
+    setActiveTab('compliance-defects');
+  }, []);
+  const openFleetUnit = useCallback((number: string) => {
+    setFleetFocus({ number, nonce: Date.now() });
+    setActiveTab('fleet-roadworthiness');
+  }, []);
+
+  // Signed acceptances for units on the road (any review state), so the
+  // "Not Roadworthy In Use" card can show the driver's signature.
+  const [unitSignoffs, setUnitSignoffs] = useState<{ shift_id: string | null; number: string; signer_name: string; signature_svg: string; acknowledged_at: string }[]>([]);
+  useEffect(() => {
+    if (isMockMode || !supabase || !currentOrgId) return;
+    let cancelled = false;
+    supabase
+      .from('vehicle_risk_acknowledgements')
+      .select('shift_id, signer_name, signature_svg, acknowledged_at, vehicle:vehicles!vehicle_id(vehicle_number)')
+      .eq('organization_id', currentOrgId)
+      .gte('acknowledged_at', new Date(Date.now() - 30 * 86400000).toISOString())
+      .order('acknowledged_at', { ascending: false })
+      .limit(300)
+      .then(({ data }) => {
+        if (cancelled || !data) return;
+        setUnitSignoffs(data.map((r: any) => ({ shift_id: r.shift_id, number: (r.vehicle?.vehicle_number ?? '').toUpperCase(), signer_name: r.signer_name, signature_svg: r.signature_svg, acknowledged_at: r.acknowledged_at })));
+      });
+    return () => { cancelled = true; };
+    // riskSignoffs changes whenever a sign-off arrives or is reviewed.
+  }, [isMockMode, currentOrgId, riskSignoffs.length]);
+
+  const unitRisk = useMemo(() => riskIssuesByNumber(unitRiskRows, new Set(criticalVehicleIds)), [unitRiskRows, criticalVehicleIds]);
+  const unroadworthyUse = useMemo(() => unroadworthyInUse(shifts, unitRisk), [shifts, unitRisk]);
 
   // ── Platform owner (Accounts page) ──────────────────────────
   // is_platform_admin() (migration 061) — only the Tachyo team sees the
@@ -3186,31 +3281,55 @@ export default function App() {
       setDepotFormError('Longitude must be a number between -180 and 180.');
       return;
     }
+    if (!Number.isNaN(radius) && (radius < 25 || radius > 2000)) {
+      setDepotFormError('Radius must be between 25 m and 2,000 m.');
+      return;
+    }
 
     setIsSavingDepot(true);
     try {
-      const { error } = await supabase!.from('depots').insert({
-        organization_id: teamOrgInfo.id,
+      const fields = {
         name,
         address: newDepotAddress.trim() || null,
         latitude: lat,
         longitude: lng,
         geofence_radius_m: Number.isNaN(radius) || radius <= 0 ? 150 : radius,
-      });
+      };
+      const editing = editingDepotId;
+      const { error } = editing
+        ? await supabase!.from('depots').update(fields).eq('id', editing)
+        : await supabase!.from('depots').insert({ organization_id: teamOrgInfo.id, ...fields });
       if (error) throw error;
 
-      setNewDepotName('');
-      setNewDepotAddress('');
-      setNewDepotLat('');
-      setNewDepotLng('');
-      setNewDepotRadius('150');
-      showToast('Depot added.', 'success');
+      resetDepotForm();
+      showToast(editing ? 'Depot updated.' : 'Depot added.', 'success');
       await loadData();
     } catch (err: any) {
-      setDepotFormError(err?.message ?? 'Failed to add depot.');
+      setDepotFormError(err?.message ?? 'Failed to save the depot.');
     } finally {
       setIsSavingDepot(false);
     }
+  };
+
+  const resetDepotForm = () => {
+    setEditingDepotId(null);
+    setNewDepotName('');
+    setNewDepotAddress('');
+    setNewDepotLat('');
+    setNewDepotLng('');
+    setNewDepotRadius('150');
+    setDepotFormError('');
+  };
+
+  const startEditDepot = (d: { id: string; name: string; address?: string | null; latitude: number; longitude: number; geofence_radius_m: number }) => {
+    setEditingDepotId(d.id);
+    setNewDepotName(d.name);
+    setNewDepotAddress(d.address ?? '');
+    setNewDepotLat(String(d.latitude));
+    setNewDepotLng(String(d.longitude));
+    setNewDepotRadius(String(d.geofence_radius_m));
+    setDepotFormError('');
+    setTimeout(() => document.getElementById('depot-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50);
   };
 
   const handleDeleteDepot = (depotId: string, depotName: string) => {
@@ -4119,6 +4238,26 @@ export default function App() {
     await loadData();
   };
 
+  // Period, filters and search, as shown under the title of every export.
+  const exportSubtitle = () => {
+    const fmt = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    const parts = [
+      reportDateStart && reportDateEnd ? `${fmt(reportDateStart)} – ${fmt(reportDateEnd)}`
+        : reportDateStart ? `From ${fmt(reportDateStart)}`
+        : reportDateEnd ? `Up to ${fmt(reportDateEnd)}`
+        : 'All dates',
+    ];
+    if (reportAgencyFilter !== 'all') parts.push(reportAgencyFilter);
+    if (reportEmployeeFilter !== 'all') parts.push(employees.find(e => e.id === reportEmployeeFilter)?.full_name ?? 'One employee');
+    if (summarySearch.trim()) parts.push(`Search "${summarySearch.trim()}"`);
+    if (showOnlyNightOutRequested) parts.push('Night out requests only');
+    return parts.join(' · ');
+  };
+  const exportFileBase = (kind: string) => {
+    const stamp = reportDateStart && reportDateEnd ? `${reportDateStart}_to_${reportDateEnd}` : new Date().toISOString().split('T')[0];
+    return `${kind}_${stamp}`;
+  };
+
   const handleExportSummaryCSV = () => {
     const filteredShifts = getFilteredShifts();
     if (filteredShifts.length === 0) {
@@ -4126,58 +4265,54 @@ export default function App() {
       return;
     }
 
-    // 1. Safely aggregate data (identical logic to the Weekly Summary UI)
-    const summaryData: any = {};
+    // Same totals as the Weekly Summary view
+    const summaryData: Record<string, { name: string; code: string; agency: string; shifts: number; hours: number; nightOuts: number; nightOutPay: number; extras: number; deductions: number; gross: number }> = {};
     filteredShifts.forEach(shift => {
-       const { grossPay, noAmt, extrasAmt, liveHours } = getShiftFinancials(shift);
+       const { grossPay, noAmt, extrasAmt, deductionAmt, liveHours } = getShiftFinancials(shift);
        const id = shift.driver_id;
        if (!summaryData[id]) {
            summaryData[id] = {
-               driver_name: shift.driver_name,
+               name: shift.driver_name || 'Driver',
+               code: shift.driver_code || '',
                agency: employeeRates[id]?.agency_name || 'Direct',
-               total_hours: 0,
-               total_gross: 0,
-               total_night_outs: 0,
-               total_extras: 0,
-               shift_count: 0
+               shifts: 0, hours: 0, nightOuts: 0, nightOutPay: 0, extras: 0, deductions: 0, gross: 0,
            };
        }
-       summaryData[id].total_hours += (liveHours || 0);
-       summaryData[id].total_gross += grossPay;
-       summaryData[id].total_extras += extrasAmt;
-       summaryData[id].total_night_outs += (noAmt > 0 ? 1 : 0);
-       
-       if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) {
-           summaryData[id].shift_count += 1;
-       }
+       const row = summaryData[id];
+       row.hours += (liveHours || 0);
+       row.gross += grossPay;
+       row.extras += extrasAmt;
+       row.deductions += deductionAmt;
+       row.nightOutPay += noAmt;
+       row.nightOuts += (noAmt > 0 ? 1 : 0);
+       if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) row.shifts += 1;
     });
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    const rows = Object.values(summaryData)
+      .map(r => ({ ...r, hours: r2(r.hours), gross: r2(r.gross), extras: r2(r.extras), deductions: r2(r.deductions), nightOutPay: r2(r.nightOutPay) }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-    // 2. Construct CSV Content
-    const headers = ["Employee Name", "Agency", "Shifts Logged", "Total Hours", "Night Outs", "Extras (£)", "Gross Pay (£)"];
-    const rows = Object.values(summaryData).map((row: any) => [
-       `"${row.driver_name}"`,
-       `"${row.agency}"`,
-       row.shift_count,
-       row.total_hours.toFixed(2),
-       row.total_night_outs,
-       row.total_extras.toFixed(2),
-       row.total_gross.toFixed(2)
-    ]);
-
-    const csvContent = [
-       headers.join(","), 
-       ...rows.map(r => r.join(","))
-    ].join("\n");
-
-    // 3. Trigger Download
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.setAttribute("href", url);
-    link.setAttribute("download", `Payroll_Summary_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    setExportPreview({
+      title: 'Payroll summary',
+      subtitle: exportSubtitle(),
+      columns: [
+        { key: 'name', label: 'Employee Name' },
+        { key: 'code', label: 'Employee ID' },
+        { key: 'agency', label: 'Agency' },
+        { key: 'shifts', label: 'Shifts Logged', kind: 'number' },
+        { key: 'hours', label: 'Total Hours', kind: 'hours' },
+        { key: 'nightOuts', label: 'Night Outs', kind: 'number' },
+        { key: 'nightOutPay', label: 'Night Out (£)', kind: 'money' },
+        { key: 'extras', label: 'Extras (£)', kind: 'money' },
+        { key: 'deductions', label: 'Deductions (£)', kind: 'money' },
+        { key: 'gross', label: 'Gross Pay (£)', kind: 'money' },
+      ],
+      rows,
+      defaultFormat: 'csv',
+      fileBase: exportFileBase('Payroll_Summary'),
+      storageKey: 'comp-summary',
+      flash: 'csv',
+    });
   };
 
   // Export Drivers — the full current roster's non-secret fields. PINs are
@@ -4212,124 +4347,6 @@ export default function App() {
     link.download = `drivers-export-${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
-  };
-
-  const handleFillExcelTemplate = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const filteredShifts = getFilteredShifts();
-
-    // 1. Build normalized summary dictionary
-    const summaryData: any = {};
-    filteredShifts.forEach(shift => {
-       const { noAmt, extrasAmt, liveHours, rate } = getShiftFinancials(shift);
-       const id = shift.driver_id;
-       if (!summaryData[id]) {
-           summaryData[id] = {
-               driver_name: shift.driver_name || '',
-               total_hours: 0,
-               total_extras: 0,
-               night_out_val: 0,
-               shift_count: 0,
-               rates: []
-           };
-       }
-       
-       const isOngoing = !shift.end_time && shift.status !== 'completed';
-       const calculatedLiveHours = isOngoing ? ((Date.now() - new Date(shift.start_time).getTime()) / (1000 * 60 * 60)) : (shift.total_hours || 0);
-       
-       summaryData[id].total_hours += (liveHours ?? calculatedLiveHours);
-       summaryData[id].total_extras += extrasAmt;
-       summaryData[id].night_out_val += noAmt;
-       
-       const rateToUse = Number(shift.effective_rate) || Number(shift.base_hourly_rate) || Number(rate) || 0;
-       if (rateToUse > 0) summaryData[id].rates.push(rateToUse);
-
-       if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) {
-           summaryData[id].shift_count += 1;
-       }
-    });
-
-    // Helper function for flexible fuzzy name matching
-    const normalize = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const workbook = XLSX.read(data, { type: 'array', cellStyles: true });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        
-        const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1:Z200');
-        let matchCount = 0;
-
-        // Scan Column A (R0 to R_max)
-        for (let R = range.s.r; R <= range.e.r; ++R) {
-          const cellA_address = XLSX.utils.encode_cell({ r: R, c: 0 }); // Column A
-          const cellA = worksheet[cellA_address];
-
-          if (cellA && cellA.v && typeof cellA.v === 'string') {
-            const rawCellVal = cellA.v.trim();
-            const normCellVal = normalize(rawCellVal);
-
-            if (!normCellVal) continue;
-
-            // Search in calculated summary with flexible name check
-            const matchedDriver: any = Object.values(summaryData).find((d: any) => {
-               const normDriver = normalize(d.driver_name);
-               if (normDriver === normCellVal) return true;
-               
-               // Check reversed First/Last order
-               const parts = d.driver_name.trim().split(/\s+/);
-               if (parts.length >= 2) {
-                  const reversed = normalize(`${parts[parts.length - 1]} ${parts.slice(0, -1).join(' ')}`);
-                  if (reversed === normCellVal) return true;
-               }
-               return false;
-            });
-
-            if (matchedDriver) {
-               let avgRate = 0;
-               if (matchedDriver.rates.length > 0) {
-                  avgRate = Number((matchedDriver.rates.reduce((a: number, b: number) => a + b, 0) / matchedDriver.rates.length).toFixed(2));
-               }
-
-               const totalExtraMoney = Number((matchedDriver.total_extras + matchedDriver.night_out_val).toFixed(2));
-
-               // Safely update specific cell values directly without breaking worksheet structure
-               const updateCell = (cIdx: number, val: any) => {
-                  const addr = XLSX.utils.encode_cell({ r: R, c: cIdx });
-                  if (!worksheet[addr]) worksheet[addr] = { t: 'n', v: val };
-                  else {
-                     worksheet[addr].v = val;
-                     worksheet[addr].t = typeof val === 'number' ? 'n' : 's';
-                  }
-               };
-
-               updateCell(2, matchedDriver.shift_count); // Col C: Shifts
-               updateCell(4, Number(matchedDriver.total_hours.toFixed(2))); // Col E: Hours
-               if (avgRate > 0) updateCell(5, avgRate); // Col F: Rate
-               if (totalExtraMoney !== 0) updateCell(6, totalExtraMoney); // Col G: Extra
-
-               matchCount++;
-            }
-          }
-        }
-
-        XLSX.writeFile(workbook, `Filled_Payment_List_${new Date().toISOString().split('T')[0]}.xlsx`);
-        showToast(`Template injection complete — matched and injected data for ${matchCount} employees.`, 'success');
-
-      } catch (error: any) {
-        showToast("Error processing Excel file: " + error.message, 'error');
-      } finally {
-        if (event.target) {
-          event.target.value = '';
-        }
-      }
-    };
-    reader.readAsArrayBuffer(file);
   };
 
   // ── Rates & Night Out Handlers ────────────────────────────────
@@ -4499,18 +4516,38 @@ export default function App() {
 
   // ── CSV & Excel Export Functions ────────────────────────────
   const getFilteredShifts = () => {
+    const searchTerms = summarySearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const rawFiltered = shifts.filter(s => {
       // Night Out Requested Filter
       if (showOnlyNightOutRequested) {
-        const isReq = s.night_out_requested === true || 
-                      (s as any).has_requested_night_out === true || 
+        const isReq = s.night_out_requested === true ||
+                      (s as any).has_requested_night_out === true ||
                       s.night_out_status === 'pending';
         if (!isReq) return false;
       }
 
       // Employee Filter
       if (reportEmployeeFilter !== 'all' && s.driver_id !== reportEmployeeFilter) return false;
-      
+
+      // Search: every word typed must appear somewhere on the shift
+      if (searchTerms.length > 0) {
+        const start = new Date(s.start_time);
+        const noAmt = Number(s.night_out_allowance ?? s.night_out_amount) || 0;
+        const haystack = [
+          s.driver_name, s.driver_code, employeeRates[s.driver_id]?.agency_name || 'Direct', s.depot_name,
+          s.vehicle_number, s.trailer_number, s.load_reference, s.carrier_name,
+          ...(s.loads ?? []).map(l => l.load_reference),
+          s.extras_note, s.deduction_reason, s.payroll_notes,
+          (noAmt > 0 || s.night_out_status === 'pending' || s.night_out_status === 'approved') ? 'night out n/o' : '',
+          s.night_out_status === 'pending' ? 'requested pending' : '',
+          Number(s.extras_amount) ? 'bonus extras' : '',
+          Number(s.deduction_amount) ? 'deduction' : '',
+          !s.end_time ? 'active ongoing open no clock-out' : '',
+          start.toLocaleDateString('en-GB'), start.toLocaleDateString('en-GB', { weekday: 'long', month: 'long' }),
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (!searchTerms.every(t => haystack.includes(t))) return false;
+      }
+
       // Agency Filter
       if (reportAgencyFilter !== 'all') {
         const drvRate = employeeRates[s.driver_id];
@@ -4576,7 +4613,7 @@ export default function App() {
             // Proportional split is correct for fixed flat rates
             part1.total_pay = Number((Number(s.total_pay) * (hours1 / totalHrs)).toFixed(2));
             part2.total_pay = Number((Number(s.total_pay) - part1.total_pay).toFixed(2));
-            
+
             // Preserve the original full fixed rate explicitly for UI rendering
             const fullFixedRate = Number(s.effective_rate) || Number(s.base_hourly_rate) || 150.00;
             part1.effective_rate = fullFixedRate;
@@ -4587,10 +4624,10 @@ export default function App() {
             // Exact mathematical split for hourly rates
             const extraTotal = (Number(s.extras_amount) || 0) + (Number(s.night_out_allowance ?? s.night_out_amount) || 0);
             const historicalBasePay = Number(s.total_pay) - extraTotal;
-            
+
             const sunRate = Number(drvProfile?.sunday_rate) || Number(drvProfile?.sun_rate) || 18.00;
             const basePart1 = hours1 * sunRate;
-            
+
             // Safeguard: cap part 1 base pay at total available base pay
             const actualBasePart1 = Math.min(basePart1, Math.max(0, historicalBasePay));
             const actualBasePart2 = Math.max(0, historicalBasePay - actualBasePart1);
@@ -4600,11 +4637,11 @@ export default function App() {
 
             part1.total_pay = Number((actualBasePart1 + extraPart1).toFixed(2));
             part2.total_pay = Number((actualBasePart2 + extraPart2).toFixed(2));
-            
+
             // Override rates so getShiftFinancials renders them explicitly in the UI
             part1.base_hourly_rate = sunRate;
             part1.effective_rate = sunRate;
-            
+
             const impliedMonRate = hours2 > 0 ? (actualBasePart2 / hours2) : 16.00;
             part2.base_hourly_rate = Number(impliedMonRate.toFixed(2));
             part2.effective_rate = part2.base_hourly_rate;
@@ -4788,79 +4825,114 @@ export default function App() {
     };
   };
 
-  const exportCSV = () => {
+  // Every shift in the shape "Fill in the template" needs, with the pay
+  // getShiftFinancials() already shows in the Compensation Summary, so the
+  // filled spreadsheet always adds up to the same total.
+  const allPayrollShifts = useMemo<PayrollShift[]>(() => shifts.map(s => {
+    const fin = getShiftFinancials(s);
+    return {
+      id: s.id,
+      driver_id: s.driver_id,
+      driver_name: s.driver_name || 'Driver',
+      driver_code: s.driver_code || '',
+      agency: fin.agency,
+      depot: s.depot_name || '',
+      rate_type: fin.isFixedRate ? 'Fixed' : 'Hourly',
+      start_time: s.start_time,
+      end_time: s.end_time ?? null,
+      status: s.status ?? null,
+      total_hours: Number(fin.liveHours) || 0,
+      total_pay: Number(fin.grossPay) || 0,
+      night_out: fin.noAmt,
+      night_out_status: s.night_out_status ?? null,
+      extras: fin.extrasAmt,
+      deductions: fin.deductionAmt,
+      vehicle: s.vehicle_number || '',
+      trailer: s.trailer_number || '',
+      load_reference: s.load_reference || '',
+      rate_breakdown: (s as any).rate_breakdown ?? null,
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [shifts, employeeRates]);
+
+  const payrollRates = useMemo(() => {
+    const out: Record<string, DayRates> = {};
+    for (const [id, prof] of Object.entries(employeeRates)) {
+      const r = prof as any;
+      out[id] = { mf: Number(r?.mon_fri_rate) || 0, sat: Number(r?.saturday_rate ?? r?.sat_rate) || 0, sun: Number(r?.sunday_rate ?? r?.sun_rate) || 0 };
+    }
+    return out;
+  }, [employeeRates]);
+
+  // Export CSV / Export Excel: one row per shift, previewed before download.
+  const openShiftExport = (format: 'csv' | 'xlsx') => {
     const filtered = getFilteredShifts();
-    const exportData = filtered.map(s => {
-      const { rate, isFixedRate, noAmt, extrasAmt, extrasNote, deductionAmt, deductionReason, grossPay, agency, hasRateSnapshot, rateSnapshotTimestamp, isMicroShift } = getShiftFinancials(s);
-      return {
-        'Employee Name': s.driver_name,
-        'Employee ID': s.driver_code,
-        'Agency': agency,
-        'Base': s.depot_name || 'N/A',
-        'Start Time': new Date(s.start_time).toLocaleString(),
-        'End Time': s.end_time ? new Date(s.end_time).toLocaleString() : 'Active',
-        'Hours Worked': (s.total_hours || 0).toFixed(2),
-        'Effective Rate': isFixedRate ? `£${rate.toFixed(2)} (Fixed/Shift)` : `£${rate.toFixed(2)}/hr`,
-        'Rate Locked': hasRateSnapshot && rateSnapshotTimestamp ? new Date(rateSnapshotTimestamp).toLocaleDateString('en-GB') : '',
-        'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
-        'Night Out Allowance (£)': noAmt.toFixed(2),
-        'Bonus (£)': extrasAmt.toFixed(2),
-        'Bonus Note': extrasNote || '',
-        'Deduction (£)': deductionAmt.toFixed(2),
-        'Deduction Reason': deductionReason || '',
-        'Ignored Test Shift': isMicroShift ? 'YES' : '',
-        'Gross Pay (£)': grossPay.toFixed(2),
-      };
-    });
-
-    const csv = Papa.unparse(exportData);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `Payroll_Report_${new Date().toISOString().split('T')[0]}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const exportExcel = () => {
-    const filtered = getFilteredShifts();
-    const exportData = filtered.map(s => {
-      const { rate, isFixedRate, noAmt, extrasAmt, extrasNote, grossPay, agency } = getShiftFinancials(s);
-      return {
-        'Driver Name': s.driver_name,
-        'Driver ID': s.driver_code,
-        'Agency': agency,
-        'Depot Location': s.depot_name || 'N/A',
-        'Shift Start': new Date(s.start_time).toLocaleString(),
-        'Shift End': s.end_time ? new Date(s.end_time).toLocaleString() : 'In Progress',
-        'Hours': s.total_hours || 0,
-        'Rate': isFixedRate ? `£${rate.toFixed(2)} (Fixed/Shift)` : `£${rate.toFixed(2)}/hr`,
-        'Night Out Status': (s.night_out_status || 'none').toUpperCase(),
-        'Night Out Allowance (£)': noAmt,
-        'Extras (£)': extrasAmt,
-        'Extras Note': extrasNote || '',
-        'Gross Pay (£)': grossPay,
-      };
-    });
-
-    const worksheet = XLSX.utils.json_to_sheet(exportData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Payroll Shifts');
-    
-    // Auto-fit column widths
-    const maxLen = exportData.reduce((w, row: any) => {
-      Object.keys(row).forEach((key, i) => {
-        const val = row[key]?.toString() || '';
-        w[i] = Math.max(w[i] || 0, val.length, key.length);
+    if (filtered.length === 0) {
+      showToast('No shifts match the current filters.', 'error');
+      return;
+    }
+    const day = (iso: string) => new Date(iso).toLocaleDateString('en-GB');
+    const time = (iso: string) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    const rows: PreviewRow[] = [...filtered]
+      .sort((a, b) => (a.driver_name || '').localeCompare(b.driver_name || '') || a.start_time.localeCompare(b.start_time))
+      .map(s => {
+        const { rate, isFixedRate, noAmt, extrasAmt, extrasNote, deductionAmt, deductionReason, grossPay, agency, hasRateSnapshot, rateSnapshotTimestamp, isMicroShift } = getShiftFinancials(s);
+        return {
+          name: s.driver_name || 'Driver',
+          code: s.driver_code || '',
+          agency,
+          depot: s.depot_name || '',
+          date: day(s.start_time),
+          start: time(s.start_time),
+          end: s.end_time ? (day(s.end_time) === day(s.start_time) ? time(s.end_time) : `${day(s.end_time)} ${time(s.end_time)}`) : 'Active',
+          hours: Math.round((s.total_hours || 0) * 100) / 100,
+          rate: Math.round(rate * 100) / 100,
+          rateType: isFixedRate ? 'Fixed per shift' : 'Hourly',
+          rateLocked: hasRateSnapshot && rateSnapshotTimestamp ? new Date(rateSnapshotTimestamp).toLocaleDateString('en-GB') : '',
+          noStatus: (s.night_out_status || 'none') === 'none' ? '' : (s.night_out_status || '').replace(/^./, c => c.toUpperCase()),
+          nightOut: noAmt,
+          bonus: extrasAmt,
+          bonusNote: extrasNote || '',
+          deduction: deductionAmt,
+          deductionReason: deductionReason || '',
+          ignored: isMicroShift ? 'Yes' : '',
+          gross: Math.round(grossPay * 100) / 100,
+        };
       });
-      return w;
-    }, [] as number[]);
-    worksheet['!cols'] = maxLen.map(len => ({ wch: len + 3 }));
 
-    XLSX.writeFile(workbook, `Payroll_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
+    setExportPreview({
+      title: 'Payroll report',
+      subtitle: exportSubtitle(),
+      columns: [
+        { key: 'name', label: 'Employee Name' },
+        { key: 'code', label: 'Employee ID' },
+        { key: 'agency', label: 'Agency' },
+        { key: 'depot', label: 'Depot' },
+        { key: 'date', label: 'Date' },
+        { key: 'start', label: 'Clock In' },
+        { key: 'end', label: 'Clock Out' },
+        { key: 'hours', label: 'Hours Worked', kind: 'hours' },
+        { key: 'rate', label: 'Rate (£)', kind: 'money' },
+        { key: 'rateType', label: 'Rate Type' },
+        { key: 'rateLocked', label: 'Rate Locked' },
+        { key: 'noStatus', label: 'Night Out Status' },
+        { key: 'nightOut', label: 'Night Out (£)', kind: 'money' },
+        { key: 'bonus', label: 'Bonus (£)', kind: 'money' },
+        { key: 'bonusNote', label: 'Bonus Note' },
+        { key: 'deduction', label: 'Deduction (£)', kind: 'money' },
+        { key: 'deductionReason', label: 'Deduction Reason' },
+        { key: 'ignored', label: 'Ignored Test Shift' },
+        { key: 'gross', label: 'Gross Pay (£)', kind: 'money' },
+      ],
+      rows,
+      defaultFormat: format,
+      fileBase: exportFileBase('Payroll_Report'),
+      storageKey: 'comp-shifts',
+      flash: format === 'csv' ? 'csv' : 'excel',
+    });
   };
+  const exportCSV = () => openShiftExport('csv');
+  const exportExcel = () => openShiftExport('xlsx');
 
   // Clicking a driver in the telemetry panel centres the map on them.
   const focusDriverOnMap = useCallback((driverId: string) => {
@@ -4879,7 +4951,7 @@ export default function App() {
   // map, using the same labelling as Journey History. Redraws whenever the
   // live positions refresh, so it grows as the driver moves.
   useEffect(() => {
-    if (activeTab !== 'live' || !trailDriverId || isMockMode || !supabase) {
+    if (activeTab !== 'live' || liveSubTab !== 'live' || !trailDriverId || isMockMode || !supabase) {
       trailLayerRef.current?.clearLayers();
       return;
     }
@@ -4932,7 +5004,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [activeTab, trailDriverId, liveLocations, shifts]);
+  }, [activeTab, liveSubTab, trailDriverId, liveLocations, shifts]);
 
   // Leaving the live tab or the driver clocking out ends the trail.
   useEffect(() => {
@@ -4941,7 +5013,7 @@ export default function App() {
 
   // ── Leaflet Map Component Implementation ────────────────────
   useEffect(() => {
-    if (!isAuthenticated || activeTab !== 'live') {
+    if (!isAuthenticated || activeTab !== 'live' || liveSubTab !== 'live') {
       // Clean up map instance when tab or auth changes
       if (mapRef.current) {
         mapRef.current.remove();
@@ -4949,6 +5021,9 @@ export default function App() {
         trailLayerRef.current = null;
         trailFittedFor.current = null;
         trailerMarkersRef.current = {};
+        // Markers belong to the map that was just destroyed; keep none, so
+        // they are drawn again on the next map.
+        markersRef.current = {};
         depotLayersRef.current = [];
       }
       return;
@@ -5139,7 +5214,7 @@ export default function App() {
       }
     });
 
-  }, [isAuthenticated, activeTab, liveLocations, alerts, depots, shifts, noSignalDriverIds, showTrailers]);
+  }, [isAuthenticated, activeTab, liveSubTab, liveLocations, alerts, depots, shifts, noSignalDriverIds, showTrailers]);
 
   // ── Render login Page if Unauthenticated ───────────────────
   // ── Two-step sign-in code ─────────────────────────────────
@@ -5650,7 +5725,7 @@ export default function App() {
   // Includes fuel/parking items still awaiting review — the Alert Panel
   // (Alert Monitors) is now the only place those get approved, so the
   // "needs attention" badge belongs on this nav item, not Analytics'.
-  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + gpsOfflineEvents.filter(e => !e.acknowledged).length + (hasFeature('fuel_audit') ? pendingFuelReceiptsCount : 0) + (hasFeature('payroll_rates') ? pendingParkingExpensesCount : 0) + walkaroundIssuesToday + holidayRequests.length + newAccessRequests.length + riskSignoffs.length + pinResetRequests.length;
+  const activeAlertsCount = alerts.filter(a => !a.acknowledged).length + gpsOfflineEvents.filter(e => !e.acknowledged).length + (hasFeature('fuel_audit') ? pendingFuelReceiptsCount : 0) + (hasFeature('payroll_rates') ? pendingParkingExpensesCount : 0) + walkaroundIssuesToday + holidayRequests.length + newAccessRequests.length + riskSignoffs.length + unroadworthyUse.length + pinResetRequests.length + deletionRequests.length;
   const pendingNightOutsCount = shifts.filter(s => s.night_out_status === 'pending').length;
 
   return (
@@ -5692,11 +5767,11 @@ export default function App() {
                   type="button"
                   onClick={() => setIsDispatchExpanded(v => !v)}
                   aria-expanded={isDispatchExpanded}
-                  className={`nav-item ${(activeTab === 'dashboard' || activeTab === 'live' || activeTab === 'journeys' || activeTab === 'shipments') ? 'active' : ''}`}
+                  className={`nav-item ${(activeTab === 'dashboard' || activeTab === 'live' || activeTab === 'shipments') ? 'active' : ''}`}
                   style={{ width: '100%', borderTop: 'none', borderRight: 'none', borderBottom: 'none' }}
                 >
                   <span className="nav-icon">
-                    <Truck size={18} />
+                    <LayoutGrid size={16} strokeWidth={1.75} />
                     {userRole === 'payroll_admin' && pendingLoadsCount > 0 && (
                       <span className="nav-count-badge" title={`${pendingLoadsCount} load${pendingLoadsCount === 1 ? '' : 's'} awaiting a rate`}>
                         {pendingLoadsCount > 9 ? '9+' : pendingLoadsCount}
@@ -5722,7 +5797,6 @@ export default function App() {
                         {([
                           ['dashboard', 'Dashboard', 0] as const,
                           ['live', 'Live Map', 0] as const,
-                          ['journeys', 'Journey History', 0] as const,
                           ...(userRole === 'payroll_admin' ? [['shipments', 'Shipments', pendingLoadsCount] as const] : []),
                         ]).map(([tab, label, count]) => (
                           <button
@@ -5759,7 +5833,7 @@ export default function App() {
                   onClick: () => setActiveTab('alerts'),
                   icon: (
                     <span className="nav-icon">
-                      <Bell size={18} />
+                      <Bell size={16} strokeWidth={1.75} />
                       {activeAlertsCount > 0 && (
                         <span className="nav-count-badge" title={`${activeAlertsCount} item${activeAlertsCount === 1 ? '' : 's'} needing attention`}>
                           {activeAlertsCount > 9 ? '9+' : activeAlertsCount}
@@ -5790,7 +5864,7 @@ export default function App() {
                   style={{ width: '100%', borderTop: 'none', borderRight: 'none', borderBottom: 'none' }}
                 >
                   <span className="nav-icon">
-                    <IdCard size={18} />
+                    <Users size={16} strokeWidth={1.75} />
                     {pendingNightOutsCount + holidayRequests.length > 0 && (
                       <span className="nav-count-badge" title={`${pendingNightOutsCount + holidayRequests.length} request${pendingNightOutsCount + holidayRequests.length === 1 ? '' : 's'} pending`}>
                         {pendingNightOutsCount + holidayRequests.length > 9 ? '9+' : pendingNightOutsCount + holidayRequests.length}
@@ -5816,7 +5890,7 @@ export default function App() {
                         {([
                           ['drivers', 'Employee Database', 0] as const,
                           ...(userRole === 'payroll_admin' ? [['rates', 'Compensation Summary', pendingNightOutsCount] as const] : []),
-                          ['holidays', 'Employee Holidays', holidayRequests.length] as const,
+                          ['holidays', 'Employees Schedule', holidayRequests.length] as const,
                         ]).map(([tab, label, count]) => (
                           <button
                             key={tab}
@@ -5860,7 +5934,7 @@ export default function App() {
                   style={{ width: '100%', borderTop: 'none', borderRight: 'none', borderBottom: 'none' }}
                 >
                   <span className="nav-icon">
-                    <ShieldCheck size={18} />
+                    <ShieldCheck size={16} strokeWidth={1.75} />
                     {complianceAlertCount > 0 && (
                       <span className="nav-count-badge" title={`${complianceAlertCount} compliance item${complianceAlertCount === 1 ? '' : 's'} need attention`}>
                         {complianceAlertCount > 9 ? '9+' : complianceAlertCount}
@@ -5925,7 +5999,7 @@ export default function App() {
                     onClick: () => setActiveTab('analytics'),
                     icon: (
                       <span className="nav-icon">
-                        <BarChart3 size={18} />
+                        <BarChart3 size={16} strokeWidth={1.75} />
                         {!hasFeature('analytics') && <Lock size={10} style={{ position: 'absolute', right: '-3px', bottom: '-3px', color: 'var(--brand-red)' }} />}
                       </span>
                     ),
@@ -5944,7 +6018,7 @@ export default function App() {
                     onClick: () => setActiveTab('accounts'),
                     icon: (
                       <span className="nav-icon">
-                        <Inbox size={18} />
+                        <Inbox size={16} strokeWidth={1.75} />
                         {newAccessRequests.length > 0 && (
                           <span className="nav-count-badge" title={`${newAccessRequests.length} new interest buyer${newAccessRequests.length === 1 ? '' : 's'}`}>
                             {newAccessRequests.length > 9 ? '9+' : newAccessRequests.length}
@@ -5982,7 +6056,7 @@ export default function App() {
                     href: '#',
                     active: settingsModalOpen,
                     onClick: () => setSettingsModalOpen(true),
-                    icon: <span className="nav-icon"><Settings size={18} /></span>,
+                    icon: <span className="nav-icon"><Settings size={16} strokeWidth={1.75} /></span>,
                   }}
                   className={`nav-item ${settingsModalOpen ? 'active' : ''}`}
                   labelClassName="text-inherit dark:text-inherit"
@@ -6007,7 +6081,7 @@ export default function App() {
                 label: 'Log out',
                 href: '#',
                 onClick: handleLogout,
-                icon: <span className="nav-icon"><LogOut size={18} /></span>,
+                icon: <span className="nav-icon"><LogOut size={16} strokeWidth={1.75} /></span>,
               }}
               className="nav-item text-error"
               labelClassName="text-inherit dark:text-inherit"
@@ -6031,6 +6105,9 @@ export default function App() {
             fuelCostByShift={approvedFuelCostByShift}
             dispatchLoads={dispatchBoard}
             showFinancials={userRole === 'payroll_admin'}
+            unitRisk={unitRisk}
+            onOpenFleet={openFleetUnit}
+            onAssign={(driverId) => { setDispatchDriverId(driverId); setIsDispatchOpen(true); }}
             onNavigate={setActiveTab}
           />
         )}
@@ -6039,10 +6116,25 @@ export default function App() {
           <div className="flex-1 grid gap-24" style={{ gridTemplateRows: 'auto 1fr', minHeight: 0 }}>
             <div>
               <h2 className="text-xl font-black text-primary m-0">LIVE MAP</h2>
-              <p className="text-xs text-muted m-0 mt-4">Every driver's last known position with their tractor and trailer, depots and active alerts.</p>
+              <p className="text-xs text-muted m-0 mt-4">
+                {liveSubTab === 'live'
+                  ? "Every driver's last known position with their tractor and trailer, depots and active alerts."
+                  : 'Pick a driver and dates to replay their journey. Every shift is kept.'}
+              </p>
+              <div className="live-subtabs" role="tablist">
+                <button type="button" role="tab" aria-selected={liveSubTab === 'live'} className={`live-subtab ${liveSubTab === 'live' ? 'live-subtab--active' : ''}`} onClick={() => setLiveSubTab('live')}>
+                  <Radio size={14} /> Live map
+                </button>
+                <button type="button" role="tab" aria-selected={liveSubTab === 'journey'} className={`live-subtab ${liveSubTab === 'journey' ? 'live-subtab--active' : ''}`} onClick={() => setLiveSubTab('journey')}>
+                  <Route size={14} /> Journey history
+                </button>
+              </div>
             </div>
 
-            {/* Map takes three quarters of the width, telemetry status the right quarter */}
+            {liveSubTab === 'journey' ? (
+              <JourneyHistory embedded shifts={shifts} employees={employees} depots={depots} />
+            ) : (
+            /* Map takes three quarters of the width, telemetry status the right quarter */
             <div className="live-split">
               <div className="map-shell">
                 <div id="live-dispatch-map" className="h-full w-full"></div>
@@ -6050,21 +6142,22 @@ export default function App() {
                 {/* Floating map controls */}
                 <div className="map-toolbar">
                   <button
-                    type="button"
-                    className={`map-refresh-btn map-trailer-toggle ${showTrailers ? 'map-trailer-toggle--on' : ''}`}
-                    onClick={() => setShowTrailers(v => !v)}
-                    aria-pressed={showTrailers}
-                  >
-                    <Container size={14} />
-                    {showTrailers ? 'HIDE TRAILERS' : 'SHOW TRAILERS'}
-                  </button>
-                  <button
                     className="map-refresh-btn"
                     onClick={handleMapRefresh}
                     disabled={isRefreshing}
                   >
                     <RefreshCw size={14} className={isRefreshing ? 'spin-animation' : ''} />
                     {isRefreshing ? 'REFRESHING…' : 'REFRESH POSITIONS'}
+                  </button>
+                  <button
+                    type="button"
+                    className={`map-refresh-btn map-trailer-toggle ${showTrailers ? 'map-trailer-toggle--on' : ''}`}
+                    onClick={() => setShowTrailers(v => !v)}
+                    aria-pressed={showTrailers}
+                    title={showTrailers ? 'Hide trailers on the map' : 'Show trailers on the map'}
+                  >
+                    <Container size={14} />
+                    TRAILER
                   </button>
                 </div>
 
@@ -6083,8 +6176,8 @@ export default function App() {
 
               <LiveTelemetryPanel
                 liveLocations={liveLocations}
-                employees={employees}
                 shifts={shifts}
+                assignedLoads={assignedLoadByDriver}
                 depots={depots}
                 noSignalDriverIds={noSignalDriverIds}
                 isRefreshing={isRefreshing}
@@ -6092,13 +6185,10 @@ export default function App() {
                 onSelectDriver={focusDriverOnMap}
               />
             </div>
+            )}
           </div>
         )}
 
-
-        {activeTab === 'journeys' && (
-          <JourneyHistory shifts={shifts} employees={employees} depots={depots} />
-        )}
 
         {/* ── TAB 2: Idle Alert Center ─────────────────────── */}
         {activeTab === 'alerts' && (
@@ -6144,15 +6234,11 @@ export default function App() {
                 place a fuel receipt or parking claim gets approved,
                 Analytics only shows the already-approved totals. */}
             <div className="mb-16 flex align-center" style={{ gap: '10px', flexWrap: 'wrap' }}>
-              <div className="telemetry-pill-select-wrap">
-                <span className="telemetry-pill-icon"><Filter size={13} color="#94A3B8" /></span>
-                <select
-                  aria-label="Alert category"
-                  className="telemetry-pill-select"
-                  value={alertCategoryFilter}
-                  onChange={e => setAlertCategoryFilter(e.target.value as typeof alertCategoryFilter)}
-                >
-                  {([
+              <TableFilter
+                groups={[{
+                  key: 'category', label: 'Category', single: true, neutral: 'all',
+                  options: ([
+
                     ['all', 'All Alerts', alerts.length],
                     ['gps_offline', 'GPS Tracking Off', gpsOfflineEvents.filter(e => !e.acknowledged).length],
                     ['sos', 'Emergency SOS', alerts.filter(a => a.is_sos).length],
@@ -6163,18 +6249,17 @@ export default function App() {
                     ] : []),
                     ...(hasFeature('payroll_rates') ? [['parking_pending', 'Parking Claims Pending', pendingParkingExpensesCount] as const] : []),
                     ['walkaround', 'Walk-Around Checks', walkaroundAlertIssues.length],
+                    ['unroadworthy_use', 'Not Roadworthy In Use', unroadworthyUse.length],
                     ['risk_signoffs', 'Unroadworthy Sign-Offs', riskSignoffs.length],
                     ['pin_reset', 'PIN Reset Requests', pinResetRequests.length],
+                    ['account_deletion', 'Account Deletion Requests', deletionRequests.length],
                     ['holiday_pending', 'Holiday Requests', holidayRequests.length],
                     ...(isPlatformAdmin ? [['access_requests', 'Access Requests', newAccessRequests.length] as const] : []),
-                  ] as const).map(([key, label, count]) => (
-                    <option key={key} value={key}>
-                      {label}{count !== null && count > 0 ? ` (${count})` : ''}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown size={12} className="telemetry-pill-chevron" />
-              </div>
+                  ] as const).map(([key, label, count]) => ({ value: key, label: `${label}${count !== null && count > 0 ? ` (${count})` : ''}` })),
+                  selected: [alertCategoryFilter],
+                  onChange: (v) => setAlertCategoryFilter((v[0] ?? 'all') as typeof alertCategoryFilter),
+                }]}
+              />
             </div>
 
             {/* Fuel Anomaly / Fuel Pending / Parking Pending — same card
@@ -6183,23 +6268,17 @@ export default function App() {
                 Each card links out to its real review modal (Fuel Audit /
                 Parking Claims) instead of duplicating the approve/reject
                 actions here. */}
-            {(alertCategoryFilter === 'gps_offline' || alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending' || alertCategoryFilter === 'walkaround' || alertCategoryFilter === 'holiday_pending' || alertCategoryFilter === 'access_requests' || alertCategoryFilter === 'risk_signoffs' || alertCategoryFilter === 'pin_reset') ? (() => {
+            {(alertCategoryFilter === 'gps_offline' || alertCategoryFilter === 'fuel_anomaly' || alertCategoryFilter === 'fuel_pending' || alertCategoryFilter === 'parking_pending' || alertCategoryFilter === 'walkaround' || alertCategoryFilter === 'holiday_pending' || alertCategoryFilter === 'access_requests' || alertCategoryFilter === 'risk_signoffs' || alertCategoryFilter === 'unroadworthy_use' || alertCategoryFilter === 'pin_reset' || alertCategoryFilter === 'account_deletion') ? (() => {
               const renderQueueAlertCards = (
                 items: { key: string; driverName?: string; subtitle?: string; dateStr: string; reasonText: string }[],
-                emptyTitle: string,
-                emptyDescription: string,
+                _emptyTitle: string,
+                _emptyDescription: string,
                 badgeLabel: string,
                 reviewLabel: string,
                 onReview: () => void,
               ) => items.length === 0 ? (
                 <div className="glass-card">
-                  <Empty>
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon"><CircleCheck /></EmptyMedia>
-                      <EmptyTitle>{emptyTitle}</EmptyTitle>
-                      <EmptyDescription>{emptyDescription}</EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
+                  <NoData />
                 </div>
               ) : (
                 <div className="flex flex-col" style={{ gap: '12px' }}>
@@ -6236,13 +6315,7 @@ export default function App() {
                 };
                 return gpsOfflineEvents.length === 0 ? (
                   <div className="glass-card">
-                    <Empty>
-                      <EmptyHeader>
-                        <EmptyMedia variant="icon"><SatelliteDish /></EmptyMedia>
-                        <EmptyTitle>No GPS Tracking Alerts</EmptyTitle>
-                        <EmptyDescription>When a driver on shift stops sending GPS, for example by closing the app or switching location off, it appears here.</EmptyDescription>
-                      </EmptyHeader>
-                    </Empty>
+                    <NoData />
                   </div>
                 ) : (
                   <div className="flex flex-col" style={{ gap: '12px' }}>
@@ -6318,16 +6391,46 @@ export default function App() {
                   () => setIsFuelReceiptsModalOpen(true),
                 );
               }
+              if (alertCategoryFilter === 'account_deletion') {
+                return deletionRequests.length === 0 ? (
+                  <div className="glass-card">
+                    <NoData />
+                  </div>
+                ) : (
+                  <div className="flex flex-col" style={{ gap: '12px' }}>
+                    {deletionRequests.map(r => (
+                      <div key={r.id} className="alert-card alert-card--sos">
+                        <div className="flex align-center justify-between mb-8">
+                          <span className="alert-badge-pill alert-badge-pill--sos"><Trash2 size={12} /> Account Deletion Requested</span>
+                          <span className="font-mono tabular-nums text-xs text-muted">
+                            {new Date(r.requested_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div className="flex align-center mb-4" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                          <span className="font-semibold text-primary" style={{ fontSize: '13.5px' }}>{toTitleCase(r.driver_name ?? '') || 'Unknown Employee'}</span>
+                          <span className="font-mono font-bold text-secondary" style={{ fontSize: '12px' }}>{r.driver_ref ?? ''}</span>
+                          <span className="text-xs text-muted">sent from the {r.source === 'login' ? 'login screen (signed out)' : 'app settings'}</span>
+                        </div>
+                        {r.reason && <p className="text-xs text-secondary" style={{ margin: '0 0 8px', overflowWrap: 'anywhere' }}>“{r.reason}”</p>}
+                        <p className="text-xs text-secondary" style={{ margin: '0 0 10px' }}>
+                          Deleting removes this employee&apos;s shifts, locations, checks, reports, receipts, holidays, rota and sign-in for good.
+                          {r.source === 'login' ? ' This was sent without signing in, so confirm with the employee before you delete.' : ''}
+                        </p>
+                        <div className="flex" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                          <button type="button" className="alert-ack-btn" disabled={deletingRequestId === r.id} onClick={() => confirmAccountDeletion(r)}>
+                            <Trash2 size={13} /> {deletingRequestId === r.id ? 'Deleting…' : 'Delete all their data'}
+                          </button>
+                          <button type="button" className="alert-dismiss-btn" disabled={deletingRequestId === r.id} onClick={() => dismissAccountDeletion(r.id)}>Dismiss</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              }
               if (alertCategoryFilter === 'pin_reset') {
                 return pinResetRequests.length === 0 ? (
                   <div className="glass-card">
-                    <Empty>
-                      <EmptyHeader>
-                        <EmptyMedia variant="icon"><KeyRound /></EmptyMedia>
-                        <EmptyTitle>No PIN Reset Requests</EmptyTitle>
-                        <EmptyDescription>When a driver taps "Forgot PIN" in the app, their request appears here.</EmptyDescription>
-                      </EmptyHeader>
-                    </Empty>
+                    <NoData />
                   </div>
                 ) : (
                   <div className="flex flex-col" style={{ gap: '12px' }}>
@@ -6352,17 +6455,50 @@ export default function App() {
                   </div>
                 );
               }
+              if (alertCategoryFilter === 'unroadworthy_use') {
+                return unroadworthyUse.length === 0 ? (
+                  <div className="glass-card">
+                    <NoData />
+                  </div>
+                ) : (
+                  <div className="flex flex-col" style={{ gap: '12px' }}>
+                    {unroadworthyUse.map(u => (
+                      <div key={`${u.shiftId}-${u.kind}`} className="alert-card alert-card--sos">
+                        <div className="flex align-center justify-between mb-8">
+                          <span className="alert-badge-pill alert-badge-pill--sos">
+                            <AlertOctagon size={12} /> {u.kind} Not Roadworthy — On The Road
+                          </span>
+                          <span className="font-mono tabular-nums text-xs text-muted">
+                            on shift since {new Date(u.since).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                        <div className="flex align-center mb-4" style={{ flexWrap: 'wrap', gap: '8px' }}>
+                          <span className="font-semibold text-primary" style={{ fontSize: '13.5px' }}>{toTitleCase(u.driverName)}</span>
+                          <span className="font-mono font-bold text-secondary" style={{ fontSize: '12px', textTransform: 'uppercase' }}>{u.unit}</span>
+                        </div>
+                        <p className="text-xs font-bold" style={{ margin: 0, color: 'var(--brand-red)' }}>{u.issues.join(' · ')}</p>
+                        {(() => {
+                          const so = unitSignoffs.find(x => x.shift_id === u.shiftId && x.number === u.unit.toUpperCase());
+                          return so ? (
+                            <div className="flex align-center" style={{ gap: '12px', marginTop: '10px', flexWrap: 'wrap' }}>
+                              <img alt={`Signature of ${so.signer_name}`} src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(so.signature_svg)}`} style={{ width: '170px', height: '66px', objectFit: 'contain', background: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px' }} />
+                              <p className="text-xs text-secondary m-0">Signed by <strong className="text-primary">{so.signer_name}</strong><br />{new Date(so.acknowledged_at).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted" style={{ margin: '8px 0 0' }}>No signed acceptance on record for this shift.</p>
+                          );
+                        })()}
+                        <button type="button" className="comp-edit-btn" style={{ marginTop: '10px' }} onClick={() => openFleetUnit(u.unit)}>Open {u.unit} in Fleet Roadworthiness</button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              }
               if (alertCategoryFilter === 'risk_signoffs') {
                 const contextLabel: Record<string, string> = { coupling: 'when coupling', walkaround: 'during a walk-around check' };
                 return riskSignoffs.length === 0 ? (
                   <div className="glass-card">
-                    <Empty>
-                      <EmptyHeader>
-                        <EmptyMedia variant="icon"><ShieldCheck /></EmptyMedia>
-                        <EmptyTitle>No Unroadworthy Sign-Offs</EmptyTitle>
-                        <EmptyDescription>When a driver signs to take a unit or trailer with expired MOT, tax, insurance or inspection — or marked VOR — it appears here.</EmptyDescription>
-                      </EmptyHeader>
-                    </Empty>
+                    <NoData />
                   </div>
                 ) : (
                   <div className="flex flex-col" style={{ gap: '12px' }}>
@@ -6406,13 +6542,7 @@ export default function App() {
                 const shortDate = (d: string) => new Date(d).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' });
                 return holidayRequests.length === 0 ? (
                   <div className="glass-card">
-                    <Empty>
-                      <EmptyHeader>
-                        <EmptyMedia variant="icon"><CalendarDays /></EmptyMedia>
-                        <EmptyTitle>No Holiday Requests</EmptyTitle>
-                        <EmptyDescription>Requests employees send from the app will wait here for approval.</EmptyDescription>
-                      </EmptyHeader>
-                    </Empty>
+                    <NoData />
                   </div>
                 ) : (
                   <div className="flex flex-col" style={{ gap: '12px' }}>
@@ -6610,19 +6740,7 @@ export default function App() {
 
               return sortedAlerts.length === 0 ? (
                 <div className="glass-card">
-                  <Empty>
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon">
-                        <CircleCheck />
-                      </EmptyMedia>
-                      <EmptyTitle>No Active Alerts</EmptyTitle>
-                      <EmptyDescription>
-                        {alertCategoryFilter === 'all'
-                          ? 'All staff members are moving or on authorized short breaks.'
-                          : 'No alerts currently match this filter.'}
-                      </EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
+                  <NoData />
                 </div>
               ) : (
                 <div className="flex flex-col" style={{ gap: '12px' }}>
@@ -6648,7 +6766,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn btn-secondary flex align-center"
-                  style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800 }}
+                  style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700 }}
                   onClick={handleExportEmployees}
                 >
                   <Download size={15} /> Export Drivers
@@ -6656,7 +6774,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn btn-secondary flex align-center"
-                  style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800 }}
+                  style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700 }}
                   onClick={() => setIsDriverBulkImportOpen(true)}
                 >
                   <UploadCloud size={15} /> Import Data
@@ -6664,7 +6782,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn flex align-center"
-                  style={{ gap: '6px', padding: '10px 16px', fontSize: '13px', fontWeight: 800, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
+                  style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
                   onClick={() => setIsAddingEmployee(!isAddingEmployee)}
                 >
                   <UserPlus size={15} /> Add Employee
@@ -7063,6 +7181,7 @@ export default function App() {
         {activeTab === 'compliance-defects' && !tabLocked && (
           <ComplianceDefects
             organizationId={currentOrgId}
+            focusUnit={defectFocus}
             onBack={() => setActiveTab('compliance')}
           />
         )}
@@ -7098,6 +7217,8 @@ export default function App() {
           <FleetRoadworthiness
             organizationId={currentOrgId}
             onAlertCountChange={setFleetAlertCount}
+            focusUnit={fleetFocus}
+            onOpenUnitStatus={openUnitStatus}
             thresholdDays={orgAlertSettings.complianceAlertLeadDays}
             onOpenAlertSettings={() => {
               setActiveSettingsSection('alerts');
@@ -7149,7 +7270,6 @@ export default function App() {
                 "Section header" below (Compensation Summary) already
                 covers the page title, so there's no separate outer
                 heading here anymore. */}
-            <div>
             {(() => {
           const filteredShifts = getFilteredShifts();
           const totalEarnings = filteredShifts.reduce((sum, shift) => {
@@ -7216,21 +7336,12 @@ export default function App() {
           // Collect unique agencies for filter dropdown
           const agencies = Array.from(new Set(Object.values(employeeRates).map(r => r.agency_name || 'Direct')));
 
-          // Driver search combo: suggestions from the free-text query, capped
-          // so the dropdown never becomes a second unscrollable page.
-          const driverSuggestions = driverSearchQuery.trim()
-            ? employees.filter(d => d.full_name.toLowerCase().includes(driverSearchQuery.trim().toLowerCase())).slice(0, 8)
-            : employees.slice(0, 8);
-
-          const selectDriver = (driverId: string, driverName: string) => {
+          const selectDriver = (driverId: string, _driverName?: string) => {
             setReportEmployeeFilter(driverId);
-            setDriverSearchQuery(driverName);
-            setIsDriverSearchOpen(false);
           };
 
           const clearDriverFilter = () => {
             setReportEmployeeFilter('all');
-            setDriverSearchQuery('');
           };
 
           return (
@@ -7310,90 +7421,40 @@ export default function App() {
                       )}
                     </PopoverContent>
                   </Popover>
-                  <button
-                    className={`payroll-pill-btn ${showOnlyNightOutRequested ? 'payroll-pill-btn--active' : 'payroll-pill-btn--outline'}`}
-                    onClick={() => setShowOnlyNightOutRequested(!showOnlyNightOutRequested)}
-                  >
-                    <Moon size={13} />
-                    {showOnlyNightOutRequested ? 'SHOWING N/O ONLY' : 'FILTER N/O REQUESTS'}
-                    {pendingNightOutsCount > 0 && (
-                      <span className="payroll-pill-badge">{pendingNightOutsCount}</span>
-                    )}
-                  </button>
                 </div>
               </div>
 
               {/* -- Filter bar --------------------------------------- */}
               <div className="payroll-filter-bar">
                 <div className="payroll-filter-field">
-                  <span className="input-label">Agency</span>
-                  <div className="payroll-input-wrap">
-                    <span className="payroll-input-icon"><Building2 size={14} /></span>
-                    <select
-                      className="select-field"
-                      style={{ width: '160px' }}
-                      value={reportAgencyFilter}
-                      onChange={(e) => setReportAgencyFilter(e.target.value)}
-                    >
-                      <option value="all">All Agencies</option>
-                      {agencies.map(ag => (
-                        <option key={ag} value={ag}>{ag}</option>
-                      ))}
-                    </select>
-                    <ChevronDown size={13} className="payroll-input-chevron" />
-                  </div>
-                </div>
-
-                <div className="payroll-filter-field">
-                  <span className="input-label">Driver</span>
-                  <div className="payroll-driver-search">
-                    <div className="payroll-input-wrap">
-                      <span className="payroll-input-icon"><Search size={14} /></span>
-                      <input
-                        type="text"
-                        className="input-field"
-                        style={{ width: '100%', paddingRight: '34px' }}
-                        placeholder="Search/select driver"
-                        value={driverSearchQuery}
-                        onFocus={() => setIsDriverSearchOpen(true)}
-                        onChange={(e) => {
-                          setDriverSearchQuery(e.target.value);
-                          setIsDriverSearchOpen(true);
-                          if (reportEmployeeFilter !== 'all') setReportEmployeeFilter('all');
-                        }}
-                        onBlur={() => setTimeout(() => setIsDriverSearchOpen(false), 150)}
-                      />
-                      {(driverSearchQuery || reportEmployeeFilter !== 'all') && (
-                        <button
-                          type="button"
-                          className="payroll-driver-clear"
-                          onMouseDown={(e) => e.preventDefault()}
-                          onClick={clearDriverFilter}
-                          aria-label="Clear driver filter"
-                        >
-                          <X size={13} />
-                        </button>
-                      )}
-                    </div>
-
-                    {isDriverSearchOpen && (
-                      <div className="payroll-driver-dropdown">
-                        {driverSuggestions.length === 0 ? (
-                          <div className="payroll-driver-empty">No drivers match "{driverSearchQuery}"</div>
-                        ) : (
-                          driverSuggestions.map(d => (
-                            <div
-                              key={d.id}
-                              className={`payroll-driver-option ${reportEmployeeFilter === d.id ? 'payroll-driver-option--highlighted' : ''}`}
-                              onMouseDown={(e) => { e.preventDefault(); selectDriver(d.id, d.full_name); }}
-                            >
-                              {d.full_name}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
+                  <span className="input-label">Filters</span>
+                  <TableFilter
+                    groups={[
+                      {
+                        key: 'agency', label: 'Agency', single: true, neutral: 'all',
+                        options: [{ value: 'all', label: 'All Agencies' }, ...agencies.map(ag => ({ value: ag, label: ag }))],
+                        selected: [reportAgencyFilter],
+                        onChange: (v) => setReportAgencyFilter(v[0] ?? 'all'),
+                      },
+                      {
+                        key: 'driver', label: 'Driver', single: true, neutral: 'all',
+                        options: [{ value: 'all', label: 'All Drivers' }, ...employees.map(d => ({ value: d.id, label: d.full_name }))],
+                        selected: [reportEmployeeFilter],
+                        onChange: (v) => {
+                          const id = v[0] ?? 'all';
+                          if (id === 'all') clearDriverFilter();
+                          else selectDriver(id, employees.find(d => d.id === id)?.full_name ?? '');
+                        },
+                      },
+                      {
+                        key: 'nightout', label: `Night Out${pendingNightOutsCount > 0 ? ` (${pendingNightOutsCount})` : ''}`, single: true, neutral: 'all',
+                        options: [{ value: 'all', label: 'All shifts' }, { value: 'requested', label: 'N/O requests only' }],
+                        selected: [showOnlyNightOutRequested ? 'requested' : 'all'],
+                        onChange: (v) => setShowOnlyNightOutRequested(v[0] === 'requested'),
+                      },
+                    ]}
+                    search={{ value: summarySearch, onChange: setSummarySearch, placeholder: 'Search employee, agency, depot, vehicle…' }}
+                  />
                 </div>
 
                 <div className="payroll-filter-field" style={{ minWidth: '220px' }}>
@@ -7446,33 +7507,16 @@ export default function App() {
                       >
                         <Download size={13} /> Export Summary
                       </button>
-                      <div style={{ borderTop: '1px solid var(--border-color)', margin: '4px 0' }} />
-                      {/* EXCEL TEMPLATE INJECTION — same invisible-file-input-
-                          over-the-row trick as before, just sized to a menu
-                          row instead of a pill. */}
-                      <div style={{ position: 'relative' }}>
-                        <input
-                          type="file"
-                          accept=".xlsx, .xls"
-                          onChange={(e) => { handleFillExcelTemplate(e); setSummaryMenuOpen(false); }}
-                          style={{ position: 'absolute', opacity: 0, width: '100%', height: '100%', cursor: 'pointer', zIndex: 10, left: 0, top: 0 }}
-                          title="Upload Payment Template (Step 2)"
-                          onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
-                        />
-                        <div
-                          className="flex items-center gap-2 w-full text-sm"
-                          style={{ padding: '8px 10px', borderRadius: '6px', color: 'var(--charcoal)', fontWeight: 600 }}
-                        >
-                          <Wand2 size={13} /> Fill Excel Template
-                        </div>
-                      </div>
                     </PopoverContent>
                   </Popover>
-                  <button className="payroll-pill-btn" onClick={() => { exportCSV(); flashExported('csv'); }}>
+                  <button className="payroll-pill-btn" onClick={exportCSV}>
                     <DownloadIcon done={justExported === 'csv'} /> Export CSV
                   </button>
-                  <button className="payroll-pill-btn" onClick={() => { exportExcel(); flashExported('excel'); }}>
+                  <button className="payroll-pill-btn" onClick={exportExcel}>
                     <FileSpreadsheet size={13} /> Export Excel
+                  </button>
+                  <button className="payroll-pill-btn" onClick={() => setFillTemplateOpen(true)}>
+                    <FileSpreadsheet size={13} /> Fill in the template
                   </button>
                 </div>
 
@@ -7544,15 +7588,7 @@ export default function App() {
                           if (rows.length === 0) return (
                             <tr>
                               <td colSpan={7}>
-                                <Empty className="py-16">
-                                  <EmptyHeader>
-                                    <EmptyMedia variant="icon">
-                                      <BarChart3 />
-                                    </EmptyMedia>
-                                    <EmptyTitle>No Data for This Summary</EmptyTitle>
-                                    <EmptyDescription>Completed shifts matching the current filters will be totalled here.</EmptyDescription>
-                                  </EmptyHeader>
-                                </Empty>
+                                <NoData className="py-16" />
                               </td>
                             </tr>
                           );
@@ -7634,15 +7670,7 @@ export default function App() {
                         </div>
 
                         {filteredShifts.length === 0 ? (
-                          <Empty className="py-24">
-                            <EmptyHeader>
-                              <EmptyMedia variant="icon">
-                                <ListChecks />
-                              </EmptyMedia>
-                              <EmptyTitle>No Completed Shifts</EmptyTitle>
-                              <EmptyDescription>No shifts match the currently active filters.</EmptyDescription>
-                            </EmptyHeader>
-                          </Empty>
+                          <NoData className="py-24" />
                         ) : (
                           filteredShifts.map(shift => {
                             const {
@@ -7898,7 +7926,6 @@ export default function App() {
             </div>
           );
             })()}
-            </div>
           </div>
         )}
 
@@ -8423,10 +8450,12 @@ export default function App() {
                   <>
                     <TableFilter groups={analyticsFilterGroups} />
                     {periodFilter?.value[0] === 'Custom range' && (
-                      <span className="flex items-center text-xs text-secondary" style={{ gap: '6px' }}>
-                        <input type="date" aria-label="From" className="input-field" style={{ padding: '6px 8px', fontSize: '12px' }} value={analyticsCustomRange.from} max={analyticsCustomRange.to} onChange={e => setAnalyticsCustomRange(r => ({ ...r, from: e.target.value }))} />
-                        to
-                        <input type="date" aria-label="To" className="input-field" style={{ padding: '6px 8px', fontSize: '12px' }} value={analyticsCustomRange.to} min={analyticsCustomRange.from} onChange={e => setAnalyticsCustomRange(r => ({ ...r, to: e.target.value }))} />
+                      <span style={{ minWidth: '240px' }}>
+                        <EarningsDateRangePicker
+                          startDate={analyticsCustomRange.from}
+                          endDate={analyticsCustomRange.to}
+                          onChange={(from, to) => setAnalyticsCustomRange({ from, to })}
+                        />
                       </span>
                     )}
                     <FilterBar
@@ -8722,6 +8751,8 @@ export default function App() {
             {shipmentsView === 'tracking' && (
               <ShipmentsTracking
                 shifts={shifts}
+                unitRisk={unitRisk}
+                onOpenFleet={openFleetUnit}
                 liveLocations={liveLocations}
                 depots={depots}
                 employees={employees}
@@ -8794,29 +8825,21 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
-                  <div className="telemetry-search-wrap" style={{ minWidth: '200px' }}>
-                    <Search size={14} />
-                    <input
-                      type="text"
-                      placeholder="Search driver name…"
-                      value={fuelModalDriverSearch}
-                      onChange={(e) => setFuelModalDriverSearch(e.target.value)}
+                  <TableFilter
+                    groups={[{
+                      key: 'vehicle', label: 'Vehicle', single: true, neutral: '',
+                      options: [{ value: '', label: 'All Vehicles' }, ...vehicleOptions.map(v => ({ value: v, label: v }))],
+                      selected: [fuelModalVehicleFilter],
+                      onChange: (v) => setFuelModalVehicleFilter(v[0] ?? ''),
+                    }]}
+                    search={{ value: fuelModalDriverSearch, onChange: setFuelModalDriverSearch, placeholder: 'Search driver name…' }}
+                  />
+                  <span style={{ minWidth: '240px' }}>
+                    <EarningsDateRangePicker
+                      startDate={fuelModalDateStart}
+                      endDate={fuelModalDateEnd}
+                      onChange={(from, to) => { setFuelModalDateStart(from); setFuelModalDateEnd(to); }}
                     />
-                  </div>
-                  <select
-                    className="select-field"
-                    style={{ width: 'auto' }}
-                    value={fuelModalVehicleFilter}
-                    onChange={(e) => setFuelModalVehicleFilter(e.target.value)}
-                  >
-                    <option value="">All Vehicles</option>
-                    {vehicleOptions.map(v => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                  <span className="flex items-center" style={{ gap: '6px' }}>
-                    <Calendar size={13} className="text-muted" />
-                    <input type="date" className="input-field" style={{ width: 'auto' }} value={fuelModalDateStart} onChange={(e) => setFuelModalDateStart(e.target.value)} />
-                    <span className="text-xs text-muted">to</span>
-                    <input type="date" className="input-field" style={{ width: 'auto' }} value={fuelModalDateEnd} onChange={(e) => setFuelModalDateEnd(e.target.value)} />
                   </span>
                   {(fuelModalDriverSearch || fuelModalVehicleFilter || fuelModalDateStart || fuelModalDateEnd) && (
                     <button
@@ -8832,21 +8855,9 @@ export default function App() {
                 </div>
 
                 {fuelReceipts.length === 0 ? (
-                  <Empty className="py-24">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon"><Fuel /></EmptyMedia>
-                      <EmptyTitle>No Fuel Receipts Yet</EmptyTitle>
-                      <EmptyDescription>Fuel receipts drivers photograph from the app will show up here for approval.</EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
+                  <NoData className="py-24" />
                 ) : filteredReceipts.length === 0 ? (
-                  <Empty className="py-24">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon"><Search /></EmptyMedia>
-                      <EmptyTitle>No Matches</EmptyTitle>
-                      <EmptyDescription>No receipts match the current search/filters.</EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
+                  <NoData className="py-24" />
                 ) : (
                   <div className="table-container">
                     <table className="data-table data-table--nowrap">
@@ -9143,34 +9154,14 @@ export default function App() {
                 </div>
 
                 <div className="flex items-center mb-16" style={{ gap: '10px', flexWrap: 'wrap' }}>
-                  <div className="telemetry-search-wrap" style={{ minWidth: '200px' }}>
-                    <Search size={14} />
-                    <input
-                      type="text"
-                      placeholder="Search driver name…"
-                      value={parkingModalDriverSearch}
-                      onChange={(e) => setParkingModalDriverSearch(e.target.value)}
-                    />
-                  </div>
+                  <TableFilter groups={[]} search={{ value: parkingModalDriverSearch, onChange: setParkingModalDriverSearch, placeholder: 'Search driver name…' }} />
                   <span className="text-xs text-muted" style={{ marginLeft: 'auto' }}>{filteredExpenses.length} of {parkingExpenses.length} claims</span>
                 </div>
 
                 {parkingExpenses.length === 0 ? (
-                  <Empty className="py-24">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon"><ParkingCircle /></EmptyMedia>
-                      <EmptyTitle>No Parking Claims Yet</EmptyTitle>
-                      <EmptyDescription>Overnight parking receipts drivers photograph from the app will show up here for approval.</EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
+                  <NoData className="py-24" />
                 ) : filteredExpenses.length === 0 ? (
-                  <Empty className="py-24">
-                    <EmptyHeader>
-                      <EmptyMedia variant="icon"><Search /></EmptyMedia>
-                      <EmptyTitle>No Matches</EmptyTitle>
-                      <EmptyDescription>No claims match the current search.</EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
+                  <NoData className="py-24" />
                 ) : (
                   <div className="table-container">
                     <table className="data-table data-table--nowrap">
@@ -9308,7 +9299,7 @@ export default function App() {
                 <button
                   type="button"
                   className="btn flex align-center"
-                  style={{ flex: 1, justifyContent: 'center', gap: '6px', padding: '10px', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 800 }}
+                  style={{ flex: 1, justifyContent: 'center', gap: '6px', padding: '10px', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)', fontWeight: 700 }}
                   onClick={async () => {
                     try {
                       await navigator.clipboard.writeText(activationCodeShown.code);
@@ -9320,7 +9311,7 @@ export default function App() {
                 >
                   Copy code
                 </button>
-                <button type="button" className="btn btn-secondary" style={{ padding: '10px 16px' }} onClick={() => setActivationCodeShown(null)}>Done</button>
+                <button type="button" className="btn btn-secondary" style={{ padding: '6px 12px' }} onClick={() => setActivationCodeShown(null)}>Done</button>
               </div>
               <p className="text-xs text-muted m-0 mt-12">Save the code before closing — we can't show it again. If it's lost, issue a new one from the row menu.</p>
             </div>
@@ -9379,6 +9370,7 @@ export default function App() {
                     { id: 'access-codes' as const, label: 'Access Codes', icon: KeyRound },
                     { id: 'depots' as const, label: 'Depots', icon: MapPinned },
                     { id: 'alerts' as const, label: 'Alerts', icon: Bell },
+                    { id: 'payroll' as const, label: 'Payroll', icon: Banknote },
                     { id: 'fuel-bonus' as const, label: 'Fuel Bonus', icon: Fuel },
                   ] : []),
                   { id: 'appearance' as const, label: 'Appearance', icon: Palette },
@@ -9573,15 +9565,7 @@ export default function App() {
                     </p>
 
                     {depots.length === 0 ? (
-                      <Empty className="py-24 mb-16">
-                        <EmptyHeader>
-                          <EmptyMedia variant="icon">
-                            <Warehouse />
-                          </EmptyMedia>
-                          <EmptyTitle>No Depots Yet</EmptyTitle>
-                          <EmptyDescription>Add your first one below.</EmptyDescription>
-                        </EmptyHeader>
-                      </Empty>
+                      <NoData className="py-24 mb-16" />
                     ) : (
                       <div className="table-container mb-16">
                         <table className="data-table">
@@ -9603,14 +9587,23 @@ export default function App() {
                                 <td className="font-mono text-xs">{depot.latitude.toFixed(5)}, {depot.longitude.toFixed(5)}</td>
                                 <td>{depot.geofence_radius_m}m</td>
                                 <td>
-                                  <button
-                                    type="button"
-                                    className="login-forgot"
-                                    style={{ color: 'var(--error-color, #DC2626)' }}
-                                    onClick={() => handleDeleteDepot(depot.id, depot.name)}
-                                  >
-                                    Remove
-                                  </button>
+                                  <span className="flex align-center" style={{ gap: '12px' }}>
+                                    <button
+                                      type="button"
+                                      className="login-forgot"
+                                      onClick={() => startEditDepot(depot)}
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="login-forgot"
+                                      style={{ color: 'var(--error-color, #DC2626)' }}
+                                      onClick={() => handleDeleteDepot(depot.id, depot.name)}
+                                    >
+                                      Remove
+                                    </button>
+                                  </span>
                                 </td>
                               </tr>
                             ))}
@@ -9621,7 +9614,12 @@ export default function App() {
 
                     {depotFormError && <div className="login-notice login-notice--error mb-16">{depotFormError}</div>}
 
-                    <form onSubmit={handleAddDepot}>
+                    <form id="depot-form" onSubmit={handleAddDepot}>
+                      {editingDepotId && (
+                        <p className="text-xs font-bold" style={{ margin: '0 0 12px', color: 'var(--brand-red)' }}>
+                          Editing “{newDepotName || 'depot'}” — change the details below, then Save changes.
+                        </p>
+                      )}
                       <div className="input-group">
                         <label className="input-label" htmlFor="depot-name">DEPOT NAME</label>
                         <input
@@ -9692,14 +9690,33 @@ export default function App() {
                           />
                         </div>
                       </div>
+                      <div className="flex align-center" style={{ gap: '10px', margin: '2px 0 4px' }}>
+                        <span className="text-xs text-muted">25 m</span>
+                        <input
+                          type="range"
+                          min={25}
+                          max={1000}
+                          step={5}
+                          aria-label="Geofence radius"
+                          value={Math.min(1000, Math.max(25, parseInt(newDepotRadius, 10) || 150))}
+                          onChange={(e) => setNewDepotRadius(e.target.value)}
+                          style={{ flex: 1, accentColor: 'var(--charcoal)' }}
+                        />
+                        <span className="text-xs text-muted">1,000 m</span>
+                      </div>
                       <p className="text-xs text-muted mt-4 mb-16">
                         Tap "Use My Current Location" while standing at the depot, or find coordinates by
                         searching the address on Google Maps and copying the latitude/longitude shown for the pin.
                       </p>
-                      <button type="submit" className="btn btn-primary" disabled={isSavingDepot}>
-                        {isSavingDepot && <SaveIcon saving success={false} />}
-                        {isSavingDepot ? 'Adding…' : 'Add Depot'}
-                      </button>
+                      <div className="flex align-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
+                        <button type="submit" className="btn btn-primary" disabled={isSavingDepot}>
+                          {isSavingDepot && <SaveIcon saving success={false} />}
+                          {isSavingDepot ? 'Saving…' : editingDepotId ? 'Save changes' : 'Add Depot'}
+                        </button>
+                        {editingDepotId && (
+                          <button type="button" className="btn btn-secondary" onClick={resetDepotForm}>Cancel</button>
+                        )}
+                      </div>
                     </form>
                   </div>
                 )}
@@ -9996,6 +10013,7 @@ export default function App() {
                 )}
 
                 {activeSettingsSection === 'plan' && <PlanSettings entitlements={entitlements} companyName={teamOrgInfo?.name} />}
+                {userRole === 'payroll_admin' && activeSettingsSection === 'payroll' && <PayRulesSettings organizationId={currentOrgId} />}
                 {userRole === 'payroll_admin' && activeSettingsSection === 'fuel-bonus' && <FuelBonusSettings />}
                 {activeSettingsSection === 'security' && <SecuritySettings />}
                 {activeSettingsSection === 'legal' && (
@@ -10277,7 +10295,7 @@ export default function App() {
                   className="btn btn-secondary"
                   onClick={() => setEditingEmployee(null)}
                   disabled={isSavingEmployee}
-                  style={{ padding: '10px 18px', borderRadius: '8px', fontWeight: 'bold' }}
+                  style={{ padding: '6px 12px', borderRadius: '8px', fontWeight: 'bold' }}
                 >
                   Cancel
                 </button>
@@ -10285,7 +10303,7 @@ export default function App() {
                   type="submit"
                   className="btn"
                   disabled={isSavingEmployee}
-                  style={{ padding: '10px 20px', borderRadius: '8px', backgroundColor: 'var(--brand-red)', borderColor: 'var(--brand-red)', color: 'white', fontWeight: 'bold' }}
+                  style={{ padding: '6px 12px', borderRadius: '8px', backgroundColor: 'var(--brand-red)', borderColor: 'var(--brand-red)', color: 'white', fontWeight: 'bold' }}
                 >
                   {isSavingEmployee && <SaveIcon saving success={false} />}
                   {isSavingEmployee ? 'Saving…' : 'Save Changes'}
@@ -10312,7 +10330,7 @@ export default function App() {
               <button
                 className="btn btn-secondary"
                 onClick={() => setConfirmDialog(null)}
-                style={{ padding: '10px 20px', borderRadius: '8px', fontWeight: 'bold' }}
+                style={{ padding: '6px 12px', borderRadius: '8px', fontWeight: 'bold' }}
               >
                 CANCEL
               </button>
@@ -10324,7 +10342,7 @@ export default function App() {
                   action();
                 }}
                 style={{
-                  padding: '10px 20px',
+                  padding: '6px 12px',
                   borderRadius: '8px',
                   fontWeight: 'bold',
                   backgroundColor: confirmDialog.tone === 'danger' ? '#DC2626' : '#4F46E5',
@@ -10337,6 +10355,43 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Compensation Summary -> Fill in the template */}
+      {fillTemplateOpen && userRole === 'payroll_admin' && (
+        <FillTemplateModal
+          shifts={allPayrollShifts}
+          rates={payrollRates}
+          dateStart={reportDateStart}
+          dateEnd={reportDateEnd}
+          agency={reportAgencyFilter}
+          longShiftHours={orgAlertSettings.longShiftFlagHours}
+          organizationId={currentOrgId}
+          notify={(m, kind) => showToast(m, kind === 'error' ? 'error' : 'success')}
+          onClose={() => setFillTemplateOpen(false)}
+          onShowInTable={(driverId) => {
+            setShowOnlyNightOutRequested(false);
+            setReportViewMode('detailed');
+            setSummarySearch('');
+            setReportEmployeeFilter(driverId);
+            setFillTemplateOpen(false);
+          }}
+        />
+      )}
+
+      {/* Compensation Summary -> preview before Export CSV / Excel / Summary */}
+      {exportPreview && userRole === 'payroll_admin' && (
+        <ExportPreviewModal
+          title={exportPreview.title}
+          subtitle={exportPreview.subtitle}
+          columns={exportPreview.columns}
+          rows={exportPreview.rows}
+          defaultFormat={exportPreview.defaultFormat}
+          fileBase={exportPreview.fileBase}
+          storageKey={exportPreview.storageKey}
+          onClose={() => setExportPreview(null)}
+          onDownloaded={() => flashExported(exportPreview.flash)}
+        />
       )}
 
       {/* Edit Shift Time modal — replaces the two window.prompt() calls */}
@@ -10384,14 +10439,14 @@ export default function App() {
               <button
                 className="btn btn-secondary"
                 onClick={() => setEditTimeModal(null)}
-                style={{ padding: '10px 20px', borderRadius: '8px', fontWeight: 'bold' }}
+                style={{ padding: '6px 12px', borderRadius: '8px', fontWeight: 'bold' }}
               >
                 CANCEL
               </button>
               <button
                 className="btn btn-primary"
                 onClick={performEditShiftTime}
-                style={{ padding: '10px 20px', borderRadius: '8px', backgroundColor: '#4F46E5', borderColor: '#4F46E5', color: 'white', fontWeight: 'bold' }}
+                style={{ padding: '6px 12px', borderRadius: '8px', backgroundColor: '#4F46E5', borderColor: '#4F46E5', color: 'white', fontWeight: 'bold' }}
               >
                 SAVE CHANGES
               </button>
@@ -10414,7 +10469,7 @@ export default function App() {
                   key={depot.id}
                   className="btn btn-secondary"
                   onClick={() => performManualClockIn(depotSelectModal.driverId, depot)}
-                  style={{ padding: '12px 16px', borderRadius: '8px', textAlign: 'left', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}
+                  style={{ padding: '6px 12px', borderRadius: '8px', textAlign: 'left', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}
                 >
                   <MapPinned size={15} />
                   {depot.name}
@@ -10425,7 +10480,7 @@ export default function App() {
               <button
                 className="btn btn-secondary"
                 onClick={() => setDepotSelectModal(null)}
-                style={{ padding: '10px 20px', borderRadius: '8px', fontWeight: 'bold' }}
+                style={{ padding: '6px 12px', borderRadius: '8px', fontWeight: 'bold' }}
               >
                 CANCEL
               </button>

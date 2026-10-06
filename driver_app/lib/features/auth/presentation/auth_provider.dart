@@ -101,7 +101,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final prefs = await SharedPreferences.getInstance();
       final savedDriverId = prefs.getString('session_driver_id');
       final currentAuthUser = SupabaseService.client.auth.currentUser;
-      final lookupId = savedDriverId ?? currentAuthUser?.id;
+      // The auth user id is the driver's row id and unique; a driver code is
+      // only unique within one company.
+      final lookupId = currentAuthUser?.id ?? savedDriverId;
 
       if (lookupId != null && lookupId.isNotEmpty) {
         final result = await SupabaseService.fetchDriverProfile(lookupId);
@@ -112,6 +114,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
             driver: result['driver'],
           );
           unawaited(_cacheDriverProfile(result['driver']));
+          return;
+        }
+
+        if (result['errorType'] == 'deactivated') {
+          // The employer deactivated this driver: end the session for good
+          // and say why on the login screen.
+          await logout();
+          state = AuthState(status: AuthStatus.error, errorMessage: result['error']);
           return;
         }
 
@@ -181,10 +191,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
     try {
       if (!SupabaseService.isMockMode) {
-        await SupabaseService.client
-            .from('drivers')
-            .update({'terms_accepted': true})
-            .or('id.eq.$lookupKey,driver_id.ilike.$lookupKey');
+        // Drivers can't update their own row directly (no RLS update
+        // policy), so this goes through accept_driver_terms (migration 086).
+        await SupabaseService.client.rpc('accept_driver_terms');
       }
 
       final updatedDriver = state.driver != null

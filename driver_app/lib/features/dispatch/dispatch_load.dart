@@ -42,6 +42,9 @@ class DispatchLoad {
   final DateTime createdAt;
   final DateTime? acceptedAt;
   final DateTime? completedAt;
+  /// When the driver marked loading as started / finished (migration 092).
+  final DateTime? loadingStartedAt;
+  final DateTime? loadingCompletedAt;
   final List<LoadProof> proofs;
 
   const DispatchLoad({
@@ -57,6 +60,8 @@ class DispatchLoad {
     required this.createdAt,
     this.acceptedAt,
     this.completedAt,
+    this.loadingStartedAt,
+    this.loadingCompletedAt,
     this.proofs = const [],
   });
 
@@ -80,6 +85,8 @@ class DispatchLoad {
         createdAt: _date(j['created_at']) ?? DateTime.now(),
         acceptedAt: _date(j['accepted_at']),
         completedAt: _date(j['completed_at']),
+        loadingStartedAt: _date(j['loading_started_at']),
+        loadingCompletedAt: _date(j['loading_completed_at']),
         proofs: j['shipment_proofs'] is List
             ? (j['shipment_proofs'] as List)
                 .whereType<Map>()
@@ -101,6 +108,8 @@ class DispatchLoad {
         'odometer_end': odometerEnd,
         'created_at': createdAt.toUtc().toIso8601String(),
         'accepted_at': acceptedAt?.toUtc().toIso8601String(),
+        'loading_started_at': loadingStartedAt?.toUtc().toIso8601String(),
+        'loading_completed_at': loadingCompletedAt?.toUtc().toIso8601String(),
         'completed_at': completedAt?.toUtc().toIso8601String(),
         'shipment_proofs': proofs.map((p) => p.toJson()).toList(),
       };

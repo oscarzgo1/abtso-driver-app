@@ -1,14 +1,12 @@
+import TableFilter from '../components/ui/table-filter';
 import { useMemo, useState, type ReactNode } from 'react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipContentProps } from 'recharts';
-import {
-  Users, Radio, Route, Hourglass, PackageCheck, PackageOpen, Truck, Phone, MapPinned,
-  Search, ChevronLeft, ChevronRight, PoundSterling, Gauge, Activity, Clock,
-} from 'lucide-react';
+import { Users, Radio, Route, Hourglass, PackageCheck, PackageOpen, Truck, Phone, MapPinned, ChevronLeft, ChevronRight, PoundSterling, Gauge, Activity, Clock, ShieldAlert } from 'lucide-react';
 import { SemiGauge } from '@/components/ui/semi-gauge';
 import { TrackingTimeline, type TimelineStep } from '@/components/ui/tracking-timeline';
 import { FleetStatusDonutChart } from '@/components/ui/fleet-status-donut-chart';
 import { BadgeDelta } from '@/components/ui/badge-delta';
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty';
+import NoData from '@/components/ui/no-data';
 import DeliveryPhotos from '@/components/DeliveryPhotos';
 
 interface DashboardLiveLocation {
@@ -69,7 +67,7 @@ export interface DashboardDispatchLoad {
   trailer_number: string | null;
 }
 
-export type DashboardNavTarget = 'live' | 'alerts' | 'shipments' | 'analytics' | 'drivers';
+export type DashboardNavTarget = 'live' | 'alerts' | 'shipments' | 'analytics' | 'drivers' | 'fleet-roadworthiness';
 
 interface DispatchDashboardProps {
   liveLocations: DashboardLiveLocation[];
@@ -83,6 +81,12 @@ interface DispatchDashboardProps {
   /** Loads the office assigned that are still open (dispatch_loads). */
   dispatchLoads: DashboardDispatchLoad[];
   showFinancials: boolean;
+  /** registration -> reasons it cannot be on the road (lib/roadworthy). */
+  unitRisk: Record<string, string[]>;
+  /** Opens the assign-load window for a driver. */
+  onAssign: (driverId: string) => void;
+  /** Opens one unit/trailer in Fleet Roadworthiness. */
+  onOpenFleet: (unit: string) => void;
   onNavigate: (target: DashboardNavTarget) => void;
 }
 
@@ -188,7 +192,7 @@ function StatTile({ icon, value, label, footer, onClick }: { icon: ReactNode; va
 
 // ── the page ──────────────────────────────────────────────────
 
-export default function DispatchDashboard({ liveLocations, employees, shifts, alerts, idleThresholdMinutes, idleDetectionEnabled, fuelCostByShift, dispatchLoads, showFinancials, onNavigate }: DispatchDashboardProps) {
+export default function DispatchDashboard({ liveLocations, employees, shifts, alerts, idleThresholdMinutes, idleDetectionEnabled, fuelCostByShift, dispatchLoads, showFinancials, unitRisk, onAssign, onOpenFleet, onNavigate }: DispatchDashboardProps) {
   // "Shipment Activities" panel toggle: numbers by default, chart when
   // the operator opens it (item 2).
   const [activitiesView, setActivitiesView] = useState<'numbers' | 'chart'>('numbers');
@@ -197,6 +201,8 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(0);
   const [trackedId, setTrackedId] = useState<string | null>(null);
+
+  const riskOf = (num?: string | null) => (num ? unitRisk[num.trim().toUpperCase()]?.join(' · ') : undefined);
 
   const todayMs = startOfDay(new Date()).getTime();
   const weekStart = startOfWeek(new Date(todayMs));
@@ -555,15 +561,7 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
             </div>
 
             <div className="telemetry-filter-bar">
-              <div className="telemetry-search-wrap">
-                <Search size={14} />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={e => { setSearch(e.target.value); setPage(0); }}
-                  placeholder="Search driver, load, customer..."
-                />
-              </div>
+              <TableFilter groups={[]} search={{ value: search, onChange: v => { setSearch(v); setPage(0); }, placeholder: 'Search driver, load, customer...' }} />
               <span className="text-xs text-muted font-semibold" style={{ fontVariantNumeric: 'tabular-nums' }}>
                 {tableRows.length === 0 ? '0' : `${safePage * PAGE_SIZE + 1}–${Math.min((safePage + 1) * PAGE_SIZE, tableRows.length)}`} of {tableRows.length}
               </span>
@@ -593,13 +591,7 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
                   {pageRows.length === 0 ? (
                     <tr>
                       <td colSpan={showFinancials ? 8 : 7}>
-                        <Empty className="py-10">
-                          <EmptyHeader>
-                            <EmptyMedia variant="icon"><PackageOpen /></EmptyMedia>
-                            <EmptyTitle>{query || tableTab !== 'all' ? 'No Matches' : 'No Shipments Yet'}</EmptyTitle>
-                            <EmptyDescription>{query || tableTab !== 'all' ? 'No shipments match this view.' : 'Shipments appear here as drivers clock in.'}</EmptyDescription>
-                          </EmptyHeader>
-                        </Empty>
+                        <NoData className="py-10" />
                       </td>
                     </tr>
                   ) : pageRows.map(s => (
@@ -607,7 +599,14 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
                       <td className="font-mono font-bold text-sm">{s.load_reference || <span className="text-muted">—</span>}</td>
                       <td className="font-bold text-primary">{s.driver_name || 'Unknown driver'}</td>
                       <td className="text-secondary">{s.carrier_name || <span className="text-muted">—</span>}</td>
-                      <td className="font-mono text-sm">{[s.vehicle_number, s.trailer_number].filter(Boolean).join(' / ') || <span className="text-muted">—</span>}</td>
+                      <td className="font-mono text-sm">
+                        {[s.vehicle_number, s.trailer_number].filter(Boolean).join(' / ') || <span className="text-muted">—</span>}
+                        {[s.vehicle_number, s.trailer_number].filter((n): n is string => !!n && !!riskOf(n)).map(n => (
+                          <button key={n} type="button" className="rw-icon" aria-label={`${n} cannot be on the road — open in Fleet Roadworthiness`} title={`${n}: ${riskOf(n)} — open it in Fleet Roadworthiness`} onClick={(e) => { e.stopPropagation(); onOpenFleet(n); }}>
+                            <ShieldAlert size={15} />
+                          </button>
+                        ))}
+                      </td>
                       <td className="text-secondary text-sm">{shortDate(s.start_time)}, {time(s.start_time)}</td>
                       <td className="text-sm" style={{ fontVariantNumeric: 'tabular-nums' }}>{duration(s.start_time, s.end_time)}</td>
                       {showFinancials && (
@@ -615,12 +614,20 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
                           {s.revenue_amount != null ? pounds(s.revenue_amount, 2) : <span className="text-muted">—</span>}
                         </td>
                       )}
-                      <td><span className={STATUS_META[s.shipmentStatus].badge}>{STATUS_META[s.shipmentStatus].label}</span></td>
+                      <td>
+                        <span className="flex items-center" style={{ gap: '8px' }}>
+                          <span className={STATUS_META[s.shipmentStatus].badge}>{STATUS_META[s.shipmentStatus].label}</span>
+                          {s.shipmentStatus === 'awaiting_load' && (
+                            <button type="button" className="comp-edit-btn" onClick={(e) => { e.stopPropagation(); onAssign(s.driver_id); }}>Assign load</button>
+                          )}
+                        </span>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+
           </Panel>
           </div>
           <div className="flex flex-col" style={{ gap: '16px' }}>
@@ -723,6 +730,21 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
                   </div>
                   <span className={STATUS_META[tracked.shipmentStatus].badge}>{STATUS_META[tracked.shipmentStatus].label}</span>
                 </div>
+                {(riskOf(tracked.vehicle_number) || riskOf(tracked.trailer_number)) && (
+                  <div className="flex items-center" style={{ gap: '8px', margin: '0 0 12px', fontSize: '12px', color: 'var(--brand-red)', fontWeight: 700 }}>
+                    {[tracked.vehicle_number, tracked.trailer_number].filter((n): n is string => !!n && !!riskOf(n)).map(n => (
+                      <span key={n} className="flex items-center" style={{ gap: '4px' }}>
+                        <button type="button" className="rw-icon" aria-label={`Open ${n} in Fleet Roadworthiness`} title={`${n}: ${riskOf(n)} — open it in Fleet Roadworthiness`} onClick={() => onOpenFleet(n)}><ShieldAlert size={15} /></button>
+                        <span>{n} ({riskOf(n)})</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {tracked.shipmentStatus === 'awaiting_load' && (
+                  <button type="button" className="btn" style={{ marginBottom: '12px', backgroundColor: 'var(--brand-red)', color: '#fff', borderColor: 'var(--brand-red)' }} onClick={() => onAssign(tracked.driver_id)}>
+                    <Truck size={14} /> Assign load
+                  </button>
+                )}
                 <TrackingTimeline steps={trackingSteps} />
                 <DeliveryPhotos paperworkPath={tracked.delivery_paperwork_path} evidencePath={tracked.delivery_evidence_path} />
                 <div className="dash-driver-row">
@@ -740,13 +762,7 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
                 </div>
               </>
             ) : (
-              <Empty className="py-10">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon"><Truck /></EmptyMedia>
-                  <EmptyTitle>Nothing To Track</EmptyTitle>
-                  <EmptyDescription>Shipments appear here once a driver clocks in.</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
+              <NoData className="py-10" />
             )}
           </Panel>
         </div>

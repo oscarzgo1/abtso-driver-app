@@ -33,14 +33,15 @@ serve(async (req: Request) => {
 
     if (action === "forgot") {
       if (!driverIdRaw) return json({ error: "Enter your Driver ID." }, 400);
-      // Look up by driver_id only — same as the login page. If it
-      // doesn't exist we still return success, to avoid leaking which
-      // Driver IDs are real.
-      const { data: driverRow } = await admin
-        .from("drivers")
-        .select("id, organization_id")
-        .eq("driver_id", driverIdRaw)
-        .maybeSingle();
+      // driver_id is only unique per company, so the company code from the
+      // login screen narrows it down. Without it we only act when the ID is
+      // unambiguous. Either way the response is the same, so this never
+      // reveals which Driver IDs are real.
+      const companySlug = String(body.company_code ?? "").trim().toLowerCase();
+      let query = admin.from("drivers").select("id, organization_id, organizations!inner(slug)").eq("driver_id", driverIdRaw);
+      if (companySlug) query = query.eq("organizations.slug", companySlug);
+      const { data: candidates } = await query;
+      const driverRow = candidates && candidates.length === 1 ? candidates[0] : null;
       if (driverRow) {
         // Only one open request per driver.
         const { data: existing } = await admin
@@ -63,27 +64,33 @@ serve(async (req: Request) => {
     const code = String(body.code ?? "").trim().toUpperCase();
     if (!driverIdRaw || !code) return json({ error: "Enter your Driver ID and activation code." }, 400);
 
-    const { data: driverRow } = await admin
+    // driver_id is only unique per company (drivers_org_driver_id_key), so
+    // two customers can both have e.g. JOHN.SMITH. The activation code is
+    // what identifies the driver: check open codes across every match.
+    const { data: candidates } = await admin
       .from("drivers")
-      .select("id, organization_id, pin_status")
-      .eq("driver_id", driverIdRaw)
-      .maybeSingle();
-    if (!driverRow) return json({ error: "That Driver ID isn't recognised." }, 404);
+      .select("id, organization_id, pin_status, is_active")
+      .eq("driver_id", driverIdRaw);
+    if (!candidates || candidates.length === 0) return json({ error: "That Driver ID isn't recognised." }, 404);
 
     const { data: openCodes } = await admin
       .from("driver_activation_codes")
-      .select("id, code_hash, expires_at")
-      .eq("driver_id", driverRow.id)
+      .select("id, driver_id, code_hash, expires_at")
+      .in("driver_id", candidates.map((c) => c.id))
       .is("consumed_at", null)
       .is("cancelled_at", null)
       .gt("expires_at", new Date().toISOString());
 
-    let match: { id: string } | null = null;
+    let match: { id: string; driverId: string } | null = null;
     for (const c of openCodes ?? []) {
       const { data: ok } = await admin.rpc("verify_secret", { p_plain: code, p_hash: c.code_hash });
-      if (ok === true) { match = { id: c.id as string }; break; }
+      if (ok === true) { match = { id: c.id as string, driverId: c.driver_id as string }; break; }
     }
     if (!match) return json({ error: "That activation code isn't valid, or it's expired. Ask your manager for a new one." }, 401);
+    const driverRow = candidates.find((c) => c.id === match!.driverId)!;
+    if (driverRow.is_active === false) {
+      return json({ error: "This account has been deactivated. Contact your manager." }, 403);
+    }
 
     if (action === "verify") {
       return json({ ok: true });
@@ -102,7 +109,8 @@ serve(async (req: Request) => {
       .eq("id", driverRow.id);
     if (pinError) return json({ error: `Could not save your PIN: ${pinError.message}` }, 500);
 
-    await admin.auth.admin.updateUserById(driverRow.id, { password: pin });
+    const { error: authError } = await admin.auth.admin.updateUserById(driverRow.id, { password: pin });
+    if (authError) return json({ error: `Could not save your PIN: ${authError.message}` }, 500);
     await admin.from("driver_activation_codes").update({ consumed_at: new Date().toISOString() }).eq("id", match.id);
     await admin.rpc("clear_pin_failures", { p_driver_id: driverRow.id });
     await admin.rpc("record_audit", {
