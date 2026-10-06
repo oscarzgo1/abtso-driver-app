@@ -132,7 +132,9 @@ workflows:
           if [ -n "${APP_STORE_APPLE_ID:-}" ]; then
             BUILD_NUM=$(( $(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID") + 1 ))
           else
-            BUILD_NUM=$(( BUILD_NUMBER + 100 ))
+            # Set by hand: App Store Connect already holds 101, so this build is 102.
+            # Raise it by one for every new upload.
+            BUILD_NUM=102
           fi
           flutter build ipa --release \
             --build-number=$BUILD_NUM \
