@@ -125,17 +125,13 @@ workflows:
       - name: Build signed IPA
         script: |
           cd driver_app
-          # App Store Connect already holds builds up to 5 for version 1.0.0, and
-          # APP_STORE_APPLE_ID is not set here, so Codemagic's own counter (1, 2, ...)
-          # would reuse an old number and Apple would discard the upload. Offsetting by
-          # 100 keeps every build above anything already uploaded.
-          if [ -n "${APP_STORE_APPLE_ID:-}" ]; then
-            BUILD_NUM=$(( $(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID") + 1 ))
-          else
-            # Set by hand: App Store Connect already holds 101, so this build is 103.
-            # Raise it by one for every new upload.
-            BUILD_NUM=103
-          fi
+          # The build number must be higher than every build App Store Connect
+          # already holds, and a re-run (for example after an Apple-side upload
+          # error) must not reuse a number. So it comes from the clock: minutes
+          # since 2026-01-01 UTC, about 400,000 in October 2026 and always rising.
+          # (101 and 102 were uploaded earlier, so this is above both.)
+          BUILD_NUM=$(( ( $(date -u +%s) - 1767225600 ) / 60 ))
+          echo "Build number: $BUILD_NUM"
           flutter build ipa --release \
             --build-number=$BUILD_NUM \
             --export-options-plist=/Users/builder/export_options.plist
