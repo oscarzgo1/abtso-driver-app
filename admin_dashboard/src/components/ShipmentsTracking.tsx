@@ -414,7 +414,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
     // the same as Journey History.
     if (trail.length > 0) {
       const endMs = selected?.delivered ? new Date(selected.delivered).getTime() : Date.now();
-      drawJourney(layer, buildJourney(trail, Math.max(endMs, trail[trail.length - 1].t))).forEach(p => bounds.push(p));
+      drawJourney(layer, buildJourney(trail, Math.max(endMs, trail[trail.length - 1].t)), { map }).forEach(p => bounds.push(p));
       L.circleMarker([trail[0].lat, trail[0].lng], { radius: 6, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).bindTooltip('Departed').addTo(layer);
     }
     // Where each proof photo was taken (GPS stamped by the driver's phone).

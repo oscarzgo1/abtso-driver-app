@@ -268,8 +268,11 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         ),
       ),
       motion: tl.MotionConfig(
-        // Once the phone stops moving the plugin switches to periodic fixes;
-        // keep those at the same 3 minutes so a parked driver still reports.
+        // Never switch to "stationary": in that mode the plugin stops asking
+        // for GPS, iOS then suspends the app and nothing (not even the
+        // heartbeat) runs until the driver opens it. Updates keep flowing, the
+        // app is kept alive, and uploads are still limited to one per 3 minutes.
+        disableStopDetection: true,
         stationaryPeriodicInterval: 180,
       ),
       android: tl.AndroidConfig(

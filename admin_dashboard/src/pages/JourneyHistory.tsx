@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import L from 'leaflet';
 import { Download, Printer, MapPin, Route, Navigation, Hourglass, OctagonX, SignalZero, Timer, ChevronDown, ChevronUp, UserRound, Container, Truck } from 'lucide-react';
 import { EarningsDateRangePicker } from '../components/ui/earnings-date-range-picker';
@@ -57,9 +57,9 @@ export default function JourneyHistory({ embedded = false, shifts, employees, de
   const [rangeStart, setRangeStart] = useState(() => dayKey(Date.now()));
   const [rangeEnd, setRangeEnd] = useState(() => dayKey(Date.now()));
   const [overlayOpen, setOverlayOpen] = useState(true);
-  const [shiftId, setShiftId] = useState('');
-  const [stoppedMinutes, setStoppedMinutes] = useState(DEFAULT_JOURNEY_OPTIONS.stoppedMinutes);
-  const [pings, setPings] = useState<Ping[]>([]);
+  const stoppedMinutes = DEFAULT_JOURNEY_OPTIONS.stoppedMinutes;
+  // Pings of every shift in the range, keyed by shift.
+  const [pingsByShift, setPingsByShift] = useState<Record<string, Ping[]>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<number | null>(null);
@@ -82,14 +82,15 @@ export default function JourneyHistory({ embedded = false, shifts, employees, de
     [shifts, driverId, rangeStart, rangeEnd],
   );
 
-  // Pick the latest shift of the day automatically.
-  useEffect(() => {
-    setShiftId(dayShifts.length ? dayShifts[dayShifts.length - 1].id : '');
-    setSelected(null);
-  }, [dayShifts]);
+  // The journey covers EVERY shift in the range, so the whole recorded history
+  // is on screen. Changing the driver or the dates clears the selection; the
+  // live refresh of the shift list never does (it used to jump to the active shift).
+  useEffect(() => { setSelected(null); }, [driverId, rangeStart, rangeEnd]);
 
-  const shift = dayShifts.find(s => s.id === shiftId) ?? null;
+  // The latest shift in the range: its vehicle and trailer, and whether it is still running.
+  const shift = dayShifts.length ? dayShifts[dayShifts.length - 1] : null;
   const live = !!shift && !shift.end_time && shift.status !== 'completed';
+  const shiftIds = dayShifts.map(x => x.id).join(',');
 
   useEffect(() => {
     if (!live) return;
@@ -97,48 +98,57 @@ export default function JourneyHistory({ embedded = false, shifts, employees, de
     return () => clearInterval(t);
   }, [live]);
 
-  // Load the shift's pings (paged — a long shift can pass 1000 rows).
+  // Load the pings of every shift in the range (paged: a shift can pass 1000 rows).
   useEffect(() => {
-    setPings([]);
     setError('');
-    if (!shift || isMockMode || !supabase) return;
+    if (!shiftIds || isMockMode || !supabase) { setPingsByShift({}); return; }
     let cancelled = false;
+    const ids = shiftIds.split(',');
     const fetchAll = async () => {
       setLoading(true);
-      const all: Ping[] = [];
+      const byShift: Record<string, Ping[]> = {};
       for (let from = 0; ; from += 1000) {
         const { data, error: err } = await supabase!
           .from('gps_locations')
-          .select('latitude, longitude, speed, recorded_at')
-          .eq('shift_id', shift.id)
+          .select('shift_id, latitude, longitude, speed, recorded_at')
+          .in('shift_id', ids)
           .order('recorded_at', { ascending: true })
           .range(from, from + 999);
         if (err) { if (!cancelled) setError(err.message); break; }
         for (const r of data ?? []) {
           if (r.latitude == null || r.longitude == null) continue;
-          all.push({ lat: Number(r.latitude), lng: Number(r.longitude), speed: r.speed == null ? null : Number(r.speed), t: toUtcMs(r.recorded_at) });
+          (byShift[r.shift_id as string] ??= []).push({ lat: Number(r.latitude), lng: Number(r.longitude), speed: r.speed == null ? null : Number(r.speed), t: toUtcMs(r.recorded_at) });
         }
         if (!data || data.length < 1000) break;
       }
-      if (!cancelled) { setPings(all); setLoading(false); }
+      if (!cancelled) { setPingsByShift(byShift); setLoading(false); }
     };
     fetchAll();
     return () => { cancelled = true; };
     // `now` re-fetches a live shift every minute
-  }, [shift?.id, live ? now : 0]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [shiftIds, live ? now : 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const startMs = shift ? toUtcMs(shift.start_time) : 0;
+  const startMs = dayShifts.length ? toUtcMs(dayShifts[0].start_time) : 0;
   const endMs = shift ? (shift.end_time ? toUtcMs(shift.end_time) : now) : 0;
 
-  const segments: Segment[] = useMemo(() => {
-    if (!shift) return [];
-    // The journey begins at clock-in: seed it with the clock-in position.
-    const seeded: Ping[] = [...pings];
-    if (shift.start_lat != null && shift.start_lng != null && (pings.length === 0 || pings[0].t > startMs)) {
-      seeded.unshift({ lat: Number(shift.start_lat), lng: Number(shift.start_lng), speed: 0, t: startMs });
-    }
-    return buildJourney(seeded, Math.max(endMs, seeded.length ? seeded[seeded.length - 1].t : endMs), { ...DEFAULT_JOURNEY_OPTIONS, stoppedMinutes });
-  }, [pings, shift, startMs, endMs, stoppedMinutes]);
+  // One journey per shift, joined in time order; shiftOf[i] says which shift segment i belongs to.
+  const { segments, shiftOf } = useMemo(() => {
+    const out: Segment[] = [];
+    const owner: number[] = [];
+    dayShifts.forEach((sh, idx) => {
+      const pings = pingsByShift[sh.id] ?? [];
+      const sMs = toUtcMs(sh.start_time);
+      const eMs = sh.end_time ? toUtcMs(sh.end_time) : now;
+      // The journey begins at clock-in: seed it with the clock-in position.
+      const seeded: Ping[] = [...pings];
+      if (sh.start_lat != null && sh.start_lng != null && (pings.length === 0 || pings[0].t > sMs)) {
+        seeded.unshift({ lat: Number(sh.start_lat), lng: Number(sh.start_lng), speed: 0, t: sMs });
+      }
+      buildJourney(seeded, Math.max(eMs, seeded.length ? seeded[seeded.length - 1].t : eMs), { ...DEFAULT_JOURNEY_OPTIONS, stoppedMinutes })
+        .forEach(g => { out.push(g); owner.push(idx); });
+    });
+    return { segments: out, shiftOf: owner };
+  }, [pingsByShift, dayShifts, now, stoppedMinutes]);
 
   const summary = useMemo(() => summarise(segments), [segments]);
 
@@ -174,7 +184,7 @@ export default function JourneyHistory({ embedded = false, shifts, employees, de
     const layer = layerRef.current;
     if (!map || !layer) return;
     layer.clearLayers();
-    const bounds = drawJourney(layer, segments, { selected, onSelect: setSelected });
+    const bounds = drawJourney(layer, segments, { selected, onSelect: setSelected, map });
     // Where the journey ends (or the driver is now): their 3D avatar, and the coupled trailer.
     const lastSeg = segments[segments.length - 1];
     const end = lastSeg?.path[lastSeg.path.length - 1];
@@ -287,21 +297,6 @@ ${segments.map((s, i) => `<tr><td><span class="b" style="background:${LABEL_META
             onChange={(start, end) => { setRangeStart(start); setRangeEnd(end); }}
           />
         </div>
-        <div className="input-group" style={{ margin: 0, minWidth: '200px' }}>
-          <label className="input-label" htmlFor="jh-shift">SHIFT</label>
-          <select id="jh-shift" className="input-field" value={shiftId} disabled={dayShifts.length === 0} onChange={e => { setShiftId(e.target.value); setSelected(null); }}>
-            {dayShifts.length === 0 && <option value="">No shift in this range</option>}
-            {dayShifts.map(s => (
-              <option key={s.id} value={s.id}>{new Date(toUtcMs(s.start_time)).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })}, {hm(toUtcMs(s.start_time))} to {s.end_time ? hm(toUtcMs(s.end_time)) : 'now (live)'}</option>
-            ))}
-          </select>
-        </div>
-        <div className="input-group" style={{ margin: 0 }}>
-          <label className="input-label" htmlFor="jh-stopped">STOPPED AFTER</label>
-          <select id="jh-stopped" className="input-field" value={stoppedMinutes} onChange={e => setStoppedMinutes(Number(e.target.value))}>
-            {[10, 15, 30, 60].map(m => <option key={m} value={m}>{m} minutes still</option>)}
-          </select>
-        </div>
       </div>
 
       {error && <div className="login-notice login-notice--error mb-16">{error}</div>}
@@ -366,8 +361,17 @@ ${segments.map((s, i) => `<tr><td><span class="b" style="background:${LABEL_META
                   </div>
                 ) : segments.map((s, i) => {
                   const meta = LABEL_META[s.label as JourneyLabel];
+                  const newShift = i === 0 || shiftOf[i] !== shiftOf[i - 1];
+                  const sh = dayShifts[shiftOf[i]];
                   return (
-                    <button key={i} type="button" className="tp-driver" style={selected === i ? { borderColor: meta.color } : undefined} onClick={() => setSelected(selected === i ? null : i)}>
+                    <Fragment key={i}>
+                    {newShift && sh && dayShifts.length > 1 && (
+                      <p className="text-xs font-bold text-primary" style={{ margin: i === 0 ? '0 0 8px' : '14px 0 8px' }}>
+                        {new Date(toUtcMs(sh.start_time)).toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' })}, {hm(toUtcMs(sh.start_time))} to {sh.end_time ? hm(toUtcMs(sh.end_time)) : 'now'}
+                        {sh.vehicle_number ? ` · ${sh.vehicle_number}` : ''}
+                      </p>
+                    )}
+                    <button type="button" className="tp-driver" style={selected === i ? { borderColor: meta.color } : undefined} onClick={() => setSelected(selected === i ? null : i)}>
                       <div className="tp-driver-top">
                         <span className="tp-badge" style={{ color: meta.color, background: `${meta.color}1F` }}>{meta.text}</span>
                         <div className="tp-driver-name">
@@ -390,6 +394,7 @@ ${segments.map((s, i) => `<tr><td><span class="b" style="background:${LABEL_META
                         </a>
                       </div>
                     </button>
+                    </Fragment>
                   );
                 })}
               </div>

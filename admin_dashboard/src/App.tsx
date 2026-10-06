@@ -4975,17 +4975,19 @@ export default function App() {
     const marker = markersRef.current[driverId];
     if (!mapRef.current || !marker) return;
     marker.openPopup();
-    setTrailDriverId(prev => {
-      if (prev === driverId) { trailFittedFor.current = null; return null; }
-      trailFittedFor.current = null;
-      return driverId;
-    });
-    if (mapRef.current) mapRef.current.setView(marker.getLatLng(), Math.max(mapRef.current.getZoom(), 14), { animate: true });
+    // Turning the journey on lets the journey itself fit the map once it has
+    // loaded (one move, not two fighting each other); turning it off just stays put.
+    trailFittedFor.current = null;
+    setTrailDriverId(prev => (prev === driverId ? null : driverId));
   }, []);
 
   // Draw the selected driver's journey so far (clock-in to now) on the live
   // map, using the same labelling as Journey History. Redraws whenever the
   // live positions refresh, so it grows as the driver moves.
+  // Only this driver's own position redraws the journey, not every refresh of everyone's.
+  const trailLive = trailDriverId ? liveLocations.find(l => l.driver_id === trailDriverId) : undefined;
+  const trailLat = trailLive?.latitude;
+  const trailLng = trailLive?.longitude;
   useEffect(() => {
     if (activeTab !== 'live' || liveSubTab !== 'live' || !trailDriverId || isMockMode || !supabase) {
       trailLayerRef.current?.clearLayers();
@@ -5012,22 +5014,30 @@ export default function App() {
         if (!data || data.length < 1000) break;
       }
       if (cancelled || !mapRef.current) return;
+      const map = mapRef.current;
       const startMs = toMs(shift.start_time);
       if ((shift as { start_lat?: number | null }).start_lat != null && (shift as { start_lng?: number | null }).start_lng != null && (pings.length === 0 || pings[0].t > startMs)) {
         pings.unshift({ lat: Number((shift as { start_lat?: number | null }).start_lat), lng: Number((shift as { start_lng?: number | null }).start_lng), speed: 0, t: startMs });
       }
       const segs = buildJourney(pings, Date.now());
-      if (!trailLayerRef.current) trailLayerRef.current = L.layerGroup().addTo(mapRef.current);
-      const layer = trailLayerRef.current;
-      layer.clearLayers();
-      const all = drawJourney(layer, segs) as [number, number][];
-      if (all.length && trailFittedFor.current !== trailDriverId) {
-        trailFittedFor.current = trailDriverId;
-        mapRef.current.fitBounds(L.latLngBounds(all).pad(0.2), { maxZoom: 15 });
-      }
+      const draw = () => {
+        if (cancelled || mapRef.current !== map) return;
+        if (!trailLayerRef.current) trailLayerRef.current = L.layerGroup().addTo(map);
+        const layer = trailLayerRef.current;
+        layer.clearLayers();
+        const all = drawJourney(layer, segs, { map }) as [number, number][];
+        if (trailFittedFor.current !== trailDriverId) {
+          trailFittedFor.current = trailDriverId;
+          if (all.length) map.fitBounds(L.latLngBounds(all).pad(0.2), { maxZoom: 15 });
+          else if (trailLat != null && trailLng != null) map.setView([trailLat, trailLng], Math.max(map.getZoom(), 14));
+        }
+      };
+      // Never change layers in the middle of a zoom animation (it breaks the map).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      if ((map as any)._animatingZoom) map.once('zoomend', draw); else draw();
     })();
     return () => { cancelled = true; };
-  }, [activeTab, liveSubTab, trailDriverId, liveLocations, shifts]);
+  }, [activeTab, liveSubTab, trailDriverId, trailLat, trailLng, shifts]);
 
   // Leaving the live tab or the driver clocking out ends the trail.
   useEffect(() => {
