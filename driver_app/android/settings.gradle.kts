@@ -21,6 +21,8 @@ plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "9.0.1" apply false
     id("org.jetbrains.kotlin.android") version "2.3.20" apply false
+    // maplibre_android applies this plugin without a version; declaring it here puts it on the classpath.
+    id("org.jlleitschuh.gradle.ktlint") version "12.1.1" apply false
 }
 
 include(":app")
