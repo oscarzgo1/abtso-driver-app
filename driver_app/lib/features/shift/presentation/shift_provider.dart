@@ -189,6 +189,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   StreamSubscription<tl.Location>? _traceletSubscription;
   StreamSubscription<tl.HeartbeatEvent>? _heartbeatSubscription;
   DateTime? _lastUploadTime;
+  /// Time of the GPS fix last uploaded, so the same fix is never sent twice.
+  DateTime? _lastUploadedFixAt;
   
   // Filter to reject stale active shift stream updates on successful completion
   String? _lastCompletedShiftId;
@@ -286,7 +288,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         Position(
           latitude: c.latitude,
           longitude: c.longitude,
-          timestamp: DateTime.now(),
+          timestamp: DateTime.tryParse(e.location.timestamp) ?? DateTime.now(),
           accuracy: c.accuracy,
           altitude: c.altitude,
           altitudeAccuracy: c.altitudeAccuracy,
@@ -713,9 +715,20 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         shouldUpload = _lastUploadTime == null || now.difference(_lastUploadTime!) >= _gpsUploadInterval;
       }
 
+      // The ping carries the time of the GPS fix, not "now": if the phone has
+      // lost its GPS (location switched off, no fix) the last position is old
+      // and the admin panel must see it as old (No GPS), not as fresh. The same
+      // fix is never uploaded twice.
+      final fixAt = position.timestamp;
+      if (shouldUpload && !isPlayback && _lastUploadedFixAt != null && !fixAt.isAfter(_lastUploadedFixAt!)) {
+        debugPrint('GPS upload skipped: no new fix since $_lastUploadedFixAt');
+        return;
+      }
+
       if (shouldUpload) {
         if (!isPlayback) {
           _lastUploadTime = now;
+          _lastUploadedFixAt = fixAt;
         }
         final driverId = SupabaseService.currentDriverId;
         final shiftId = state.activeShift?.id;
@@ -732,7 +745,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
           'longitude': position.longitude,
           'speed': position.speed < 0 ? 0.0 : position.speed,
           'accuracy': position.accuracy,
-          'recorded_at': DateTime.now().toUtc().toIso8601String(),
+          'recorded_at': (isPlayback ? now : fixAt).toUtc().toIso8601String(),
         };
 
         debugPrint('🚀 Sending GPS payload to Supabase: $payload');
@@ -970,6 +983,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         }
 
         _lastUploadTime = null;
+        _lastUploadedFixAt = null;
         _startGpsPingTimer();
       } else {
         state = state.copyWith(errorMessage: result['error'] ?? 'Clock in failed');
@@ -1544,6 +1558,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _pendingActionRetryTimer = null;
     _lastCompletedShiftId = null;
     _lastUploadTime = null;
+    _lastUploadedFixAt = null;
     _stopAnchor = null;
     _stoppedSince = null;
     _remindedThisStop = false;

@@ -28,6 +28,9 @@ import '../../../core/network/entitlements_provider.dart';
 import '../../../core/services/tracking_guard.dart';
 import 'tracking_setup_sheet.dart';
 
+/// True once this app launch has looked for tracking notices (see _showLaunchNotices).
+bool _gpsNoticesCheckedThisLaunch = false;
+
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -80,7 +83,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   // screen's memory) so coming back to Home never repeats an old alert.
   Set<String>? _shownGpsNotices;
   bool _gpsNoticeBusy = false;
-  RealtimeChannel? _gpsEventsChannel;
 
   /// Wired into ShiftNotifier.trackingPrompt so clock-in can ask for the
   /// permissions with the sheet's direct-to-settings buttons.
@@ -109,7 +111,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     if (!hasShift) return;
 
     await ref.read(shiftProvider.notifier).refreshGpsPolicy();
-    await _showPendingGpsNotices();
 
     if (!health.healthy && mounted) {
       await _promptTrackingSetup();
@@ -136,9 +137,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     await prefs.setStringList(_gpsNoticePrefsKey, trimmed);
   }
 
+  /// Tells the driver what happened while the app was closed. Runs once per
+  /// app launch (a cold start, i.e. the app had been killed), never when the
+  /// app merely comes back from the background or the home screen is rebuilt.
+  Future<void> _showLaunchNotices() async {
+    if (_gpsNoticesCheckedThisLaunch || kIsWeb || !mounted) return;
+    _gpsNoticesCheckedThisLaunch = true;
+    if (!SupabaseService.isAuthenticated) return;
+    await ref.read(shiftProvider.notifier).refreshGpsPolicy();
+    await _showPendingGpsNotices();
+  }
+
   /// Shows each tracking event (tracking stopped, or idle) to the driver once.
-  /// Runs when the app opens, comes back from the background, and the moment a
-  /// new event arrives while it is open.
   Future<void> _showPendingGpsNotices() async {
     if (_gpsNoticeBusy || !mounted) return;
     _gpsNoticeBusy = true;
@@ -284,24 +294,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
           )
           ..subscribe();
 
-      // Tracking / idle events — shown the moment they arrive while the app is open.
-      _gpsEventsChannel = SupabaseService.client
-          .channel('driver_gps_events_$driverId')
-          .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'gps_offline_events',
-            filter: PostgresChangeFilter(
-              type: PostgresChangeFilterType.eq,
-              column: 'driver_id',
-              value: driverId,
-            ),
-            callback: (PostgresChangePayload payload) {
-              unawaited(_showPendingGpsNotices());
-            },
-          )
-          ..subscribe();
-
       // 2. Driver Shifts Realtime (Clock in/out, Admin manual edits, Flags, Night Out, Extras)
       _shiftsChannel = SupabaseService.client
           .channel('driver_shifts_updates_$driverId')
@@ -360,10 +352,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       SupabaseService.client.removeChannel(_shiftsChannel!);
       _shiftsChannel = null;
     }
-    if (_gpsEventsChannel != null) {
-      SupabaseService.client.removeChannel(_gpsEventsChannel!);
-      _gpsEventsChannel = null;
-    }
     if (_orgSettingsChannel != null) {
       SupabaseService.client.removeChannel(_orgSettingsChannel!);
       _orgSettingsChannel = null;
@@ -400,6 +388,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
         _iconAnimationController.value = 1.0;
         unawaited(_checkTrackingOnResume());
       }
+      unawaited(_showLaunchNotices());
     });
 
     // Tick active shift elapsed timer — also resets to zero when clocked out
