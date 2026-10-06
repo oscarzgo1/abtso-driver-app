@@ -398,7 +398,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
     layer.clearLayers();
     const bounds: L.LatLngExpression[] = [];
     for (const d of depots) {
-      L.circle([d.latitude, d.longitude], { radius: d.geofence_radius_m, color: '#CC0000', weight: 2, fillColor: '#CC0000', fillOpacity: 0.08 }).addTo(layer);
+      L.circle([d.latitude, d.longitude], { radius: d.geofence_radius_m >= 1_000_000 ? 300 : d.geofence_radius_m, color: '#CC0000', weight: 2, fillColor: '#CC0000', fillOpacity: 0.08 }).addTo(layer);
       L.circleMarker([d.latitude, d.longitude], { radius: 6, color: '#fff', weight: 2, fillColor: '#CC0000', fillOpacity: 1 }).bindTooltip(d.name).addTo(layer);
     }
     const pts: [number, number][] = [...trail];

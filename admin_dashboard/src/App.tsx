@@ -3281,8 +3281,8 @@ export default function App() {
       setDepotFormError('Longitude must be a number between -180 and 180.');
       return;
     }
-    if (!Number.isNaN(radius) && (radius < 25 || radius > 2000)) {
-      setDepotFormError('Radius must be between 25 m and 2,000 m.');
+    if (!Number.isNaN(radius) && (radius < 1 || radius > 2_000_000_000)) {
+      setDepotFormError('Enter a radius in metres between 1 and 2,000,000,000.');
       return;
     }
 
@@ -5064,10 +5064,11 @@ export default function App() {
         color: '#CC0000',
         fillColor: '#CC0000',
         fillOpacity: 0.08,
-        radius: depot.geofence_radius_m,
+        // A radius of 1,000 km+ would cover the whole map, so it is drawn as a small ring.
+        radius: depot.geofence_radius_m >= 1_000_000 ? 300 : depot.geofence_radius_m,
         weight: 1.5
       }).addTo(mapRef.current!).bindPopup(
-        `<b>${depot.name}</b><br>Radius: ${depot.geofence_radius_m}m<br>Lat: ${depot.latitude.toFixed(4)}, Lng: ${depot.longitude.toFixed(4)}`
+        `<b>${depot.name}</b><br>Radius: ${depot.geofence_radius_m.toLocaleString('en-GB')}m<br>Lat: ${depot.latitude.toFixed(4)}, Lng: ${depot.longitude.toFixed(4)}`
       );
       const marker = L.marker([depot.latitude, depot.longitude], {
         icon: L.divIcon({
@@ -9585,7 +9586,7 @@ export default function App() {
                                   {depot.address && <div className="text-xs text-muted">{depot.address}</div>}
                                 </td>
                                 <td className="font-mono text-xs">{depot.latitude.toFixed(5)}, {depot.longitude.toFixed(5)}</td>
-                                <td>{depot.geofence_radius_m}m</td>
+                                <td>{depot.geofence_radius_m.toLocaleString('en-GB')}m</td>
                                 <td>
                                   <span className="flex align-center" style={{ gap: '12px' }}>
                                     <button
@@ -9704,6 +9705,9 @@ export default function App() {
                         />
                         <span className="text-xs text-muted">1,000 m</span>
                       </div>
+                      <p className="text-xs text-muted" style={{ margin: '4px 0 0' }}>
+                        The slider covers 25–1,000 m; type any other number of metres in the box to go beyond it.
+                      </p>
                       <p className="text-xs text-muted mt-4 mb-16">
                         Tap "Use My Current Location" while standing at the depot, or find coordinates by
                         searching the address on Google Maps and copying the latitude/longitude shown for the pin.

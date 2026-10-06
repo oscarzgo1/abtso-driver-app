@@ -44,6 +44,10 @@ const String _kMapStyleUrl = 'https://tiles.openfreemap.org/styles/liberty';
 /// A circle of [radiusM] metres around a point as a polygon ring, for the
 /// depot geofences (MapLibre circle layers are sized in pixels, not metres).
 List<ml.Geographic> _geofenceRing(double lat, double lon, double radiusM, {int steps = 48}) {
+  // A depot set to a huge radius (e.g. "clock in from anywhere") would make a
+  // ring with impossible coordinates, so past 100 km it is drawn as a small
+  // marker ring. Clock-in itself still uses the real radius.
+  if (radiusM >= 100000) radiusM = 300;
   final dLat = radiusM / 111320.0;
   final dLon = radiusM / (111320.0 * math.cos(lat * math.pi / 180));
   return [
