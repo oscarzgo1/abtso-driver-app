@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, type CSSProperties } from 'react';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Truck, Container, Package, ChevronDown, ChevronRight, ChevronLeft, ArrowUpDown, Bell, AlertOctagon, CalendarX, CheckCircle2, Clock, Plus, Trash2, Settings2 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -174,13 +175,13 @@ const COL = {
 
 function AssetTableHeader() {
   const th: CSSProperties = {
-    fontSize: '10px', fontWeight: 800, color: 'var(--charcoal-light)',
-    textTransform: 'uppercase', letterSpacing: '0.7px', flexShrink: 0,
+    fontSize: '12px', fontWeight: 600, color: 'var(--charcoal-light)',
+    textTransform: 'none', letterSpacing: 0, flexShrink: 0,
   };
   return (
     <div
       className="flex align-center"
-      style={{ gap: '16px', padding: '10px 16px', background: 'var(--card-bg-hover)', borderBottom: '1px solid var(--border-color)' }}
+      style={{ gap: '16px', padding: '10px 20px', background: 'transparent', borderBottom: '1px solid var(--border-color)' }}
     >
       <span style={{ ...th, width: COL.status }}>Status</span>
       <span style={{ ...th, width: COL.registration }}>Registration</span>
@@ -544,6 +545,7 @@ export default function FleetRoadworthiness({ organizationId, onAlertCountChange
   useEffect(() => {
     loadVehicles();
   }, [loadVehicles]);
+  useSectionRefresh(loadVehicles);
 
   // Realtime: a driver-submitted incident report can ground a vehicle
   // (trg_ground_vehicle_on_critical_defect) — this register's VOR badges
@@ -882,13 +884,13 @@ export default function FleetRoadworthiness({ organizationId, onAlertCountChange
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <div style={{ minWidth: '760px' }}>
-              <div className="flex align-center" style={{ gap: '16px', padding: '10px 16px', background: 'var(--card-bg-hover)', borderBottom: '1px solid var(--border-color)' }}>
+              <div className="flex align-center" style={{ gap: '16px', padding: '10px 20px', background: 'transparent', borderBottom: '1px solid var(--border-color)' }}>
                 {([['reg', 'Registration', null], ['status', 'Status', '150px'], ['next', 'Next date', '170px'], ['items', 'Inspections', '100px']] as const).map(([key, label, w]) => (
                   <button
                     key={key}
                     type="button"
                     onClick={() => sortBy(key)}
-                    style={{ ...(w ? { width: w, flexShrink: 0 } : { flex: 1.2, minWidth: 0 }), display: 'flex', alignItems: 'center', gap: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', fontSize: '10px', fontWeight: 800, color: sort.key === key ? 'var(--charcoal)' : 'var(--charcoal-light)', textTransform: 'uppercase', letterSpacing: '0.7px', fontFamily: 'inherit' }}
+                    style={{ ...(w ? { width: w, flexShrink: 0 } : { flex: 1.2, minWidth: 0 }), display: 'flex', alignItems: 'center', gap: '4px', background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left', fontSize: '12px', fontWeight: 600, color: sort.key === key ? 'var(--charcoal)' : 'var(--charcoal-light)', textTransform: 'none', letterSpacing: 0, fontFamily: 'inherit' }}
                   >
                     {label} <ArrowUpDown size={11} />
                   </button>

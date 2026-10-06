@@ -2863,3 +2863,69 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 /* Not-roadworthy marker: icon only, opens Fleet Roadworthiness */
 .rw-icon { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; margin: 0 4px; vertical-align: middle; border: 1px solid rgba(204,0,0,0.35); border-radius: 6px; background: rgba(204,0,0,0.08); color: var(--brand-red); cursor: pointer; flex-shrink: 0; }
 .rw-icon:hover { background: var(--brand-red); color: #fff; }
+
+/* ── Refresh icon on the "No Data" empty state spins while it reloads ── */
+@keyframes nodata-spin-kf { to { transform: rotate(360deg); } }
+.nodata-spin { animation: nodata-spin-kf 0.8s linear infinite; }
+
+/* ── Tables: the 21st.dev Member List look ──────────────────────────────
+   A calm card, a quiet header row (small, muted, no caps), soft row
+   dividers and a gentle hover, with room to breathe. Applies to every
+   .data-table; the person cell (.ml-cell) is the avatar + name + muted line. */
+.table-container { border-radius: 14px; background: var(--card-bg); overflow-x: auto; }
+.data-table th { background: transparent; color: var(--charcoal-light); font-size: 12px; font-weight: 600; text-transform: none; letter-spacing: 0; padding: 10px 20px; border-bottom: 1px solid var(--border-color); white-space: nowrap; }
+.data-table td { padding: 13px 20px; border-bottom: 1px solid rgba(0, 0, 0, 0.05); font-size: 13px; }
+[data-theme="dark"] .data-table td { border-bottom-color: rgba(255, 255, 255, 0.06); }
+.data-table tr:hover td { background: var(--card-bg-hover); }
+.data-table--lg th { font-size: 12px; padding: 12px 20px; }
+.data-table--lg td { font-size: 14px; padding: 15px 20px; }
+
+.ml-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ml-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.ml-name { font-weight: 600; font-size: 13px; color: var(--charcoal); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-sub { font-size: 11.5px; color: var(--charcoal-light); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-avatar { position: relative; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border-radius: 50%; color: var(--charcoal); font-weight: 700; letter-spacing: 0.2px; }
+.ml-dot { position: absolute; right: -2px; bottom: -2px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--card-bg); }
+/* A quiet tag: no outline, just a soft fill. */
+.ml-chip { display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px; border-radius: 6px; background: var(--card-bg-hover); color: var(--charcoal-mid); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.ml-chip--mono { font-family: 'JetBrains Mono', monospace; font-weight: 500; }
+
+/* Trailer pin on the Live Map: a small charcoal square + a quiet reg label */
+.trailer-pin { display: flex; align-items: center; gap: 4px; width: max-content; transform: translate(-50%, -50%); filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.3)); }
+.trailer-pin-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; background: #333333; border: 1.5px solid #fff; }
+.trailer-pin-label { padding: 1px 5px; border-radius: 4px; background: rgba(255, 255, 255, 0.94); color: #333333; font-size: 9.5px; font-weight: 700; letter-spacing: 0.3px; border: 1px solid rgba(0, 0, 0, 0.12); white-space: nowrap; text-transform: uppercase; }
+
+/* ── Map pins: 3D avatar (driver) and 3D trailer, teardrop shaped ── */
+.mp-pin { position: relative; width: 44px; height: 50px; cursor: pointer; }
+.mp-bubble { position: absolute; left: 3px; top: 0; width: 38px; height: 38px; border-radius: 50%; background: #fff; border: 3px solid var(--mp-accent, #333); box-shadow: 0 3px 8px rgba(0, 0, 0, 0.32), inset 0 -2px 4px rgba(0, 0, 0, 0.12); display: flex; align-items: center; justify-content: center; overflow: visible; z-index: 2; }
+.mp-bubble svg { border-radius: 50%; display: block; }
+.mp-tail { position: absolute; left: 15px; top: 30px; width: 14px; height: 14px; background: var(--mp-accent, #333); transform: rotate(45deg); border-radius: 0 0 3px 0; box-shadow: 2px 3px 5px rgba(0, 0, 0, 0.25); z-index: 1; }
+.mp-shadow { position: absolute; left: 11px; top: 44px; width: 22px; height: 6px; border-radius: 50%; background: rgba(0, 0, 0, 0.28); filter: blur(2px); }
+.mp-label { position: absolute; left: 46px; top: 8px; padding: 1px 6px; border-radius: 5px; background: rgba(255, 255, 255, 0.96); color: #333; border: 1px solid rgba(0, 0, 0, 0.12); font-size: 10px; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
+.mp-label span { color: #999; font-weight: 600; }
+.mp-status { position: absolute; right: -4px; top: -3px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid #fff; background: #2E7D32; z-index: 3; }
+.mp-idle .mp-status { background: #CC0000; animation: mp-pulse 1.4s ease-in-out infinite; }
+.mp-nosignal .mp-status { background: #9A9A9A; }
+.mp-nosignal .mp-bubble { filter: grayscale(0.7); opacity: 0.85; }
+.mp-live .mp-status { animation: mp-pulse-green 2s ease-in-out infinite; }
+@keyframes mp-pulse { 50% { box-shadow: 0 0 0 5px rgba(204, 0, 0, 0.22); } }
+@keyframes mp-pulse-green { 50% { box-shadow: 0 0 0 5px rgba(46, 125, 50, 0.2); } }
+.mp-trailer { width: 36px; height: 42px; }
+.mp-trailer .mp-bubble { left: 2px; width: 32px; height: 32px; background: linear-gradient(#fff, #ECECEC); }
+.mp-trailer .mp-bubble svg { border-radius: 0; }
+.mp-trailer .mp-tail { left: 11px; top: 26px; width: 12px; height: 12px; }
+.mp-trailer .mp-shadow { left: 8px; top: 37px; width: 20px; }
+.mp-trailer .mp-label { left: 38px; top: 6px; font-size: 9.5px; }
+.mp-still .mp-status { background: #9A9A9A; }
+
+/* 3D avatar in the Live Tracking list (same character as the map pin) */
+.tp-face { position: relative; display: inline-flex; width: 34px; height: 34px; flex-shrink: 0; }
+.tp-face-img { display: block; width: 34px; height: 34px; border-radius: 50%; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.22); overflow: hidden; }
+.tp-face-img svg { display: block; }
+.tp-face-dot { position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--card-bg, #fff); }
+
+/* Journey map: numbered badge on each long stop */
+.jm-stop-no {
+  display: grid; place-items: center; width: 20px; height: 20px;
+  color: #fff; font: 700 11px/1 Inter, system-ui, sans-serif; pointer-events: none;
+}

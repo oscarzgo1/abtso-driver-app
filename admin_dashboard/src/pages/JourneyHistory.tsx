@@ -4,11 +4,13 @@ import { Download, Printer, MapPin, Route, Navigation, Hourglass, OctagonX, Sign
 import { EarningsDateRangePicker } from '../components/ui/earnings-date-range-picker';
 import { supabase, isMockMode } from '../App';
 import NoData from '../components/ui/no-data';
+import { driverPinHtml, trailerPinHtml, escapeHtml, DRIVER_PIN_SIZE, DRIVER_PIN_ANCHOR, TRAILER_PIN_SIZE, TRAILER_PIN_ANCHOR } from '../lib/map-pins';
 import {
   buildJourney, summarise, formatDuration, haversineM, LABEL_META, DEFAULT_JOURNEY_OPTIONS,
   type Ping, type Segment, type JourneyLabel,
 } from '../lib/journey';
 
+import { drawJourney } from '../lib/journey-map';
 // Journey History: the full GPS trail of one shift, from clock-in, with
 // every stretch labelled Moving / Stationary / Stopped / No signal. The
 // pings are kept in the database, so a journey can be opened months later
@@ -172,25 +174,24 @@ export default function JourneyHistory({ embedded = false, shifts, employees, de
     const layer = layerRef.current;
     if (!map || !layer) return;
     layer.clearLayers();
-    const bounds: L.LatLngExpression[] = [];
-    segments.forEach((seg, i) => {
-      const color = LABEL_META[seg.label].color;
-      const pts = seg.path.map(p => [p.lat, p.lng] as [number, number]);
-      pts.forEach(p => bounds.push(p));
-      const dim = selected !== null && selected !== i;
-      if (seg.label === 'moving' || seg.label === 'no_signal') {
-        L.polyline(pts, {
-          color, weight: seg.label === 'moving' ? 5 : 3, opacity: dim ? 0.25 : 0.9,
-          dashArray: seg.label === 'no_signal' ? '6 8' : undefined,
-        }).addTo(layer).on('click', () => setSelected(i));
-      } else {
-        const c = seg.path[0];
-        L.circleMarker([c.lat, c.lng], { radius: seg.label === 'stopped' ? 9 : 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: dim ? 0.35 : 1 })
-          .addTo(layer)
-          .bindTooltip(`${LABEL_META[seg.label].text} ${hm(seg.start)} to ${hm(seg.end)} (${formatDuration(seg.durationMs)})`)
-          .on('click', () => setSelected(i));
+    const bounds = drawJourney(layer, segments, { selected, onSelect: setSelected });
+    // Where the journey ends (or the driver is now): their 3D avatar, and the coupled trailer.
+    const lastSeg = segments[segments.length - 1];
+    const end = lastSeg?.path[lastSeg.path.length - 1];
+    if (end) {
+      const who = employees.find(e => e.id === driverId)?.full_name ?? shift?.driver_name ?? 'Driver';
+      const unit = shift?.vehicle_number ? escapeHtml(String(shift.vehicle_number)) : null;
+      L.marker([end.lat, end.lng], {
+        icon: L.divIcon({ className: '', html: driverPinHtml({ name: who, state: shift?.end_time ? 'still' : 'live', label: unit }), iconSize: DRIVER_PIN_SIZE, iconAnchor: DRIVER_PIN_ANCHOR }),
+        zIndexOffset: 500,
+      }).addTo(layer).bindTooltip(who, { direction: 'top', offset: [0, -44] });
+      if (shift?.trailer_number) {
+        L.marker([end.lat - 0.00018, end.lng + 0.00028], {
+          icon: L.divIcon({ className: '', html: trailerPinHtml(String(shift.trailer_number)), iconSize: TRAILER_PIN_SIZE, iconAnchor: TRAILER_PIN_ANCHOR }),
+          zIndexOffset: 400,
+        }).addTo(layer);
       }
-    });
+    }
     if (selected !== null && segments[selected]) {
       const sg = segments[selected];
       map.fitBounds(L.latLngBounds(sg.path.map(p => [p.lat, p.lng] as [number, number])).pad(0.6), { maxZoom: 16 });

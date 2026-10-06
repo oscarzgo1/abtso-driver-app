@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:maplibre/maplibre.dart' as ml;
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
 import '../../../config/theme.dart';
 import '../../auth/presentation/auth_provider.dart';
@@ -75,7 +76,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
   // the foreground, and shows the setup sheet until it's fixed.
   bool _trackingUnhealthy = false;
   bool _trackingSheetOpen = false;
-  final Set<String> _shownOfflineNotices = {};
+  // Events already shown to this driver. Kept on the phone (not just in this
+  // screen's memory) so coming back to Home never repeats an old alert.
+  Set<String>? _shownGpsNotices;
+  bool _gpsNoticeBusy = false;
+  RealtimeChannel? _gpsEventsChannel;
 
   /// Wired into ShiftNotifier.trackingPrompt so clock-in can ask for the
   /// permissions with the sheet's direct-to-settings buttons.
@@ -104,8 +109,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     if (!hasShift) return;
 
     await ref.read(shiftProvider.notifier).refreshGpsPolicy();
-    final event = await SupabaseService.fetchRecentGpsOffline();
-    if (event != null && mounted) _showOfflineNotice(event);
+    await _showPendingGpsNotices();
 
     if (!health.healthy && mounted) {
       await _promptTrackingSetup();
@@ -114,16 +118,53 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     }
   }
 
-  /// Tells the driver, once per event, that the office saw tracking stop
-  /// and what that did to their time (only if the company chose to notify).
-  void _showOfflineNotice(Map<String, dynamic> event) {
+  String get _gpsNoticePrefsKey => 'shown_gps_notices_${SupabaseService.currentDriverId ?? 'anon'}';
+
+  Future<Set<String>> _loadShownGpsNotices() async {
+    final cached = _shownGpsNotices;
+    if (cached != null) return cached;
+    final prefs = await SharedPreferences.getInstance();
+    return _shownGpsNotices = (prefs.getStringList(_gpsNoticePrefsKey) ?? const <String>[]).toSet();
+  }
+
+  Future<void> _rememberGpsNotice(String key) async {
+    final seen = await _loadShownGpsNotices();
+    seen.add(key);
+    // Only the recent ones matter (the server returns the last 12 hours).
+    final trimmed = seen.length > 60 ? seen.toList().sublist(seen.length - 60) : seen.toList();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_gpsNoticePrefsKey, trimmed);
+  }
+
+  /// Shows each tracking event (tracking stopped, or idle) to the driver once.
+  /// Runs when the app opens, comes back from the background, and the moment a
+  /// new event arrives while it is open.
+  Future<void> _showPendingGpsNotices() async {
+    if (_gpsNoticeBusy || !mounted) return;
+    _gpsNoticeBusy = true;
+    try {
+      final events = await SupabaseService.fetchRecentGpsEvents();
+      for (final event in events.reversed) {
+        if (!mounted) break;
+        await _showOfflineNotice(event);
+      }
+    } finally {
+      _gpsNoticeBusy = false;
+    }
+  }
+
+  /// Tells the driver, once per event, what happened to their time (only if
+  /// the company chose to notify): tracking stopped, or they were idle.
+  Future<void> _showOfflineNotice(Map<String, dynamic> event) async {
     final policy = ref.read(shiftProvider.notifier).gpsPolicy;
-    if (!policy.notifyDriver) return;
+    final isIdle = event['kind']?.toString() == 'idle';
+    if (isIdle ? !policy.idleNotifyDriver : !policy.notifyDriver) return;
     final started = DateTime.tryParse(event['started_at']?.toString() ?? '')?.toLocal();
     if (started == null) return;
-    final key = started.toIso8601String();
-    if (_shownOfflineNotices.contains(key)) return;
-    _shownOfflineNotices.add(key);
+    final key = '${isIdle ? 'idle' : 'offline'}|${started.toIso8601String()}';
+    final seen = await _loadShownGpsNotices();
+    if (seen.contains(key) || !mounted) return;
+    await _rememberGpsNotice(key);
 
     final resolved = DateTime.tryParse(event['resolved_at']?.toString() ?? '')?.toLocal();
     final fmt = DateFormat('HH:mm');
@@ -131,7 +172,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     final action = event['action_taken']?.toString() ?? 'alert';
     final String title;
     final String body;
-    if (action == 'clocked_out') {
+    if (isIdle) {
+      final span = '${fmt.format(started)}${resolved != null ? ' – ${fmt.format(resolved)}' : ''}';
+      if (action == 'time_frozen') {
+        title = 'Your time was paused — idle';
+        body = 'You were stationary for $minutes min ($span). That time is paused and will not be paid.';
+      } else {
+        title = 'You were idle';
+        body = 'You were stationary for $minutes min ($span). Your manager has been alerted.';
+      }
+    } else if (action == 'clocked_out') {
       title = 'You were clocked out';
       body = 'Tachyo stopped tracking you at ${fmt.format(started)}, so your shift was ended automatically at that time. Keep Tachyo running to avoid this.';
     } else if (action == 'time_frozen') {
@@ -143,7 +193,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
       body = 'Tachyo stopped tracking you at ${fmt.format(started)}'
           '${resolved != null ? ' until ${fmt.format(resolved)} ($minutes min)' : ''}. Your manager was alerted.';
     }
-    showDialog<void>(
+    if (!mounted) return;
+    await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
@@ -233,6 +284,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
           )
           ..subscribe();
 
+      // Tracking / idle events — shown the moment they arrive while the app is open.
+      _gpsEventsChannel = SupabaseService.client
+          .channel('driver_gps_events_$driverId')
+          .onPostgresChanges(
+            event: PostgresChangeEvent.all,
+            schema: 'public',
+            table: 'gps_offline_events',
+            filter: PostgresChangeFilter(
+              type: PostgresChangeFilterType.eq,
+              column: 'driver_id',
+              value: driverId,
+            ),
+            callback: (PostgresChangePayload payload) {
+              unawaited(_showPendingGpsNotices());
+            },
+          )
+          ..subscribe();
+
       // 2. Driver Shifts Realtime (Clock in/out, Admin manual edits, Flags, Night Out, Extras)
       _shiftsChannel = SupabaseService.client
           .channel('driver_shifts_updates_$driverId')
@@ -290,6 +359,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with TickerProviderStat
     if (_shiftsChannel != null) {
       SupabaseService.client.removeChannel(_shiftsChannel!);
       _shiftsChannel = null;
+    }
+    if (_gpsEventsChannel != null) {
+      SupabaseService.client.removeChannel(_gpsEventsChannel!);
+      _gpsEventsChannel = null;
     }
     if (_orgSettingsChannel != null) {
       SupabaseService.client.removeChannel(_orgSettingsChannel!);

@@ -1,4 +1,5 @@
 import NoData from './ui/no-data';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, GripVertical } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -85,6 +86,7 @@ export default function WeeklyRota({ organizationId, drivers }: { organizationId
   }, [organizationId, range]);
 
   useEffect(() => { load(); }, [load]);
+  useSectionRefresh(load);
 
   useEffect(() => {
     if (isMockMode || !supabase || !organizationId) return;

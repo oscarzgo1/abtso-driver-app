@@ -1,4 +1,5 @@
 import NoData from '../components/ui/no-data';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowRight, ShieldAlert, Plus, Camera, X, AlertTriangle, Wrench, Clock, CheckCircle2 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -195,6 +196,7 @@ export default function Compliance({ organizationId, thresholdDays, onViewGround
   useEffect(() => {
     loadOverview();
   }, [loadOverview]);
+  useSectionRefresh(loadOverview);
 
   // Realtime: a driver-submitted incident report must land on this panel
   // immediately — dispatch can't wait on a manual refresh to find out a

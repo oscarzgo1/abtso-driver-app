@@ -12,12 +12,24 @@ class GpsPolicy {
   final String action;
   final int clockOutMinutes;
 
+  /// Idle (stationary for [idleMinutes]) — migrations 101/102.
+  final bool idleEnabled;
+  final int idleMinutes;
+
+  /// 'none' (alert the office only) | 'freeze_time'
+  final String idleAction;
+  final bool idleNotifyDriver;
+
   const GpsPolicy({
     required this.detectionEnabled,
     required this.afterMinutes,
     required this.notifyDriver,
     required this.action,
     required this.clockOutMinutes,
+    this.idleEnabled = true,
+    this.idleMinutes = 50,
+    this.idleAction = 'none',
+    this.idleNotifyDriver = true,
   });
 
   /// Used until the policy has loaded (or when offline): the same defaults
@@ -36,10 +48,15 @@ class GpsPolicy {
         notifyDriver: j['notify_driver'] as bool? ?? true,
         action: j['action']?.toString() ?? 'none',
         clockOutMinutes: (j['clock_out_minutes'] as num?)?.toInt() ?? 60,
+        idleEnabled: j['idle_enabled'] as bool? ?? true,
+        idleMinutes: (j['idle_minutes'] as num?)?.toInt() ?? 50,
+        idleAction: j['idle_action']?.toString() ?? 'none',
+        idleNotifyDriver: j['idle_notify_driver'] as bool? ?? true,
       );
 
   bool get freezesTime => action == 'freeze_time';
   bool get clocksOut => action == 'clock_out';
+  bool get idleFreezesTime => idleAction == 'freeze_time';
 
   /// One plain sentence on what happens if tracking stops.
   String get consequence {

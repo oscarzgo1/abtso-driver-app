@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import MemberCell from './components/ui/member-cell';
+import { useSectionRefresh } from './lib/section-refresh';
 import { AnimatePresence, motion } from 'framer-motion';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import L from 'leaflet';
@@ -22,6 +24,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import NoData from './components/ui/no-data';
 import { Switch } from './components/ui/switch-button';
 import { ThemeToggle } from './components/ui/theme-toggle';
+import { driverPinHtml, trailerPinHtml, DRIVER_PIN_SIZE, DRIVER_PIN_ANCHOR, TRAILER_PIN_SIZE, TRAILER_PIN_ANCHOR } from './lib/map-pins';
 import { riskIssuesByNumber, unroadworthyInUse, type RiskVehicleRow } from './lib/roadworthy';
 import FilterBar, { FilterType, FilterOperator, AnimateChangeInHeight, type Filter as AnalyticsFilter, type FilterOption } from './components/ui/filters';
 import Compliance from './pages/Compliance';
@@ -44,7 +47,8 @@ import DeliveryHistory from './components/DeliveryHistory';
 import LiveTelemetryPanel from './components/LiveTelemetryPanel';
 import PayRulesSettings from './components/PayRulesSettings';
 import JourneyHistory from './pages/JourneyHistory';
-import { buildJourney, formatDuration, LABEL_META, type Ping } from './lib/journey';
+import { buildJourney, LABEL_META, type Ping } from './lib/journey';
+import { drawJourney } from './lib/journey-map';
 import LockedFeature from './components/LockedFeature';
 import { TAB_FEATURE, FEATURE_LABEL, type Entitlements, type FeatureKey } from './lib/entitlements';
 import TrueProfitSection from './components/analytics/TrueProfitSection';
@@ -896,6 +900,21 @@ export default function App() {
     } catch (_) {
       // Migration 081 not applied here — keep defaults.
     }
+    try {
+      const { data } = await supabase
+        .from('organizations')
+        .select('idle_action, idle_notify_driver')
+        .eq('id', orgId)
+        .maybeSingle();
+      if (data) {
+        setIdlePolicy({
+          action: data.idle_action === 'freeze_time' ? 'freeze_time' : 'none',
+          notifyDriver: data.idle_notify_driver !== false,
+        });
+      }
+    } catch (_) {
+      // Migration 101 not applied here — keep defaults.
+    }
   }, []);
 
   // Database States
@@ -949,6 +968,9 @@ export default function App() {
   const trailFittedFor = useRef<string | null>(null);
   const [gpsOfflineEvents, setGpsOfflineEvents] = useState<GpsOfflineEvent[]>([]);
   const [gpsPolicy, setGpsPolicy] = useState<GpsPolicySettings>(DEFAULT_GPS_POLICY);
+  // What happens when an employee is idle (migrations 101/102): alert only, or freeze their time.
+  const [idlePolicy, setIdlePolicy] = useState<{ action: 'none' | 'freeze_time'; notifyDriver: boolean }>({ action: 'none', notifyDriver: true });
+  const [isSavingIdlePolicy, setIsSavingIdlePolicy] = useState(false);
   const [gpsPolicyForm, setGpsPolicyForm] = useState({ afterMinutes: '10', clockOutMinutes: '60' });
   const [isSavingGpsPolicy, setIsSavingGpsPolicy] = useState(false);
   const [gpsPolicyMessage, setGpsPolicyMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null);
@@ -2326,6 +2348,9 @@ export default function App() {
 
   useEffect(() => { loadDeletionRequests(); }, [loadDeletionRequests]);
 
+  // "Refresh" on a No Data panel re-reads the data behind the screen on view.
+  useSectionRefresh(() => { loadData(); loadDeletionRequests(); loadPinResetRequests(); loadRiskSignoffs(); loadUnitRisk(); });
+
   useEffect(() => {
     if (isMockMode || !supabase || !currentOrgId) return;
     const channel = supabase
@@ -3040,6 +3065,17 @@ export default function App() {
 
   /// Saves the GPS-tracking policy (migration 082 RPC). `patch` lets the
   /// on/off switches save instantly; the numeric fields come from the form.
+  const saveIdlePolicy = async (patch: Partial<{ action: 'none' | 'freeze_time'; notifyDriver: boolean }>) => {
+    if (isMockMode || !supabase || isSavingIdlePolicy) return;
+    const next = { ...idlePolicy, ...patch };
+    setIsSavingIdlePolicy(true);
+    const { error } = await supabase.rpc('set_idle_policy', { p_action: next.action, p_notify_driver: next.notifyDriver });
+    setIsSavingIdlePolicy(false);
+    if (error) { showToast(`Could not save the idle policy: ${error.message}`, 'error'); return; }
+    setIdlePolicy(next);
+    showToast('Idle policy saved.', 'success');
+  };
+
   const saveGpsPolicy = async (patch: Partial<GpsPolicySettings> = {}) => {
     if (isMockMode || !supabase || isSavingGpsPolicy) return;
     const next: GpsPolicySettings = {
@@ -4984,20 +5020,7 @@ export default function App() {
       if (!trailLayerRef.current) trailLayerRef.current = L.layerGroup().addTo(mapRef.current);
       const layer = trailLayerRef.current;
       layer.clearLayers();
-      const all: [number, number][] = [];
-      segs.forEach(seg => {
-        const color = LABEL_META[seg.label].color;
-        const pts = seg.path.map(pt => [pt.lat, pt.lng] as [number, number]);
-        pts.forEach(pt => all.push(pt));
-        if (seg.label === 'moving' || seg.label === 'no_signal') {
-          L.polyline(pts, { color, weight: seg.label === 'moving' ? 5 : 3, opacity: 0.85, dashArray: seg.label === 'no_signal' ? '6 8' : undefined }).addTo(layer);
-        } else {
-          const t = (d: number) => new Date(d).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-          L.circleMarker([seg.from.lat, seg.from.lng], { radius: seg.label === 'stopped' ? 9 : 7, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 })
-            .addTo(layer)
-            .bindTooltip(`${LABEL_META[seg.label].text} ${t(seg.start)} to ${t(seg.end)} (${formatDuration(seg.durationMs)})`);
-        }
-      });
+      const all = drawJourney(layer, segs) as [number, number][];
       if (all.length && trailFittedFor.current !== trailDriverId) {
         trailFittedFor.current = trailDriverId;
         mapRef.current.fitBounds(L.latLngBounds(all).pad(0.2), { maxZoom: 15 });
@@ -5084,7 +5107,9 @@ export default function App() {
     // popup are refreshed on every run so a changed trailer or status shows
     // without recreating the marker.
     const escHtml = (v: string) => v.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
-    liveLocations.forEach(loc => {
+    // With "Show trailers" on, only trailer icons are drawn: the driver avatars
+    // are hidden so the two never overlap.
+    (showTrailers ? [] : liveLocations).forEach(loc => {
       // Overlap jitter: a small fixed offset per driver (derived from the id,
       // so markers stay put between refreshes) keeps two units parked
       // together from sitting exactly on top of each other.
@@ -5103,7 +5128,12 @@ export default function App() {
       const tractor = sh?.vehicle_number ? escHtml(String(sh.vehicle_number)) : null;
       const trailer = sh?.trailer_number ? escHtml(String(sh.trailer_number)) : null;
       const labelParts = [tractor, trailer ? `<span>+</span> ${trailer}` : null].filter(Boolean);
-      const markerHtml = `<div class="driver-marker"><div class="${dotClass}"></div>${labelParts.length ? `<div class="driver-marker-label">${labelParts.join(' ')}</div>` : ''}</div>`;
+      void dotClass;
+      const markerHtml = driverPinHtml({
+        name: loc.driver_name || 'Driver',
+        state: noSignal ? 'nosignal' : loc.status === 'idle' ? 'idle' : 'live',
+        label: labelParts.length ? labelParts.join(' ') : null,
+      });
       const unitLines = [
         tractor ? `<span style="color:#333333;font-size:11px;font-weight:bold;">Tractor: ${tractor}</span><br>` : '',
         trailer ? `<span style="color:#333333;font-size:11px;font-weight:bold;">Trailer: ${trailer}</span><br>` : '',
@@ -5118,7 +5148,7 @@ export default function App() {
             </span><br>
             <a href="https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">View in Google Maps</a>
           </div>`;
-      const icon = L.divIcon({ className: '', html: markerHtml, iconSize: [12, 12], iconAnchor: [6, 6] });
+      const icon = L.divIcon({ className: '', html: markerHtml, iconSize: DRIVER_PIN_SIZE, iconAnchor: DRIVER_PIN_ANCHOR });
 
       const existing = markersRef.current[loc.driver_id];
       if (existing) {
@@ -5144,10 +5174,14 @@ export default function App() {
         wantedTrailerKeys.add(key);
         const trailerNo = escHtml(String(sh.trailer_number));
         const trailerSource: 'driver' | 'tracker' = 'driver';
-        // Sits just beside the driver's dot so both stay visible.
-        const lat = loc.latitude - 0.00018;
-        const lng = loc.longitude + 0.00028;
-        const html = `<div class="trailer-marker"><svg viewBox="0 0 28 16" width="26" height="15" aria-hidden="true"><rect x="1" y="2" width="20" height="9" rx="1.5" fill="#fff"/><rect x="22" y="5" width="5" height="6" rx="1" fill="#fff" opacity="0.8"/><circle cx="7" cy="13" r="2" fill="#fff"/><circle cx="14" cy="13" r="2" fill="#fff"/><circle cx="24" cy="13" r="2" fill="#fff"/></svg><span>${trailerNo}</span></div>`;
+        // The driver avatar is hidden in this view, so the trailer sits right on the
+        // position; a small fixed offset per trailer keeps two parked together apart.
+        let th = 0;
+        for (let i = 0; i < key.length; i++) th = (th * 31 + key.charCodeAt(i)) >>> 0;
+        const lat = loc.latitude + (((th % 1000) / 1000) - 0.5) * 0.0002;
+        const lng = loc.longitude + ((((th >> 10) % 1000) / 1000) - 0.5) * 0.0002;
+        // A small pin: a charcoal square with a line-icon container, and the reg as a quiet label.
+        const html = trailerPinHtml(String(sh.trailer_number));
         const popup = `
           <div style="font-family:'Inter',sans-serif;">
             <b style="font-size:13px;color:#333333;">Trailer ${trailerNo}</b><br>
@@ -5155,7 +5189,7 @@ export default function App() {
             <span style="color:#888888;font-size:11px;">Last update ${new Date(loc.last_ping).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</span><br>
             <a href="https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">View in Google Maps</a>
           </div>`;
-        const icon = L.divIcon({ className: '', html, iconSize: [0, 0], iconAnchor: [0, 0] });
+        const icon = L.divIcon({ className: '', html, iconSize: TRAILER_PIN_SIZE, iconAnchor: TRAILER_PIN_ANCHOR });
         const existing = trailerMarkersRef.current[key];
         if (existing) {
           existing.setLatLng([lat, lng]);
@@ -5208,7 +5242,7 @@ export default function App() {
           delete markersRef.current[id];
         }
       } else {
-        if (!liveLocations.find(l => l.driver_id === id)) {
+        if (showTrailers || !liveLocations.find(l => l.driver_id === id)) {
           markersRef.current[id].remove();
           delete markersRef.current[id];
         }
@@ -7015,12 +7049,7 @@ export default function App() {
                     return (
                       <tr key={drv.id}>
                         <td>
-                          <div className="flex align-center" style={{ gap: '10px' }}>
-                            <div style={{ minWidth: 0 }}>
-                              <p className="font-semibold text-primary m-0" style={{ fontSize: '13px' }}>{toTitleCase(drv.full_name)}</p>
-                              <p className="font-mono text-xs text-muted m-0">{drv.driver_id}</p>
-                            </div>
-                          </div>
+                          <MemberCell name={toTitleCase(drv.full_name)} sub={drv.driver_id} status={activeShift ? 'online' : 'offline'} />
                         </td>
                         <td className="font-mono text-secondary" style={{ fontSize: '12.5px' }}>{drv.phone || '—'}</td>
                         <td>
@@ -9815,6 +9844,36 @@ export default function App() {
                         {orgAlertSettings.idleDetectionEnabled
                           ? 'How long any employee on shift can be stationary before an idle alert fires. Covers drivers, mechanics and logistics staff.'
                           : 'Idle alerts are turned off for the whole company. Dashboard and Alert Panel will hide the idle section.'}
+                      </p>
+                    </div>
+
+                    <div className="input-group">
+                      <label className="input-label" htmlFor="idle-action">WHEN SOMEONE IS IDLE</label>
+                      <select
+                        id="idle-action"
+                        className="input-field"
+                        value={idlePolicy.action}
+                        disabled={!orgAlertSettings.idleDetectionEnabled || isSavingIdlePolicy}
+                        onChange={(e) => saveIdlePolicy({ action: e.target.value as 'none' | 'freeze_time' })}
+                      >
+                        <option value="none">Alert only, keep paying time</option>
+                        <option value="freeze_time">Freeze time while idle, the idle stretch is not paid</option>
+                      </select>
+                      <p className="text-xs text-muted mt-4">
+                        Applies once the idle time above is reached. Frozen time is the whole stationary stretch, from when the driver stopped until they move again, and is deducted from the shift&apos;s paid hours.
+                      </p>
+                    </div>
+
+                    <div className="input-group">
+                      <div className="flex align-center justify-between" style={{ gap: '10px', marginBottom: '6px' }}>
+                        <label className="input-label" style={{ margin: 0 }}>TELL THE DRIVER</label>
+                        <label className="flex align-center text-xs font-bold" style={{ gap: '8px', cursor: 'pointer', color: 'var(--charcoal)' }}>
+                          <span>{idlePolicy.notifyDriver ? 'On' : 'Off'}</span>
+                          <input type="checkbox" checked={idlePolicy.notifyDriver} disabled={!orgAlertSettings.idleDetectionEnabled || isSavingIdlePolicy} onChange={() => saveIdlePolicy({ notifyDriver: !idlePolicy.notifyDriver })} />
+                        </label>
+                      </div>
+                      <p className="text-xs text-muted mt-4">
+                        The app shows the driver once when they open it: when they were idle and whether that time was frozen.
                       </p>
                     </div>
 

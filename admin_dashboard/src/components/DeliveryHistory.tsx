@@ -1,4 +1,6 @@
 import NoData from './ui/no-data';
+import MemberCell from './ui/member-cell';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, MapPin, Camera, PenLine, Printer } from 'lucide-react';
 import TableFilter, { type TableFilterGroup } from './ui/table-filter';
@@ -119,11 +121,6 @@ type Raw = Record<string, any>;
 const properName = (name: string | null | undefined): string =>
   (name ?? '').trim().toLowerCase().replace(/(^|[\s\-'])([a-z])/g, (_m, sep: string, ch: string) => sep + ch.toUpperCase()) || '—';
 
-const initials = (name: string): string => {
-  const parts = name.split(/\s+/).filter(Boolean);
-  if (parts.length === 0 || name === '—') return '?';
-  return ((parts[0][0] ?? '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
-};
 
 /** "Doncaster DN4 (DNE1)" -> { code: "DNE1", place: "Doncaster DN4" }. */
 function splitStop(raw: string | null): { code: string | null; place: string | null } {
@@ -231,6 +228,7 @@ export default function DeliveryHistory() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSectionRefresh(load);
 
   // Signed links for every photo shown (private bucket).
   useEffect(() => {
@@ -337,24 +335,11 @@ export default function DeliveryHistory() {
                       </div>
                     </td>
                     <td>
-                      <div className="flex flex-nowrap items-center gap-2">
-                        <span
-                          className="text-[10px] font-semibold"
-                          style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '24px', height: '24px', borderRadius: '999px', border: '1px solid var(--border-color)', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', flexShrink: 0 }}
-                        >
-                          {initials(r.driver)}
-                        </span>
-                        <span className="text-sm font-medium">{r.driver}</span>
-                      </div>
+                      <MemberCell name={r.driver} />
                     </td>
                     <td>
                       <div className="flex flex-nowrap items-center gap-2.5">
-                        <span
-                          className="text-[10px] font-bold uppercase tracking-wider"
-                          style={{ display: 'inline-flex', alignItems: 'center', height: '20px', padding: '0 6px', borderRadius: '4px', border: '1px solid var(--border-color)', background: 'var(--card-bg-hover)', color: 'var(--charcoal)', flexShrink: 0 }}
-                        >
-                          {r.carrier}
-                        </span>
+                        <span className="ml-chip" style={{ flexShrink: 0 }}>{r.carrier}</span>
                         <div style={{ minWidth: 0 }}>
                           {codes ? (
                             <>
@@ -370,12 +355,7 @@ export default function DeliveryHistory() {
                     <td className="font-mono tabular-nums text-xs">{hhmm(r.departure)}</td>
                     <td className="font-mono tabular-nums text-xs">{hhmm(r.delivered)}</td>
                     <td>
-                      <span
-                        className="font-mono text-[11px] tabular-nums"
-                        style={{ display: 'inline-flex', alignItems: 'center', height: '20px', padding: '0 8px', borderRadius: '999px', border: '1px solid var(--border-color)', background: 'var(--card-bg-hover)', color: 'var(--charcoal-light)' }}
-                      >
-                        {duration(r.departure, r.delivered)}
-                      </span>
+                      <span className="ml-chip ml-chip--mono">{duration(r.departure, r.delivered)}</span>
                     </td>
                     <td>
                       <div className="flex flex-row flex-nowrap items-center gap-1.5" style={{ height: '24px' }}>
@@ -383,23 +363,10 @@ export default function DeliveryHistory() {
                           <span className="badge badge-warning" style={{ height: '20px', display: 'inline-flex', alignItems: 'center' }}>Missing POD</span>
                         ) : null}
                         {r.signature && (
-                          <span
-                            className="text-[10px] font-medium uppercase tracking-wider"
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', height: '20px', padding: '0 6px', borderRadius: '4px', border: '1px solid var(--border-color)', color: 'var(--charcoal-light)' }}
-                          >
-                            <PenLine size={11} />
-                            Signature
-                          </span>
+                          <span className="ml-chip"><PenLine size={11} /> Signature</span>
                         )}
                         {podTypes.map(t => (
-                          <span
-                            key={t}
-                            className="text-[10px] font-medium uppercase tracking-wider"
-                            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', height: '20px', padding: '0 6px', borderRadius: '4px', border: '1px solid var(--border-color)', color: 'var(--charcoal-light)' }}
-                          >
-                            <span style={{ width: '6px', height: '6px', borderRadius: '999px', background: 'var(--charcoal-light)' }} />
-                            {POD_LABEL[t]}
-                          </span>
+                          <span key={t} className="ml-chip"><span style={{ width: '6px', height: '6px', borderRadius: '999px', background: 'var(--charcoal-light)' }} />{POD_LABEL[t]}</span>
                         ))}
                       </div>
                     </td>

@@ -1,4 +1,5 @@
 import NoData from '../components/ui/no-data';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { ChevronLeft, Plus, X, CheckCircle2, CircleX, GripVertical } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -129,6 +130,7 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
   }, [organizationId]);
 
   useEffect(() => { load(); }, [load]);
+  useSectionRefresh(load);
 
   useEffect(() => {
     if (isMockMode || !supabase || !organizationId) return;

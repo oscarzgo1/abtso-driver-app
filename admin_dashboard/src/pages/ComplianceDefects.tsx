@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { Camera, ChevronLeft, ChevronRight } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
 import NoData from '../components/ui/no-data';
@@ -114,6 +115,7 @@ export default function ComplianceDefects({ organizationId, onBack, focusUnit }:
   useEffect(() => {
     loadDefects();
   }, [loadDefects]);
+  useSectionRefresh(loadDefects);
 
   useEffect(() => {
     if (isMockMode || !supabase || !organizationId) return;

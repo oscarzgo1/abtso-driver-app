@@ -1,4 +1,5 @@
 import NoData from './ui/no-data';
+import { avatarSvg } from '../lib/map-pins';
 import TableFilter from './ui/table-filter';
 import { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -90,25 +91,6 @@ function PulseDot({ status, size = 12 }: { status: TelemetryStatus; size?: numbe
         />
       ))}
       <span className="tp-pulse-core" style={{ width: size, height: size, background: meta.color }} />
-    </span>
-  );
-}
-
-/** Driver avatar: a person icon inside a ring in the driver's status colour. */
-function DriverBadge({ status }: { status: TelemetryStatus }) {
-  const meta = STATUS_META[status];
-  return (
-    <span className="tp-avatar" style={{ borderColor: meta.color, background: meta.soft, color: meta.color }} title="Driver">
-      {meta.pulse && (
-        <motion.span
-          className="tp-avatar-ring"
-          style={{ borderColor: meta.color }}
-          initial={{ scale: 1, opacity: 0.6 }}
-          animate={{ scale: 1.5, opacity: 0 }}
-          transition={{ duration: 2, repeat: Infinity, ease: 'easeOut' }}
-        />
-      )}
-      <UserRound size={17} strokeWidth={2.2} />
     </span>
   );
 }
@@ -301,7 +283,10 @@ export default function LiveTelemetryPanel({ liveLocations, shifts, assignedLoad
                   disabled={r.latitude == null}
                 >
                   <div className="tp-driver-top">
-                    <DriverBadge status={r.status} />
+                    <span className="tp-face" title={meta.label}>
+                      <span className="tp-face-img" dangerouslySetInnerHTML={{ __html: avatarSvg(r.driver_name || 'Driver', 34) }} />
+                      <i className="tp-face-dot" style={{ background: meta.color }} />
+                    </span>
                     <div className="tp-driver-name">
                       <strong>{r.driver_name}</strong>
                       <span>{ago(r.last_ping, now)}</span>

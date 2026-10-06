@@ -1,4 +1,5 @@
 import TableFilter from '../components/ui/table-filter';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Building2, ChevronDown, Copy, Check, Plus, X, UserPlus, Inbox, Users, Trash2, TriangleAlert } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -136,6 +137,7 @@ export default function PlatformAccounts({ currentOrgId, onChanged }: PlatformAc
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSectionRefresh(load);
 
   const accountEmails = useMemo(() => {
     const set = new Set<string>();
@@ -706,6 +708,7 @@ function AccessModal({ account, onClose, onChanged }: { account: AccountRow; onC
   }, [account.organization_id]);
 
   useEffect(() => { load(); }, [load]);
+  useSectionRefresh(load);
 
   const run = async (key: string, call: () => PromiseLike<{ error: any }>) => {
     setBusy(key);

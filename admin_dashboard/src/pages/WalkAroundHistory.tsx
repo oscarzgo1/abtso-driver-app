@@ -1,4 +1,5 @@
 import { Fragment, useState, useEffect, useCallback, useMemo } from 'react';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { ChevronLeft, ChevronRight, ChevronDown, Clock, ClipboardCheck, AlertTriangle, Users, PenTool } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
 import NoData from '../components/ui/no-data';
@@ -189,6 +190,7 @@ export default function WalkAroundHistory({ organizationId, targetMinutes, shift
   }, [organizationId]);
 
   useEffect(() => { loadChecks(); }, [loadChecks]);
+  useSectionRefresh(() => { loadChecks(); loadSignoffs(); });
   useEffect(() => { loadSignoffs(); }, [loadSignoffs]);
 
   useEffect(() => {

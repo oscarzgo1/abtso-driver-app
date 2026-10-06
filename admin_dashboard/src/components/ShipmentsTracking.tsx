@@ -1,4 +1,7 @@
 import NoData from './ui/no-data';
+import { MemberAvatar } from './ui/member-cell';
+import { driverPinHtml, trailerPinHtml, escapeHtml, DRIVER_PIN_SIZE, DRIVER_PIN_ANCHOR, TRAILER_PIN_SIZE, TRAILER_PIN_ANCHOR } from '../lib/map-pins';
+import { useSectionRefresh } from '../lib/section-refresh';
 import TableFilter from './ui/table-filter';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
@@ -230,6 +233,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useSectionRefresh(load);
 
   // Any change to loads or proofs refreshes the list.
   useEffect(() => {
@@ -420,9 +424,24 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
       }
     }
     if (live && selected?.status !== 'completed') {
-      L.circleMarker([live.latitude, live.longitude], { radius: 9, color: '#fff', weight: 3, fillColor: '#CC0000', fillOpacity: 1 })
-        .bindTooltip(`${selected?.driver ?? 'Driver'} · ${live.status === 'moving' ? `${Math.round(live.speed_mph)} mph` : live.status}`, { permanent: false })
+      const unitLabel = [selected?.unit, selected?.trailer].filter(Boolean).map(x => escapeHtml(String(x))).join(' <span>+</span> ');
+      L.marker([live.latitude, live.longitude], {
+        icon: L.divIcon({
+          className: '',
+          html: driverPinHtml({ name: selected?.driver ?? 'Driver', state: live.status === 'idle' ? 'idle' : 'live', label: unitLabel || null }),
+          iconSize: DRIVER_PIN_SIZE,
+          iconAnchor: DRIVER_PIN_ANCHOR,
+        }),
+        zIndexOffset: 500,
+      })
+        .bindTooltip(`${selected?.driver ?? 'Driver'} · ${live.status === 'moving' ? `${Math.round(live.speed_mph)} mph` : live.status}`, { permanent: false, direction: 'top', offset: [0, -44] })
         .addTo(layer);
+      if (selected?.trailer) {
+        L.marker([live.latitude - 0.00018, live.longitude + 0.00028], {
+          icon: L.divIcon({ className: '', html: trailerPinHtml(String(selected.trailer)), iconSize: TRAILER_PIN_SIZE, iconAnchor: TRAILER_PIN_ANCHOR }),
+          zIndexOffset: 400,
+        }).addTo(layer);
+      }
       bounds.push([live.latitude, live.longitude]);
     }
     if (bounds.length > 0) map.fitBounds(L.latLngBounds(bounds), { padding: [40, 40], maxZoom: 15 });
@@ -717,6 +736,10 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
                       <span className="text-xs text-muted">{s.typeLabel}</span>
                       <span className={`badge ${STATUS_META[s.status].badge}`}>{STATUS_META[s.status].label}</span>
                     </div>
+                    <p className="flex items-center m-0" style={{ gap: '6px', margin: '2px 0 4px' }}>
+                      <MemberAvatar name={s.driver} size={18} />
+                      <span className="text-xs font-bold text-primary" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.driver}</span>
+                    </p>
                     <p className="font-mono font-bold text-primary m-0" style={{ fontSize: '13.5px', overflowWrap: 'anywhere' }}>{s.ref} <LoadingChip s={s} />{s.status !== 'completed' && riskLines(s).length > 0 && riskIcon(s)}</p>
                     <p className="text-xs text-muted m-0 mt-4" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                       <Clock size={11} /> {dtShort(s.delivered ?? s.departure ?? s.createdAt)}

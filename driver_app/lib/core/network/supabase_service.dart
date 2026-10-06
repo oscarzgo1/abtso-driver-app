@@ -1054,6 +1054,19 @@ class SupabaseService {
   /// The driver's most recent "tracking stopped" event in the last 12
   /// hours (null if none) — shown when they reopen the app so they know
   /// what the office saw and what it did to their time.
+  /// The driver's recent tracking events — offline AND idle (migration 101),
+  /// newest first, so the app can show each one once.
+  static Future<List<Map<String, dynamic>>> fetchRecentGpsEvents() async {
+    if (isMockMode) return const [];
+    try {
+      final res = await client.rpc('my_recent_gps_offline');
+      if (res is List) return res.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (e) {
+      debugPrint('fetchRecentGpsEvents failed: $e');
+    }
+    return const [];
+  }
+
   static Future<Map<String, dynamic>?> fetchRecentGpsOffline() async {
     if (isMockMode) return null;
     try {

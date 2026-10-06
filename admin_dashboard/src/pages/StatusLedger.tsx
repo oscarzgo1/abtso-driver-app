@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { ChevronLeft, Lock } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
 import TableFilter from '../components/ui/table-filter';
@@ -38,6 +39,7 @@ export default function StatusLedger({ organizationId, onBack, onOpenUnit, embed
   }, [organizationId]);
 
   useEffect(() => { load(); }, [load]);
+  useSectionRefresh(load);
 
   useEffect(() => {
     if (isMockMode || !supabase || !organizationId) return;

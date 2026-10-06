@@ -187,6 +187,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
   StreamSubscription<Position>? _positionSubscription;
   StreamSubscription<tl.Location>? _traceletSubscription;
+  StreamSubscription<tl.HeartbeatEvent>? _heartbeatSubscription;
   DateTime? _lastUploadTime;
   
   // Filter to reject stale active shift stream updates on successful completion
@@ -252,6 +253,9 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       app: tl.AppConfig(
         stopOnTerminate: false,
         startOnBoot: true,
+        // Native timer (keeps running with the screen off / app in the
+        // background, unlike a Dart Timer): one position every 3 minutes.
+        heartbeatInterval: 180,
       ),
       geo: tl.GeoConfig(
         desiredAccuracy: tl.DesiredAccuracy.high,
@@ -260,6 +264,11 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
           rejectMockLocations: kDebugMode ? false : true,
         ),
       ),
+      motion: tl.MotionConfig(
+        // Once the phone stops moving the plugin switches to periodic fixes;
+        // keep those at the same 3 minutes so a parked driver still reports.
+        stationaryPeriodicInterval: 180,
+      ),
       android: tl.AndroidConfig(
         foregroundService: tl.ForegroundServiceConfig(
           notificationTitle: 'Tachyo',
@@ -267,6 +276,28 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
         ),
       ),
     ));
+
+    // Heartbeat: upload the latest known position even if the phone is still
+    // and no new GPS fix arrived (the gap that showed as "no signal").
+    _heartbeatSubscription?.cancel();
+    _heartbeatSubscription = tl.Tracelet.onHeartbeat((tl.HeartbeatEvent e) {
+      final c = e.location.coords;
+      _maybeUploadPing(
+        Position(
+          latitude: c.latitude,
+          longitude: c.longitude,
+          timestamp: DateTime.now(),
+          accuracy: c.accuracy,
+          altitude: c.altitude,
+          altitudeAccuracy: c.altitudeAccuracy,
+          heading: c.heading,
+          headingAccuracy: c.headingAccuracy,
+          speed: c.speed,
+          speedAccuracy: c.speedAccuracy,
+        ),
+        forceUpload: true,
+      );
+    });
 
     _traceletSubscription?.cancel();
     _traceletSubscription = tl.Tracelet.onLocation((tl.Location location) {
@@ -292,6 +323,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
   Future<void> _stopBackgroundTrackingService() async {
     _traceletSubscription?.cancel();
     _traceletSubscription = null;
+    _heartbeatSubscription?.cancel();
+    _heartbeatSubscription = null;
 
     if (!kIsWeb) {
       await tl.Tracelet.stop();
@@ -305,6 +338,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription?.cancel();
     _traceletSubscription?.cancel();
     _traceletSubscription = null;
+    _heartbeatSubscription?.cancel();
+    _heartbeatSubscription = null;
 
     final hasPermission = await LocationService.handlePermission();
     if (!hasPermission) {
@@ -432,6 +467,12 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
     Depot? nearest;
     double? minDistance;
+    // A depot whose radius actually contains the driver. With several depots
+    // the closest one can have a small radius while a farther one (a big or
+    // "anywhere" radius) still covers the driver, so "near" must look at every
+    // depot, not just the closest.
+    Depot? containing;
+    double? containingDistance;
 
     if (state.depots.isNotEmpty) {
       double min = double.infinity;
@@ -446,11 +487,19 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
           min = dist;
           nearest = depot;
         }
+        if (dist <= depot.geofenceRadiusM && (containingDistance == null || dist < containingDistance)) {
+          containing = depot;
+          containingDistance = dist;
+        }
       }
       minDistance = min;
     }
 
-    final isNear = nearest != null && minDistance != null && minDistance <= nearest.geofenceRadiusM;
+    if (containing != null) {
+      nearest = containing;
+      minDistance = containingDistance;
+    }
+    final isNear = containing != null;
 
     state = state.copyWith(
       currentPosition: position,
@@ -1257,6 +1306,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription = null;
     _traceletSubscription?.cancel();
     _traceletSubscription = null;
+    _heartbeatSubscription?.cancel();
+    _heartbeatSubscription = null;
     if (!kIsWeb) {
       tl.Tracelet.stop();
     }
@@ -1288,6 +1339,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription = null;
     _traceletSubscription?.cancel();
     _traceletSubscription = null;
+    _heartbeatSubscription?.cancel();
+    _heartbeatSubscription = null;
     if (!kIsWeb) {
       tl.Tracelet.stop();
     }
@@ -1480,6 +1533,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     _positionSubscription = null;
     _traceletSubscription?.cancel();
     _traceletSubscription = null;
+    _heartbeatSubscription?.cancel();
+    _heartbeatSubscription = null;
     if (!kIsWeb) {
       tl.Tracelet.stop();
     }

@@ -1,4 +1,5 @@
 import TableFilter from '../components/ui/table-filter';
+import { useSectionRefresh } from '../lib/section-refresh';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Phone, MapPin, MoreVertical, X, ChevronLeft, ChevronRight,
@@ -576,6 +577,8 @@ export default function DriverHours({ organizationId, onAlertCountChange, liveLo
       setIsLoading(false);
     }
   }, [organizationId]);
+
+  useSectionRefresh(() => { loadShifts(); loadWeekData(); });
 
   useEffect(() => {
     loadShifts();
