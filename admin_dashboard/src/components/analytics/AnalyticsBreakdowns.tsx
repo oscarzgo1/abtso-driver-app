@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
-import { Copy, Check, Lock, FileSpreadsheet, FileText, Link2, Mail, Trophy, LayoutGrid, List, Users, UserRound, Truck, Building2, Sigma, X } from 'lucide-react';
+import { Copy, Check, Download, Lock, FileSpreadsheet, FileText, Link2, Mail, Trophy, LayoutGrid, List, Users, UserRound, Truck, Building2, Sigma, X } from 'lucide-react';
 import { ActivityStatsCard, StatsCardRows, type ChartDataPoint } from '../ui/stats-card';
 import { supabase, isMockMode } from '../../App';
 import { computeBreakdowns, type BreakdownExtras, type BreakdownFuel, type BreakdownShift, type CustomerScore, type DriverScore, type VehicleScore } from '../../lib/analytics-breakdowns';
 import type { AnalyticsSettings, OrgCost, TrueCostResult, VatMode } from '../../lib/true-cost';
 import { buildReportHtml, type ReportSnapshot } from '../../lib/report-html';
+import { ActionMenu, AnalyticsSection, SegmentedToggle, type ActionMenuItem } from './AnalyticsLayout';
 
 // Performance by driver, vehicle and customer, plus the brief's outputs:
 // Excel export, a printable PDF report, partner share links and the
@@ -33,6 +35,8 @@ interface Props {
   canManageReports: boolean;
   /** Reports & exports is a plan feature (migration 067). */
   canExport: boolean;
+  /** Where the report buttons render (the page header); inline when null. */
+  reportActionsTarget?: HTMLElement | null;
 }
 
 type DriverSortKey = 'profitPerHour' | 'profit' | 'avgWeeklyHours' | 'mpg' | 'walkaroundPct' | 'photosPct' | 'onTimePct' | 'idleAlerts' | 'defectsReported';
@@ -284,7 +288,7 @@ export default function AnalyticsBreakdowns(p: Props) {
     {
       key: 'drivers', title: 'Drivers', icon: <Users size={20} />,
       value: driverProfit, previous: prev ? sum(prev.drivers, d => d.profit) : null,
-      subtitle: `Profit · ${data.drivers.length} driver${data.drivers.length === 1 ? '' : 's'}${driverHours > 0 ? ` · ${money(driverProfit / driverHours)}/h` : ''}`,
+      subtitle: `Profit before fixed costs · ${data.drivers.length} driver${data.drivers.length === 1 ? '' : 's'}${driverHours > 0 ? ` · ${money(driverProfit / driverHours)}/h` : ''}`,
       bars: entityBars([...data.drivers].sort((a, b) => b.profit - a.profit), d => initials(d.name), d => d.name, d => d.profit, d => prevDriver(d.driverId)?.profit ?? 0),
     },
     {
@@ -420,38 +424,40 @@ export default function AnalyticsBreakdowns(p: Props) {
     ['table', tab === 'drivers' ? 'League table' : 'Table', tab === 'drivers' ? Trophy : List],
   ] as const;
 
+  const exportItems: ActionMenuItem[] = p.canExport ? [
+    { key: 'excel', label: 'Excel', hint: 'Summary, drivers, vehicles and customers', icon: <FileSpreadsheet size={14} />, onSelect: exportExcel },
+    { key: 'pdf', label: 'PDF report', hint: 'Printable report for this period', icon: <FileText size={14} />, onSelect: printPdf },
+    ...(p.canManageReports ? [
+      { key: 'share', label: 'Share link', hint: 'Read-only link for partners', icon: <Link2 size={14} />, onSelect: () => setPanel('share') },
+      { key: 'email', label: 'Weekly email', hint: 'Sunday summary by email', icon: <Mail size={14} />, onSelect: () => setPanel('email') },
+    ] : []),
+  ] : [];
+  const reportActions = (
+    <ActionMenu
+      label="Export"
+      icon={<Download size={13} />}
+      items={exportItems}
+      emptyText={<><Lock size={12} /> Reports &amp; exports aren't in your plan</>}
+    />
+  );
+
   return (
-    <div className="analytics-container">
-      <div className="analytics-section-head">
-        <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
-          Drivers, vehicles &amp; customers
-        </p>
-        <div className="flex items-center" style={{ gap: '6px', flexWrap: 'wrap' }}>
+    <AnalyticsSection
+      title="Drivers, vehicles & customers"
+      description="Profit by driver, vehicle and customer. Pick a card to open its scorecards below."
+      actions={(
+        <>
           {comparing && (
-            <span className="stats-card-legend" style={{ marginRight: '6px' }}>
+            <span className="stats-card-legend">
               <span><i style={{ background: 'var(--brand-red)' }} />This period</span>
               <span><i style={{ background: 'var(--stats-bar-secondary)' }} />Previous period</span>
             </span>
           )}
-          {p.canExport ? (
-            <>
-            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '6px 12px', fontSize: '11px' }} onClick={exportExcel}><FileSpreadsheet size={14} /> Excel</button>
-            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '6px 12px', fontSize: '11px' }} onClick={printPdf}><FileText size={14} /> PDF report</button>
-            {p.canManageReports && p.canExport && (
-              <>
-                <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '6px 12px', fontSize: '11px' }} onClick={() => setPanel('share')}><Link2 size={14} /> Share link</button>
-                <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '5px', padding: '6px 12px', fontSize: '11px' }} onClick={() => setPanel('email')}><Mail size={14} /> Weekly email</button>
-              </>
-            )}
-            </>
-          ) : (
-            <span className="text-xs text-muted" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Lock size={12} /> Reports &amp; exports aren't in your plan
-            </span>
-          )}
-        </div>
-      </div>
+          {!p.reportActionsTarget && reportActions}
+        </>
+      )}
+    >
+      {p.reportActionsTarget && createPortal(reportActions, p.reportActionsTarget)}
 
       {/* Summary stats cards — one per dimension, top 8 of each as paired
           bars. Clicking a card (or its arrow) opens that tab below. */}
@@ -477,7 +483,7 @@ export default function AnalyticsBreakdowns(p: Props) {
         ))}
       </div>
 
-      <div ref={detailRef} className="glass-card" style={{ overflow: 'hidden', scrollMarginTop: '16px' }}>
+      <div ref={detailRef} className="an-card an-card--flush" style={{ overflow: 'hidden', scrollMarginTop: '16px' }}>
         <div className="flex items-center justify-between" style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', gap: '10px', flexWrap: 'wrap' }}>
           <div className="telemetry-tabs">
             {([['drivers', 'Drivers', Users], ['vehicles', 'Vehicles', Truck], ['customers', 'Customers', Building2]] as const).map(([key, label, Icon]) => (
@@ -499,13 +505,12 @@ export default function AnalyticsBreakdowns(p: Props) {
                 <option value="idleAlerts">Sort: Idle alerts</option>
               </select>
             )}
-            <div className="flex" style={{ border: '1px solid var(--border-color)', borderRadius: '999px', padding: '2px' }}>
-              {viewOptions.map(([key, label, Icon]) => (
-                <button key={key} type="button" onClick={() => setView(key)} className="flex items-center" style={{ gap: '4px', border: 'none', cursor: 'pointer', borderRadius: '999px', padding: '5px 11px', fontSize: '11.5px', fontWeight: 700, background: view === key ? 'var(--charcoal)' : 'transparent', color: view === key ? '#fff' : 'var(--charcoal-light)' }}>
-                  <Icon size={12} /> {label}
-                </button>
-              ))}
-            </div>
+            <SegmentedToggle
+              label="View"
+              value={view}
+              onChange={setView}
+              options={viewOptions.map(([key, label, Icon]) => ({ value: key, label: <><Icon size={12} /> {label}</> }))}
+            />
           </div>
         </div>
 
@@ -646,7 +651,7 @@ export default function AnalyticsBreakdowns(p: Props) {
 
       {panel === 'share' && <SharePanel onClose={() => setPanel(null)} periodLabel={p.periodLabel} buildSnapshot={snapshot} />}
       {panel === 'email' && <WeeklyEmailPanel onClose={() => setPanel(null)} />}
-    </div>
+    </AnalyticsSection>
   );
 }
 

@@ -10,14 +10,14 @@ import '@maplibre/maplibre-gl-leaflet';
 import { FlowButton } from './components/ui/flow-button';
 import { ImageLightbox } from './components/ui/image-lightbox';
 import { Sidebar, SidebarBody, SidebarLink } from './components/ui/sidebar';
-import { Users, FileSpreadsheet, Clock, ShieldAlert, LogOut, Download, Check, Volume2, VolumeX, RefreshCw, Mail, Lock, Shield, Bell, MapPinned, Radio, Route, LayoutGrid, Container, Banknote, FileText, User, X, ChevronDown, ListChecks, BarChart3, AlertOctagon, Moon, Building2, Calendar, AlertTriangle, CreditCard, LocateFixed, Gauge, SatelliteDish, Truck, IdCard, Settings, KeyRound, Palette, Warehouse, Wrench, Phone, Sparkles, CircleCheck, CircleX, ShieldCheck, UploadCloud, ChevronRight, Fuel, Scale, ExternalLink, BellOff, MapPin, CheckCircle2, Trash2, UserPlus, UserX, Pencil, MoreVertical, Receipt, ParkingCircle, CalendarDays, Inbox } from 'lucide-react';
+import { Users, FileSpreadsheet, Clock, ShieldAlert, LogOut, Download, Check, Volume2, VolumeX, RefreshCw, Mail, Lock, Shield, Bell, MapPinned, Radio, Route, LayoutGrid, Container, Banknote, FileText, User, X, ChevronDown, ListChecks, BarChart3, AlertOctagon, Moon, Building2, Calendar, AlertTriangle, CreditCard, LocateFixed, Gauge, SatelliteDish, Truck, IdCard, Settings, KeyRound, Palette, Warehouse, Wrench, Phone, Sparkles, CircleCheck, CircleX, ShieldCheck, UploadCloud, ChevronRight, Fuel, Scale, ExternalLink, BellOff, MapPin, CheckCircle2, Trash2, UserPlus, UserX, Pencil, MoreVertical, Receipt, ParkingCircle, CalendarDays, Inbox, Settings2 } from 'lucide-react';
 import Papa from 'papaparse';
 import { BrandLogo } from './components/ui/brand-logo';
 import type { BadgeDeltaDirection, BadgeDeltaTone } from './components/ui/badge-delta';
 import TableFilter, { type TableFilterGroup } from './components/ui/table-filter';
 import { MetricLineChart, type MetricTile } from './components/ui/metric-line-chart';
 import { ProgressMetricCard, type MetricPoint, type MetricSummary } from './components/ui/progress-metric-card';
-import { ActivityList } from './components/ui/activity-list';
+import { RankBars } from './components/ui/rank-bars';
 import { EarningsDateRangePicker } from './components/ui/earnings-date-range-picker';
 import { NotificationIcon, EyeToggleIcon, VolumeIcon, SaveIcon, DownloadIcon } from './components/ui/animated-state-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -51,10 +51,12 @@ import { buildJourney, LABEL_META, type Ping } from './lib/journey';
 import { drawJourney } from './lib/journey-map';
 import LockedFeature from './components/LockedFeature';
 import { TAB_FEATURE, FEATURE_LABEL, type Entitlements, type FeatureKey } from './lib/entitlements';
-import TrueProfitSection from './components/analytics/TrueProfitSection';
+import TrueProfitSection, { TrueProfitForecast, TrueProfitTargets } from './components/analytics/TrueProfitSection';
+import { ActionMenu, AnalyticsCard, AnalyticsPageHeader, AnalyticsSection, SegmentedToggle } from './components/analytics/AnalyticsLayout';
 import CostLedgerModal from './components/analytics/CostLedgerModal';
 import AnalyticsBreakdowns from './components/analytics/AnalyticsBreakdowns';
-import { computeTrueCost, DEFAULT_ANALYTICS_SETTINGS, type AnalyticsSettings, type OrgCost, type VatMode } from './lib/true-cost';
+import { computeTrueCost, computeTrueCostSeries, shiftRevenueFromLoads, DEFAULT_ANALYTICS_SETTINGS, VAT_RATE, type AnalyticsSettings, type OrgCost, type TrueCostResult, type VatMode } from './lib/true-cost';
+import { computeBreakdowns } from './lib/analytics-breakdowns';
 import DispatchDashboard from './pages/DispatchDashboard';
 import { computeShiftCompliance, walkaroundIssues, formatCheckDuration, type ComplianceCheck } from './lib/walkaround-compliance';
 import CarrierSettlementImportModal from './pages/CarrierSettlementImportModal';
@@ -1038,6 +1040,8 @@ export default function App() {
     return { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) };
   });
   const [analyticsVatMode, setAnalyticsVatMode] = useState<VatMode>('ex');
+  // Page-header slot AnalyticsBreakdowns mounts its report buttons into.
+  const [analyticsReportSlot, setAnalyticsReportSlot] = useState<HTMLDivElement | null>(null);
   const [isCostLedgerOpen, setIsCostLedgerOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isDriverBulkImportOpen, setIsDriverBulkImportOpen] = useState(false);
@@ -1577,10 +1581,24 @@ export default function App() {
       // its RLS policy has no driver-facing rule at all, unlike columns on
       // shifts itself which the driver app's own select-star queries would
       // otherwise be able to read straight off their own shift row.
-      const { data: sfts, error: shiftsError } = await supabase!
-        .from('shifts')
-        .select('*, drivers(full_name, driver_id), depots(name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name, delivered_at, delivery_paperwork_path, delivery_evidence_path), shift_loads(id, load_reference, carrier_name, revenue_amount, booked_departure_at, booked_delivery_at, delivered_at, delivery_paperwork_path, delivery_evidence_path, created_at)')
-        .order('start_time', { ascending: false });
+      // Paged: PostgREST returns at most 1,000 rows per request, so a
+      // single select silently dropped older shifts once a company passed
+      // that — and with them, real figures from Analytics' longer periods
+      // and comparisons. id breaks start_time ties so pages never overlap.
+      const SHIFT_PAGE = 1000;
+      const sfts: any[] = [];
+      let shiftsError: { message: string } | null = null;
+      for (let from = 0; ; from += SHIFT_PAGE) {
+        const { data: page, error } = await supabase!
+          .from('shifts')
+          .select('*, drivers(full_name, driver_id), depots(name), vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), shift_revenue(revenue_amount, load_reference, carrier_name, delivered_at, delivery_paperwork_path, delivery_evidence_path), shift_loads(id, load_reference, carrier_name, revenue_amount, booked_departure_at, booked_delivery_at, delivered_at, delivery_paperwork_path, delivery_evidence_path, created_at)')
+          .order('start_time', { ascending: false })
+          .order('id', { ascending: true })
+          .range(from, from + SHIFT_PAGE - 1);
+        if (error) { shiftsError = error; break; }
+        sfts.push(...(page ?? []));
+        if (!page || page.length < SHIFT_PAGE) break;
+      }
 
       // A Postgrest-level error here (RLS denial, a bad embed, anything)
       // resolves normally with { data: null, error: {...} } rather than
@@ -1613,7 +1631,7 @@ export default function App() {
         return found ? Math.round(sum * 100) / 100 : null;
       };
 
-      const mappedShifts = (sfts || []).map((s: any) => {
+      const mappedShifts = sfts.map((s: any) => {
         // shift_id is shift_revenue's own primary key, so PostgREST treats
         // this as a one-to-one embed and returns a single object — but
         // tolerate an array shape too rather than assume a client version.
@@ -8148,6 +8166,7 @@ export default function App() {
           const driverFilter = analyticsFilters.find(f => f.type === FilterType.DRIVER && f.value.length > 0);
           const agencyFilter = analyticsFilters.find(f => f.type === FilterType.AGENCY && f.value.length > 0);
           const depotFilter = analyticsFilters.find(f => f.type === FilterType.DEPOT && f.value.length > 0);
+          const carrierFilter = analyticsFilters.find(f => f.type === FilterType.CARRIER && f.value.length > 0);
           const periodFilter = analyticsFilters.find(f => f.type === FilterType.PERIOD && f.value.length > 0);
           const periodWeeks = periodFilter ? PERIOD_WEEKS[periodFilter.value[0]] ?? null : null;
           const periodCutoff = periodFilter
@@ -8177,6 +8196,14 @@ export default function App() {
               const included = !!s.depot_name && depotFilter.value.includes(s.depot_name);
               if (depotFilter.operator === FilterOperator.IS_NOT ? included : !included) return false;
             }
+            // Carrier was offered as a filter but never applied. A shift
+            // matches when its carrier, or any of its loads' carriers, is
+            // selected.
+            if (carrierFilter) {
+              const carriers = [s.carrier_name, ...(s.loads ?? []).map(l => l.carrier_name)];
+              const included = carriers.some(c => !!c && carrierFilter.value.includes(c));
+              if (carrierFilter.operator === FilterOperator.IS_NOT ? included : !included) return false;
+            }
             return true;
           };
           const matchesShiftFilters = (s: Shift) => {
@@ -8185,103 +8212,47 @@ export default function App() {
             if (periodEnd && new Date(s.start_time).getTime() >= periodEnd) return false;
             return true;
           };
+          // ── One set of figures for the whole tab ─────────────────
+          // Every number on this page comes from the same shift set, the
+          // same revenue rule and the same cost formula (computeTrueCost /
+          // computeBreakdowns), so the Overview tiles, the chart, True
+          // profit, the driver ranking and the scorecards always agree.
+          //
           // Sub-15-minute shifts (a clock-in/out test, or an immediate
-          // mis-tap) are excluded from every Profitability figure below —
-          // a near-zero wage against a real or pending revenue figure
-          // drags the reported margin toward 100% and misrepresents real
-          // fleet performance. They still exist as real rows everywhere
-          // else (Payroll, Live Dispatch); this filter is scoped to the
-          // Profitability cockpit only.
-          const completedShiftsForAnalytics = shifts.filter(s => s.status === 'completed' && (s.total_hours ?? 0) >= 0.25 && matchesShiftFilters(s));
+          // mis-tap) are left out — they carry no real wage or load.
+          // Revenue is the sum of a shift's rated loads, so an agreed rate
+          // counts even while another load on the same shift is unrated.
+          const analyticsShifts = shifts
+            .filter(s => s.status === 'completed' && (s.total_hours ?? 0) >= 0.25 && matchesNonPeriodFilters(s))
+            .map(s => {
+              const { revenue, pendingLoads } = shiftRevenueFromLoads(s);
+              return { ...s, revenue_amount: revenue, pending_loads: pendingLoads };
+            });
+          const completedShiftsForAnalytics = analyticsShifts.filter(matchesShiftFilters);
 
-          // Live wage accrual — deliberately kept OUT of totalDriverCost/
-          // Net Profit/Margin above: those are computed only over
-          // completed + rated shifts specifically so a batch of un-rated
-          // loads can't drag the reported margin toward zero (see the
-          // comment on shiftsWithRevenue below). An active shift has no
-          // revenue yet by definition, so folding its accruing wage into
-          // that same pool would reintroduce exactly the distortion that
-          // invariant exists to prevent. Shown as its own supplementary
-          // figure instead — getShiftFinancials() already computes a live
-          // elapsed-time estimate for any shift with no end_time (see its
-          // "CALCULATE LIVE HOURS FOR ONGOING SHIFTS" branch), and the
-          // existing 15s loadData() polling loop re-renders this
-          // component regularly, so recomputing it on every render is
-          // enough to make it visibly tick up — no separate timer needed.
+          // Live wage accrual on shifts still running — shown beside the
+          // filters, never inside the period totals (an active shift has
+          // no revenue yet; folding its wage in would understate margin).
+          // getShiftFinancials() estimates elapsed pay for a shift with no
+          // end_time, and the 15s loadData() poll re-renders this.
           const activeShiftsForAnalytics = shifts.filter(s => s.status === 'active' && matchesShiftFilters(s));
           const liveActiveWages = activeShiftsForAnalytics.reduce((sum, s) => sum + getShiftFinancials(s).grossPay, 0);
 
-          // Profitability Cockpit — one unified view of company revenue vs.
-          // operating cost. Every figure here (the KPI strip, the chart,
-          // and the ledger's Gross Margin column) is computed only over
-          // shifts that actually have a revenue figure set
-          // (shiftsWithRevenue) — a batch of un-rated loads can't silently
-          // drag the reported margin toward zero, and
-          // Revenue − Wages − Fuel = Gross Profit holds exactly, every
-          // time, instead of mixing totals from different shift sets.
-          // Un-rated shifts still appear in the ledger below, flagged
-          // "Pending Remittance", and flow into these totals the moment a
-          // dispatcher sets their rate.
-          //
-          // This is deliberately labelled "Gross", not "Net" — it deducts
-          // driver wages and an estimated fuel cost, but not overhead,
-          // insurance, leasing, or other fixed costs this schema has no
-          // record of. Calling it Net Profit would overstate real
-          // profitability.
-          const shiftsWithRevenue = completedShiftsForAnalytics.filter(s => s.revenue_amount !== null && s.revenue_amount !== undefined);
-
-          const TARGET_MARGIN_PCT = analyticsSettings.target_margin_percent;
-          // GPS miles (mileageByShift, read directly where the ledger/CSV
-          // display them) stay a separate, purely informational column —
-          // migration 045's shift_mileages() RPC, no longer what fuel
-          // cost is derived from.
-          // Actual Fuel Cost — sum of a shift's admin-approved fuel
-          // receipts (migration 047), replacing the old GPS-mileage ×
-          // £/mile estimate. A shift with no approved receipts contributes
-          // £0 here, which is an honest "not yet recorded", not a claim
-          // that the shift used no fuel.
-          const shiftFuelCost = (s: Shift) => approvedFuelCostByShift[s.id] ?? 0;
-          // Single source of truth for a shift's own gross margin (£) —
-          // reused by the ledger sort, the ledger's Gross Margin cell, and
-          // the CSV export, so those three can never silently disagree.
-          const shiftGrossMargin = (s: Shift): number | null => {
-            if (s.revenue_amount === null || s.revenue_amount === undefined) return null;
-            return s.revenue_amount - (s.total_pay || 0) - shiftFuelCost(s);
+          // Per-shift cost and profit, matching computeBreakdowns: wages
+          // plus employer on-cost, plus approved fuel (VAT-inclusive at
+          // the pump, so ex-VAT unless Inc VAT is selected).
+          const oncostRate = (Number(analyticsSettings.employer_oncost_percent) || 0) / 100;
+          const vatUp = (v: number) => (analyticsVatMode === 'inc' ? v * (1 + VAT_RATE) : v);
+          const shiftFuelCost = (s: Shift) => {
+            const gross = approvedFuelCostByShift[s.id] ?? 0;
+            return analyticsVatMode === 'inc' ? gross : gross / (1 + VAT_RATE);
           };
-
-          const totalRevenue = shiftsWithRevenue.reduce((sum, s) => sum + (s.revenue_amount || 0), 0);
-          const totalDriverCost = shiftsWithRevenue.reduce((sum, s) => sum + (s.total_pay || 0), 0);
-          // Deliberately NOT scoped to shiftsWithRevenue like Revenue/Payroll
-          // above — an approved fuel receipt is a real, already-incurred
-          // cost the moment an admin approves it, regardless of whether
-          // that shift's load has been rated for revenue yet (or even
-          // completed: an active shift's driver can refuel mid-shift and
-          // have it approved). Still scoped to shifts matching the current
-          // driver/agency/depot/period filters, just not to "rated" ones,
-          // so approving a receipt shows up here immediately instead of
-          // waiting on an unrelated dispatcher action.
-          const allFilteredShiftIds = new Set(shifts.filter(matchesShiftFilters).map(s => s.id));
-          const totalFuelCost = fuelReceipts.reduce((sum, r) => {
-            if (r.status !== 'approved' || !r.shift_id || !allFilteredShiftIds.has(r.shift_id)) return sum;
-            return sum + (r.total_cost ?? 0);
-          }, 0);
-          const grossProfit = totalRevenue - totalDriverCost - totalFuelCost;
-          const grossMarginPct = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : null;
-          const totalHours = shiftsWithRevenue.reduce((sum, s) => sum + (s.total_hours || 0), 0);
-          const marginBenchmarkLabel: 'Healthy' | 'Caution' | 'Below Target' | null =
-            grossMarginPct === null ? null
-              : grossMarginPct >= TARGET_MARGIN_PCT ? 'Healthy'
-              : grossMarginPct >= TARGET_MARGIN_PCT * 0.7 ? 'Caution'
-              : 'Below Target';
-
-          // Total litres — approved fuel_receipts rows only, scoped to the
-          // same allFilteredShiftIds set the £ fuel total above uses, so
-          // the P&L strip's "£X · Y litres" pairing is always the same
-          // underlying receipts, not two different scopes.
-          const totalFuelLiters = fuelReceipts.reduce((sum, r) => {
-            if (r.status !== 'approved' || !r.shift_id || !allFilteredShiftIds.has(r.shift_id)) return sum;
-            return sum + (r.liters ?? 0);
-          }, 0);
+          const shiftWages = (s: Shift) => (s.total_pay || 0) * (1 + oncostRate);
+          const shiftProfit = (s: Shift): number | null => {
+            if (s.revenue_amount === null || s.revenue_amount === undefined) return null;
+            return vatUp(s.revenue_amount) - shiftWages(s) - shiftFuelCost(s);
+          };
+          const shiftsWithRevenue = completedShiftsForAnalytics.filter(s => s.revenue_amount !== null && s.revenue_amount !== undefined);
 
           // Fleet economics (unit economics + fuel efficiency in one card).
           // Per day, over rated shifts that logged GPS mileage — so a
@@ -8301,8 +8272,8 @@ export default function App() {
             const d = new Date(s.start_time);
             const key = d.toISOString().slice(0, 10);
             const day = economicsByDay.get(key) ?? { date: d, revenue: 0, wages: 0, fuel: 0, miles: 0, litres: 0 };
-            day.revenue += s.revenue_amount || 0;
-            day.wages += s.total_pay || 0;
+            day.revenue += vatUp(s.revenue_amount || 0);
+            day.wages += shiftWages(s);
             day.fuel += shiftFuelCost(s);
             day.miles += miles;
             day.litres += approvedLitresByShift.get(s.id) ?? 0;
@@ -8359,8 +8330,8 @@ export default function App() {
             const d = new Date(s.start_time);
             const key = d.toISOString().slice(0, 10);
             const day = hourlyByDay.get(key) ?? { date: d, revenue: 0, wages: 0, fuel: 0, hours: 0 };
-            day.revenue += s.revenue_amount || 0;
-            day.wages += s.total_pay || 0;
+            day.revenue += vatUp(s.revenue_amount || 0);
+            day.wages += shiftWages(s);
             day.fuel += shiftFuelCost(s);
             day.hours += hours;
             hourlyByDay.set(key, day);
@@ -8404,242 +8375,32 @@ export default function App() {
           };
           const economicsUsesHours = economicsSeries.length < 2 && hourlyEconomicsSeries.length >= 2;
 
-          // Driver profitability — summed gross margin per driver over the
-          // same shiftsWithRevenue set everything else in this cockpit
-          // uses, so a driver's figure always agrees with their own rows
-          // in the Shipments ledger.
-          const driverMarginMap = new Map<string, { id: string; name: string; margin: number; shifts: number; lastShift: string }>();
-          shiftsWithRevenue.forEach(s => {
-            const m = shiftGrossMargin(s);
-            if (m === null) return;
-            const name = driverNameById.get(s.driver_id) || 'Unknown driver';
-            const entry = driverMarginMap.get(s.driver_id) ?? { id: s.driver_id, name, margin: 0, shifts: 0, lastShift: s.start_time };
-            entry.margin += m;
-            entry.shifts += 1;
-            if (new Date(s.start_time) > new Date(entry.lastShift)) entry.lastShift = s.start_time;
-            driverMarginMap.set(s.driver_id, entry);
-          });
-          const driverLeaderboard = Array.from(driverMarginMap.values()).sort((a, b) => b.margin - a.margin);
-
-          // Status strip — the things Compensation Summary's own "Flags &
-          // Reviews" bell already tracks (see its comment elsewhere in
-          // this file), but surfaced here too: this tab is meant to answer
-          // "is the business healthy right now", and today it doesn't
-          // show a single thing that needs a decision unless you already
-          // know to check a different tab. A genuine loss-making shift
-          // (not just "lowest margin of an otherwise fine set") is named
-          // outright rather than left for someone to find in the ledger.
+          // Status strip — long shifts and the worst genuinely
+          // loss-making shift (same per-shift profit formula as above).
           const flaggedShiftsCount = completedShiftsForAnalytics.filter(
             s => (s.total_hours ?? 0) > orgAlertSettings.longShiftFlagHours,
           ).length;
           const lossMakingShifts = shiftsWithRevenue
-            .map(s => ({ name: driverNameById.get(s.driver_id) || 'Unknown driver', margin: shiftGrossMargin(s) }))
+            .map(s => ({ name: driverNameById.get(s.driver_id) || 'Unknown driver', margin: shiftProfit(s) }))
             .filter((x): x is { name: string; margin: number } => x.margin !== null && x.margin < 0)
             .sort((a, b) => a.margin - b.margin);
           const worstLossShift = lossMakingShifts.length > 0 ? lossMakingShifts[0] : null;
 
-          // Period-over-period deltas — only meaningful when a specific
-          // "Last N weeks" window is selected (there's no natural "period
-          // before All time" to compare against). The comparison window is
-          // the same length, immediately before the current one, with the
-          // same Driver/Agency/Depot filters applied — a like-with-like
-          // comparison rather than a guess.
-          const previousPeriodShiftsWithRevenue = (periodWeeks && periodCutoff)
-            ? shifts.filter(s => {
-                if (s.status !== 'completed' || !matchesNonPeriodFilters(s)) return false;
-                if (s.revenue_amount === null || s.revenue_amount === undefined) return false;
-                const t = new Date(s.start_time).getTime();
-                const prevStart = periodCutoff - periodWeeks * 7 * 24 * 60 * 60 * 1000;
-                return t >= prevStart && t < periodCutoff;
-              })
-            : [];
-          const prevRevenue = previousPeriodShiftsWithRevenue.reduce((sum, s) => sum + (s.revenue_amount || 0), 0);
-          const prevCost = previousPeriodShiftsWithRevenue.reduce((sum, s) => sum + (s.total_pay || 0), 0);
-          const prevFuelCost = previousPeriodShiftsWithRevenue.reduce((sum, s) => sum + shiftFuelCost(s), 0);
-          const prevProfit = prevRevenue - prevCost - prevFuelCost;
-          const prevMargin = prevRevenue > 0 ? (prevProfit / prevRevenue) * 100 : null;
-          const prevHours = previousPeriodShiftsWithRevenue.reduce((sum, s) => sum + (s.total_hours || 0), 0);
-
-          const computeKpiDelta = (current: number | null, previous: number | null, asPercentagePoints = false): { direction: BadgeDeltaDirection; label: string } | null => {
-            if (!periodWeeks || current === null || previous === null) return null;
-            if (previous === 0 && current === 0) return null;
-            if (previous === 0) {
-              if (current === 0) return null;
-              return { direction: current > 0 ? 'up' : 'down', label: 'New' };
-            }
-            const diff = asPercentagePoints ? current - previous : ((current - previous) / Math.abs(previous)) * 100;
-            const direction: BadgeDeltaDirection = diff > 0.05 ? 'up' : diff < -0.05 ? 'down' : 'flat';
-            const label = `${diff > 0 ? '+' : ''}${diff.toFixed(1)}${asPercentagePoints ? 'pp' : '%'}`;
-            return { direction, label };
-          };
-          // Which direction is actually "good" per metric — an increase in
-          // Driver Cost is bad, not good, so its badge can't just mirror
-          // Load Revenue's colouring. Total Hours has no inherent good/bad
-          // direction, so its badge stays neutral regardless of sign.
-          const KPI_GOOD_DIRECTION: Record<'revenue' | 'cost' | 'fuel' | 'profit' | 'margin' | 'hours', BadgeDeltaDirection | null> = {
-            revenue: 'up', cost: 'down', fuel: 'down', profit: 'up', margin: 'up', hours: null,
-          };
-          const kpiDeltaTone = (direction: BadgeDeltaDirection, key: keyof typeof KPI_GOOD_DIRECTION): BadgeDeltaTone => {
-            const good = KPI_GOOD_DIRECTION[key];
-            if (good === null || direction === 'flat') return 'neutral';
-            return direction === good ? 'positive' : 'negative';
-          };
-          const kpiDeltas: Record<'revenue' | 'cost' | 'fuel' | 'profit' | 'margin' | 'hours', { direction: BadgeDeltaDirection; label: string } | null> = {
-            revenue: computeKpiDelta(totalRevenue, prevRevenue),
-            cost: computeKpiDelta(totalDriverCost, prevCost),
-            fuel: computeKpiDelta(totalFuelCost, prevFuelCost),
-            profit: computeKpiDelta(grossProfit, prevProfit),
-            margin: computeKpiDelta(grossMarginPct, prevMargin, true),
-            hours: computeKpiDelta(totalHours, prevHours),
-          };
-
-          // Daily bars, oldest first — grouped by calendar date rather than
-          // ISO week, so even a short period shows real day-by-day movement
-          // instead of being averaged into one bar. Built from every
-          // completed shift in the period, not just rated ones — a day
-          // with real driver activity but no rated load yet still gets a
-          // bar (wages/fuel/hours are real regardless of rating status;
-          // only revenue_amount is genuinely unknown, and (s.revenue_amount
-          // || 0) already reports that as 0 rather than guessing).
-          // Iterating shiftsWithRevenue only used to drop any day whose
-          // shifts hadn't been rated yet, which read as a "missing day"
-          // rather than an honest zero-revenue bar.
-          const dayTotals = new Map<string, { date: Date; revenue: number; cost: number; fuel: number; hours: number }>();
-          completedShiftsForAnalytics.forEach(s => {
-            const d = new Date(s.start_time);
-            const key = d.toISOString().slice(0, 10);
-            const existing = dayTotals.get(key);
-            dayTotals.set(key, {
-              date: existing?.date ?? d,
-              revenue: (existing?.revenue ?? 0) + (s.revenue_amount || 0),
-              cost: (existing?.cost ?? 0) + (s.total_pay || 0),
-              fuel: (existing?.fuel ?? 0) + shiftFuelCost(s),
-              hours: (existing?.hours ?? 0) + (s.total_hours || 0),
-            });
-          });
-          // Operating cost = wages + fuel, stacked as two segments of one
-          // bar in the chart; targetCostLine is the £ ceiling that day's
-          // revenue would allow while still hitting TARGET_MARGIN_PCT — a
-          // dotted overlay a bar can visibly cross, not a flat number that
-          // means nothing without knowing that day's revenue.
-          const dailySeries = Array.from(dayTotals.values())
-            .sort((a, b) => a.date.getTime() - b.date.getTime())
-            .map(d => ({
-              label: d.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
-              dayLetter: d.date.toLocaleDateString('en-GB', { weekday: 'short' }),
-              revenue: Math.round(d.revenue * 100) / 100,
-              cost: Math.round(d.cost * 100) / 100,
-              fuel: Math.round(d.fuel * 100) / 100,
-              profit: Math.round((d.revenue - d.cost - d.fuel) * 100) / 100,
-              hours: Math.round(d.hours * 100) / 100,
-              margin: d.revenue > 0 ? ((d.revenue - d.cost - d.fuel) / d.revenue) * 100 : 0,
-              targetCostLine: Math.round(d.revenue * (1 - TARGET_MARGIN_PCT / 100) * 100) / 100,
-            }));
-
-
           return (
             <>
-            <div className="analytics-container">
-              <div className="mb-16 flex items-center" style={{ gap: '10px', flexWrap: 'wrap' }}>
-                {/* Standardized to TableFilter — the same filter button
-                    used by Fleet Roadworthiness and Compliance Defects —
-                    instead of the bespoke AnalyticsFilterMenu. FilterBar
-                    below still renders the active selections as removable
-                    chips, which the single-group tables don't need but
-                    this one benefits from given five filterable
-                    dimensions at once. */}
-                {/* These filter the Analytics table below only — on
-                    Shipments they filtered nothing and just duplicated
-                    Delivery History's own Filters button, so they're
-                    scoped to the Analytics tab now. */}
-                {activeTab === 'analytics' && (
-                  <>
-                    <TableFilter groups={analyticsFilterGroups} />
-                    {periodFilter?.value[0] === 'Custom range' && (
-                      <span>
-                        <EarningsDateRangePicker compact
-                          startDate={analyticsCustomRange.from}
-                          endDate={analyticsCustomRange.to}
-                          onChange={(from, to) => setAnalyticsCustomRange({ from, to })}
-                        />
-                      </span>
-                    )}
-                    <FilterBar
-                      filters={analyticsFilters}
-                      setFilters={setAnalyticsFilters}
-                      filterViewOptions={[]}
-                      showAddFilterButton={false}
-                      filterOptionsByType={{
-                        [FilterType.DRIVER]: driverFilterOptions,
-                        [FilterType.AGENCY]: agencyFilterOptions,
-                        [FilterType.DEPOT]: depotFilterOptions,
-                        [FilterType.PERIOD]: periodFilterOptions,
-                        [FilterType.CARRIER]: carrierFilterOptions,
-                      }}
-                      typeIcons={{
-                        [FilterType.DRIVER]: <IdCard className="size-3.5" />,
-                        [FilterType.AGENCY]: <Building2 className="size-3.5" />,
-                        [FilterType.DEPOT]: <Warehouse className="size-3.5" />,
-                        [FilterType.PERIOD]: <Calendar className="size-3.5" />,
-                        [FilterType.CARRIER]: <Building2 className="size-3.5" />,
-                      }}
-                    />
-                  </>
-                )}
-                {/* Import Carrier lives on Shipments now (it's
-                    load data entry, not an Analytics stat). Fuel Receipts
-                    / Overnight Parking review moved to the Alert Panel
-                    (Alert Monitors consolidation) — this tab only ever
-                    shows the already-approved totals now, so there's no
-                    review entry point left to render here. */}
-              </div>
-            </div>
+            {/* Shipments: Import Carrier and Assign load live on the Live Tracking tab itself; Analytics' filters are in its own toolbar. */}
 
             {activeTab === 'analytics' && (() => {
               const money = (v: number) => `${v < 0 ? '−' : ''}£${Math.abs(v).toLocaleString('en-GB', { maximumFractionDigits: 0 })}`;
               const moneyAxis = (v: number) => (Math.abs(v) >= 1000 ? `£${(v / 1000).toFixed(1)}k` : `£${Math.round(v)}`);
               const percent = (v: number) => `${v.toFixed(1)}%`;
-              const tileDelta = (key: keyof typeof KPI_GOOD_DIRECTION) => {
-                const delta = kpiDeltas[key];
-                return delta ? { ...delta, tone: kpiDeltaTone(delta.direction, key) } : null;
-              };
-              const comparing = Boolean(periodWeeks);
-              const overviewMetrics: MetricTile[] = [
-                {
-                  key: 'profit', label: 'Net fleet profit', value: grossProfit, previous: comparing ? prevProfit : null,
-                  format: money, axisFormat: moneyAxis, color: '#10B981', delta: tileDelta('profit'),
-                  hint: grossMarginPct === null ? 'No rated loads yet' : `${grossMarginPct.toFixed(1)}% margin`,
-                },
-                {
-                  key: 'revenue', label: 'Revenue', value: totalRevenue, previous: comparing ? prevRevenue : null,
-                  format: money, axisFormat: moneyAxis, color: '#333333', delta: tileDelta('revenue'),
-                  hint: `${shiftsWithRevenue.length} of ${completedShiftsForAnalytics.length} shifts rated`,
-                },
-                {
-                  key: 'cost', label: 'Payroll', value: totalDriverCost, previous: comparing ? prevCost : null,
-                  format: money, axisFormat: moneyAxis, color: '#CC0000', delta: tileDelta('cost'),
-                  hint: `${formatHoursMinutes(totalHours)} on rated shifts`,
-                },
-                {
-                  key: 'fuel', label: 'Fuel & AdBlue', value: totalFuelCost, previous: comparing ? prevFuelCost : null,
-                  format: money, axisFormat: moneyAxis, color: '#F59E0B', delta: tileDelta('fuel'),
-                  hint: `${totalFuelLiters.toFixed(0)} litres approved`,
-                },
-                {
-                  key: 'margin', label: 'Margin', value: grossMarginPct ?? 0, previous: comparing ? prevMargin : null,
-                  format: percent, color: '#64748B', delta: tileDelta('margin'),
-                  hint: `Target >${TARGET_MARGIN_PCT}%${marginBenchmarkLabel ? ` · ${marginBenchmarkLabel}` : ''}`,
-                },
-              ];
 
-              // ── True profit (analytics brief: true cost first) ─────────
-              const trueCostShifts = shifts.filter(s => s.status === 'completed' && (s.total_hours ?? 0) >= 0.25 && matchesNonPeriodFilters(s));
-              const earliestShift = trueCostShifts.reduce((min, s) => Math.min(min, new Date(s.start_time).getTime()), Date.now());
+              // ── The period's true figures (one computeTrueCost run) ────
+              const earliestShift = analyticsShifts.reduce((min, s) => Math.min(min, new Date(s.start_time).getTime()), Date.now());
               const windowStart = new Date(periodCutoff ?? earliestShift);
               const windowEnd = new Date(periodEnd ?? Date.now());
-              const trueCostFor = (start: Date, end: Date) => computeTrueCost({
-                start, end, shifts: trueCostShifts, fuelReceipts, costs: orgCosts, settings: analyticsSettings, vatMode: analyticsVatMode,
-              });
+              const trueCostInput = { shifts: analyticsShifts, fuelReceipts, costs: orgCosts, settings: analyticsSettings, vatMode: analyticsVatMode };
+              const trueCostFor = (start: Date, end: Date) => computeTrueCost({ ...trueCostInput, start, end });
               const trueCurrent = trueCostFor(windowStart, windowEnd);
               const bounded = Boolean(periodCutoff);
               const spanMs = windowEnd.getTime() - windowStart.getTime();
@@ -8659,125 +8420,234 @@ export default function App() {
                 ? `${analyticsCustomRange.from} → ${analyticsCustomRange.to}`
                 : (periodFilter?.value[0] ?? 'All time');
 
+              // Overview tiles: Revenue − Driver cost − Expenses = Profit,
+              // exactly, and the same figures True profit breaks down.
+              const figures = (r: TrueCostResult) => ({
+                revenue: r.revenue,
+                driverCost: r.payroll + r.oncost,
+                expenses: r.fuel + r.fixed,
+                profit: r.profit,
+                margin: r.marginPct,
+              });
+              const cur = figures(trueCurrent);
+              const prev = truePrevious ? figures(truePrevious) : null;
+              // Which direction is good per figure: more revenue is good,
+              // more cost is bad.
+              const tileDelta = (current: number | null, previous: number | null | undefined, good: 'up' | 'down', asPoints = false): MetricTile['delta'] => {
+                if (!prev || current === null || previous === null || previous === undefined) return null;
+                if (previous === 0 && current === 0) return null;
+                if (previous === 0) return { direction: current > 0 ? 'up' : 'down', label: 'New', tone: (current > 0) === (good === 'up') ? 'positive' : 'negative' };
+                const diff = asPoints ? current - previous : ((current - previous) / Math.abs(previous)) * 100;
+                const direction: BadgeDeltaDirection = diff > 0.05 ? 'up' : diff < -0.05 ? 'down' : 'flat';
+                const tone: BadgeDeltaTone = direction === 'flat' ? 'neutral' : direction === good ? 'positive' : 'negative';
+                return { direction, tone, label: `${diff > 0 ? '+' : ''}${diff.toFixed(1)}${asPoints ? 'pp' : '%'}` };
+              };
+              const ratedShifts = trueCurrent.shiftCount - trueCurrent.unratedShifts;
+              const overviewMetrics: MetricTile[] = [
+                {
+                  key: 'revenue', label: 'Revenue', value: cur.revenue, previous: prev?.revenue ?? null,
+                  format: money, axisFormat: moneyAxis, color: '#333333', delta: tileDelta(cur.revenue, prev?.revenue, 'up'),
+                  hint: trueCurrent.shiftCount === 0 ? 'No completed shifts yet' : `${ratedShifts} of ${trueCurrent.shiftCount} shifts fully rated`,
+                },
+                {
+                  key: 'driverCost', label: 'Driver cost', value: cur.driverCost, previous: prev?.driverCost ?? null,
+                  format: money, axisFormat: moneyAxis, color: '#CC0000', delta: tileDelta(cur.driverCost, prev?.driverCost, 'down'),
+                  hint: trueCurrent.oncost > 0
+                    ? `Wages ${money(trueCurrent.payroll)} + NI & pension ${money(trueCurrent.oncost)}`
+                    : `Wages · ${formatHoursMinutes(trueCurrent.hours)} worked`,
+                },
+                {
+                  key: 'expenses', label: 'Expenses', value: cur.expenses, previous: prev?.expenses ?? null,
+                  format: money, axisFormat: moneyAxis, color: '#F59E0B', delta: tileDelta(cur.expenses, prev?.expenses, 'down'),
+                  hint: `Fuel ${money(trueCurrent.fuel)} · fixed costs ${money(trueCurrent.fixed)}`,
+                },
+                {
+                  key: 'profit', label: 'Profit', value: cur.profit, previous: prev?.profit ?? null,
+                  format: money, axisFormat: moneyAxis, color: '#10B981', delta: tileDelta(cur.profit, prev?.profit, 'up'),
+                  hint: 'Revenue − driver cost − expenses',
+                },
+                {
+                  key: 'margin', label: 'Margin', value: cur.margin ?? 0, previous: prev ? (prev.margin ?? 0) : null,
+                  format: percent, color: '#64748B', delta: tileDelta(cur.margin, prev?.margin, 'up', true),
+                  hint: `Target >${analyticsSettings.target_margin_percent}%`,
+                },
+              ];
+              // Chart: the same figures per day (per week beyond ~3 months),
+              // so the line adds up to the tile above it.
+              const overviewSeries = computeTrueCostSeries({ ...trueCostInput, start: windowStart, end: windowEnd }).map(({ label, result }) => {
+                const f = figures(result);
+                const round = (v: number) => Math.round(v * 100) / 100;
+                return {
+                  label,
+                  revenue: round(f.revenue),
+                  driverCost: round(f.driverCost),
+                  expenses: round(f.expenses),
+                  profit: round(f.profit),
+                  margin: f.margin === null ? 0 : Math.round(f.margin * 10) / 10,
+                };
+              });
+
+              // Driver ranking — the drivers' own profit from
+              // computeBreakdowns, so it matches their scorecards exactly.
+              const driverRanking = computeBreakdowns({
+                start: windowStart, end: windowEnd, shifts: analyticsShifts, fuel: fuelReceipts, costs: orgCosts,
+                settings: analyticsSettings, vatMode: analyticsVatMode,
+                targetCheckSeconds: orgAlertSettings.walkaroundCheckTargetMinutes * 60,
+                extras: { milesByShift: {}, checks: [], idleAlerts: [], incidents: [] },
+              }).drivers.sort((a, b) => b.profit - a.profit);
+              const lastShiftByDriver = new Map<string, string>();
+              completedShiftsForAnalytics.forEach(s => {
+                const last = lastShiftByDriver.get(s.driver_id);
+                if (!last || s.start_time > last) lastShiftByDriver.set(s.driver_id, s.start_time);
+              });
+
               return (
             <>
-            {/* Sections stack with one consistent gap — no stray
-                Tailwind mb-12 (48px) gaps between them. */}
-            <div className="analytics-stack">
-            {/* ============================================================
-                OVERVIEW (first on the page) — the period's headline figures as clickable
-                tiles (21st.dev line-charts-6); the selected one is
-                plotted day by day below. Replaces both the old status
-                strip and the separate Trend zone (margin line + revenue
-                vs cost bars): every one of those series is a tile here.
-               ============================================================ */}
-            <div className="analytics-container">
-              <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
-                Overview
-              </p>
-              <MetricLineChart
-                metrics={overviewMetrics}
-                data={dailySeries.map(d => ({ label: d.label, profit: d.profit, revenue: d.revenue, cost: d.cost, fuel: d.fuel, margin: Math.round(d.margin * 10) / 10 }))}
-                defaultKey="profit"
-                emptyText="Daily figures appear once completed shifts in this period have a load rate."
-                footer={
+            <div className="analytics-page">
+              {/* Page header (21st.dev page-header-2): what this page is,
+                  the period in view, and the page-wide controls. VAT mode
+                  and Costs & targets change every figure below, and the
+                  report buttons export the whole page, so they sit here
+                  rather than inside one section. AnalyticsBreakdowns
+                  mounts its report buttons into the header slot. */}
+              <AnalyticsPageHeader
+                title="Analytics"
+                badge={<span className="an-badge"><Calendar size={12} /> {truePeriodLabel}</span>}
+                description={`Profit, costs and performance across your fleet · figures ${analyticsVatMode === 'inc' ? 'including' : 'excluding'} VAT.`}
+                actions={
                   <>
-                    <span className="flex items-center text-xs text-muted" style={{ gap: '12px', flexWrap: 'wrap' }}>
-                      <span>Period: <strong className="text-primary">{periodFilter ? periodFilter.value[0] : 'All time'}</strong></span>
-                      {activeShiftsForAnalytics.length > 0 && (
-                        <span className="flex items-center" style={{ gap: '6px' }}>
-                          <span className="dash-live-dot" />
-                          {activeShiftsForAnalytics.length} on shift now · <strong className="text-primary">£{liveActiveWages.toLocaleString('en-GB', { maximumFractionDigits: 2 })}</strong> wages accruing
-                        </span>
-                      )}
-                    </span>
-                    <span className="flex items-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
-                      {flaggedShiftsCount === 0 && !worstLossShift ? (
-                        <span className="flex items-center text-xs font-semibold" style={{ gap: '6px', color: '#065F46' }}>
-                          <CheckCircle2 size={14} />
-                          Nothing needs attention for this period.
-                        </span>
-                      ) : (
-                        <>
-                          {flaggedShiftsCount > 0 && (
-                            <span className="badge badge-danger">
-                              {flaggedShiftsCount} shift{flaggedShiftsCount === 1 ? '' : 's'} over {orgAlertSettings.longShiftFlagHours}h
-                            </span>
-                          )}
-                          {worstLossShift && (
-                            <span className="badge badge-danger">
-                              Loss-making shift — {toTitleCase(worstLossShift.name)} (£{worstLossShift.margin.toFixed(0)})
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </span>
+                    <SegmentedToggle
+                      variant="brand"
+                      label="VAT"
+                      value={analyticsVatMode}
+                      onChange={setAnalyticsVatMode}
+                      options={[{ value: 'ex', label: 'Ex VAT' }, { value: 'inc', label: 'Inc VAT' }]}
+                    />
+                    {/* Import = data coming in (fixed costs and targets);
+                        Export = reports going out, mounted from
+                        AnalyticsBreakdowns into the header slot. */}
+                    {userRole === 'payroll_admin' && (
+                      <ActionMenu
+                        label="Import"
+                        icon={<UploadCloud size={13} />}
+                        items={[{
+                          key: 'costs',
+                          label: 'Costs & targets',
+                          hint: 'Fixed costs, margin and profit targets',
+                          icon: <Settings2 size={14} />,
+                          onSelect: () => setIsCostLedgerOpen(true),
+                        }]}
+                      />
+                    )}
                   </>
                 }
+                actionsRef={setAnalyticsReportSlot}
               />
-            </div>
 
-            {/* True profit sits directly under Overview. */}
-            <TrueProfitSection
-              periodLabel={truePeriodLabel}
-              current={trueCurrent}
-              previous={truePrevious}
-              lastYear={trueLastYear}
-              forecast={monthForecast}
-              settings={analyticsSettings}
-              hasCosts={orgCosts.length > 0}
-              vatMode={analyticsVatMode}
-              onVatModeChange={setAnalyticsVatMode}
-              onManageCosts={userRole === 'payroll_admin' ? () => setIsCostLedgerOpen(true) : undefined}
-            />
-            <AnalyticsBreakdowns
-              organizationId={currentOrgId}
-              companyName={(teamOrgInfo as { name?: string } | null)?.name ?? null}
-              start={windowStart}
-              end={windowEnd}
-              periodLabel={truePeriodLabel}
-              shifts={trueCostShifts}
-              fuel={fuelReceipts}
-              costs={orgCosts}
-              settings={analyticsSettings}
-              vatMode={analyticsVatMode}
-              targetCheckMinutes={orgAlertSettings.walkaroundCheckTargetMinutes}
-              summary={trueCurrent}
-              previousProfit={truePrevious?.profit ?? null}
-              lastYearProfit={trueLastYear?.profit ?? null}
-              canManageReports={userRole === 'payroll_admin'}
-              canExport={hasFeature('report_exports')}
-            />
-            {/* ============================================================
-                PERFORMANCE BREAKDOWN — who (driver profitability as an
-                activity list, 21st.dev list) and how efficiently (unit
-                economics + fuel efficiency combined in one progress
-                metric card, 21st.dev progress-metric-card).
-               ============================================================ */}
-            <div className="analytics-container">
-              <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
-                Performance breakdown
-              </p>
-              <div className="grid grid-cols-1 lg:grid-cols-12" style={{ gap: '16px', alignItems: 'stretch' }}>
-                <div className="lg:col-span-5">
-                  <ActivityList
-                    title="Driver Profitability"
-                    icon={<Users size={14} />}
-                    subtitle="Gross margin contributed by each driver's rated shifts this period."
-                    emptyText="No rated shifts yet for this period."
-                    items={driverLeaderboard.map(d => ({
-                      key: d.id,
-                      title: toTitleCase(d.name),
-                      subtitle: `${d.shifts} rated shift${d.shifts === 1 ? '' : 's'}`,
-                      amount: d.margin,
-                      formatAmount: v => `£${v.toLocaleString('en-GB', { maximumFractionDigits: 0 })}`,
-                      meta: `Last: ${new Date(d.lastShift).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}`,
-                    }))}
+              {/* Toolbar — filters on the left (the same TableFilter popover
+                  used by Fleet Roadworthiness and Compliance Defects, with
+                  FilterBar chips for the active selections), live status
+                  and anything that needs attention on the right. */}
+              <div className="an-toolbar">
+                <div className="an-toolbar-filters">
+                  <TableFilter groups={analyticsFilterGroups} />
+                  {periodFilter?.value[0] === 'Custom range' && (
+                    <span style={{ minWidth: '240px' }}>
+                      <EarningsDateRangePicker
+                        startDate={analyticsCustomRange.from}
+                        endDate={analyticsCustomRange.to}
+                        onChange={(from, to) => setAnalyticsCustomRange({ from, to })}
+                      />
+                    </span>
+                  )}
+                  <FilterBar
+                    filters={analyticsFilters}
+                    setFilters={setAnalyticsFilters}
+                    filterViewOptions={[]}
+                    showAddFilterButton={false}
+                    filterOptionsByType={{
+                      [FilterType.DRIVER]: driverFilterOptions,
+                      [FilterType.AGENCY]: agencyFilterOptions,
+                      [FilterType.DEPOT]: depotFilterOptions,
+                      [FilterType.PERIOD]: periodFilterOptions,
+                      [FilterType.CARRIER]: carrierFilterOptions,
+                    }}
+                    typeIcons={{
+                      [FilterType.DRIVER]: <IdCard className="size-3.5" />,
+                      [FilterType.AGENCY]: <Building2 className="size-3.5" />,
+                      [FilterType.DEPOT]: <Warehouse className="size-3.5" />,
+                      [FilterType.PERIOD]: <Calendar className="size-3.5" />,
+                      [FilterType.CARRIER]: <Building2 className="size-3.5" />,
+                    }}
                   />
                 </div>
-                <div className="lg:col-span-7">
+                <div className="an-toolbar-status">
+                  {activeShiftsForAnalytics.length > 0 && (
+                    <span className="an-pill">
+                      <span className="dash-live-dot" />
+                      {activeShiftsForAnalytics.length} on shift now · <strong className="text-primary">£{liveActiveWages.toLocaleString('en-GB', { maximumFractionDigits: 2 })}</strong> wages accruing
+                    </span>
+                  )}
+                  {flaggedShiftsCount === 0 && !worstLossShift ? (
+                    <span className="an-pill an-pill--ok">
+                      <CheckCircle2 size={14} />
+                      Nothing needs attention
+                    </span>
+                  ) : (
+                    <>
+                      {flaggedShiftsCount > 0 && (
+                        <span className="an-pill an-pill--alert">
+                          <AlertTriangle size={13} />
+                          {flaggedShiftsCount} shift{flaggedShiftsCount === 1 ? '' : 's'} over {orgAlertSettings.longShiftFlagHours}h
+                        </span>
+                      )}
+                      {worstLossShift && (
+                        <span className="an-pill an-pill--alert">
+                          <AlertTriangle size={13} />
+                          Loss-making shift — {toTitleCase(worstLossShift.name)} (£{worstLossShift.margin.toFixed(0)})
+                        </span>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* 1 · Overview — the period's headline figures as clickable
+                  tiles (21st.dev line-charts-6); the selected one is
+                  plotted day by day, with targets and the month-end
+                  forecast beside the trend they describe. */}
+              <AnalyticsSection title="Overview" description="Revenue − driver cost − expenses = profit. Select a figure to plot it over the period.">
+                <MetricLineChart
+                  metrics={overviewMetrics}
+                  data={overviewSeries}
+                  defaultKey="revenue"
+                  height={300}
+                  emptyText="The day-by-day trend appears once the period covers at least two days."
+                  aside={
+                    <>
+                      <TrueProfitTargets current={trueCurrent} settings={analyticsSettings} />
+                      <TrueProfitForecast forecast={monthForecast} />
+                    </>
+                  }
+                />
+              </AnalyticsSection>
+
+              {/* 2 · True profit — revenue to profit after every cost. */}
+              <AnalyticsSection title="True profit" description="What's left after wages, employer on-costs, fuel and fixed costs.">
+                <TrueProfitSection
+                  current={trueCurrent}
+                  previous={truePrevious}
+                  lastYear={trueLastYear}
+                  settings={analyticsSettings}
+                  hasCosts={orgCosts.length > 0}
+                />
+              </AnalyticsSection>
+
+              {/* 3 · Efficiency & ranking — unit economics and fuel
+                  efficiency (21st.dev progress-metric-card) beside the
+                  driver margin ranking (21st.dev rank-bars). */}
+              <AnalyticsSection title="Efficiency & driver ranking" description="What each mile or hour earns after wages and fuel, and which drivers contribute the most margin.">
+                <div className="an-grid an-grid--split-wide">
                   <ProgressMetricCard
                     title="Fleet Economics"
                     subtitle={economicsUsesHours
@@ -8798,9 +8668,49 @@ export default function App() {
                     emptyTitle="Not enough mileage yet"
                     emptyDescription="Needs rated shifts with logged GPS mileage on at least two days."
                   />
+                  <AnalyticsCard
+                    title="Driver profitability"
+                    icon={<Users size={14} />}
+                    description="Revenue minus each driver's wages, NI & pension and fuel this period — the same figures as their scorecards."
+                  >
+                    <RankBars
+                      emptyText="No completed shifts yet for this period."
+                      items={driverRanking.map(d => ({
+                        key: d.driverId,
+                        label: toTitleCase(d.name),
+                        value: d.profit,
+                        valueLabel: money(d.profit),
+                        sub: `${d.shifts} shift${d.shifts === 1 ? '' : 's'} · ${d.hours.toFixed(1)} h`,
+                        meta: lastShiftByDriver.has(d.driverId)
+                          ? `Last ${new Date(lastShiftByDriver.get(d.driverId)!).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`
+                          : undefined,
+                      }))}
+                    />
+                  </AnalyticsCard>
                 </div>
-              </div>
-            </div>
+              </AnalyticsSection>
+
+              {/* 4 · Drivers, vehicles & customers — the detailed
+                  scorecards and tables (renders its own section header). */}
+              <AnalyticsBreakdowns
+                organizationId={currentOrgId}
+                companyName={(teamOrgInfo as { name?: string } | null)?.name ?? null}
+                start={windowStart}
+                end={windowEnd}
+                periodLabel={truePeriodLabel}
+                shifts={analyticsShifts}
+                fuel={fuelReceipts}
+                costs={orgCosts}
+                settings={analyticsSettings}
+                vatMode={analyticsVatMode}
+                targetCheckMinutes={orgAlertSettings.walkaroundCheckTargetMinutes}
+                summary={trueCurrent}
+                previousProfit={truePrevious?.profit ?? null}
+                lastYearProfit={trueLastYear?.profit ?? null}
+                canManageReports={userRole === 'payroll_admin'}
+                canExport={hasFeature('report_exports')}
+                reportActionsTarget={analyticsReportSlot}
+              />
             </div>
             {isCostLedgerOpen && (
               <CostLedgerModal
