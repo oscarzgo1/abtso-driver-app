@@ -1,4 +1,4 @@
-import { AlertTriangle, Target, TrendingDown, TrendingUp, Minus, CalendarClock, PieChart, Receipt, Coins } from 'lucide-react';
+import { Target, TrendingDown, TrendingUp, Minus, CalendarClock, PieChart, Receipt, Coins } from 'lucide-react';
 import { COST_CATEGORY_LABEL, type AnalyticsSettings, type CostCategory, type TrueCostResult } from '../../lib/true-cost';
 import { AnalyticsCard } from './AnalyticsLayout';
 
@@ -15,7 +15,6 @@ interface TrueProfitSectionProps {
   previous: TrueCostResult | null;
   lastYear: TrueCostResult | null;
   settings: AnalyticsSettings;
-  hasCosts: boolean;
 }
 
 const money = (v: number) => `${v < 0 ? '−' : ''}£${Math.abs(v).toLocaleString('en-GB', { maximumFractionDigits: 0 })}`;
@@ -85,7 +84,7 @@ export function TrueProfitForecast({ forecast }: { forecast: { projected: number
   );
 }
 
-export default function TrueProfitSection({ current, previous, lastYear, settings, hasCosts }: TrueProfitSectionProps) {
+export default function TrueProfitSection({ current, previous, lastYear, settings }: TrueProfitSectionProps) {
   const rows: { label: string; value: number }[] = [
     { label: 'Payroll (wages)', value: current.payroll },
     ...(current.oncost > 0 ? [{ label: `Employer NI & pension (${settings.employer_oncost_percent}%)`, value: current.oncost }] : []),
@@ -96,22 +95,9 @@ export default function TrueProfitSection({ current, previous, lastYear, setting
   ];
   const scale = Math.max(current.revenue, current.totalCost, 1);
   const biggestLeak = [...rows].sort((a, b) => b.value - a.value)[0];
-  const missing = current.unratedShifts > 0 || current.pendingFuel > 0 || current.pendingFixed > 0 || !hasCosts;
 
   return (
     <div className="an-stack-sm">
-      {missing && (
-        <AnalyticsCard title="Not in these figures yet" icon={<AlertTriangle size={14} />} tone="alert">
-          <ul className="tp-missing">
-            {current.unratedShifts > 0 && (
-              <li><strong className="text-primary">{current.unratedShifts} shift{current.unratedShifts === 1 ? '' : 's'}</strong> awaiting a load rate — wages are counted{current.unratedWages > 0 ? ` (${money(current.unratedWages)} on shifts with no rate yet)` : ''}; revenue counts as each load is rated.</li>
-            )}
-            {current.pendingFuel > 0 && <li><strong className="text-primary">{money(current.pendingFuel)}</strong> of fuel receipts awaiting approval.</li>}
-            {current.pendingFixed > 0 && <li><strong className="text-primary">{money(current.pendingFixed)}</strong> of costs marked pending.</li>}
-            {!hasCosts && <li>No fixed costs entered — add finance, insurance, overheads and more under <strong className="text-primary">Costs &amp; targets</strong>.</li>}
-          </ul>
-        </AnalyticsCard>
-      )}
       <div className="an-grid an-grid--split">
         {/* Revenue → costs → true profit */}
         <AnalyticsCard

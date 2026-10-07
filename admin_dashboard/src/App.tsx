@@ -16,8 +16,6 @@ import { BrandLogo } from './components/ui/brand-logo';
 import type { BadgeDeltaDirection, BadgeDeltaTone } from './components/ui/badge-delta';
 import TableFilter, { type TableFilterGroup } from './components/ui/table-filter';
 import { MetricLineChart, type MetricTile } from './components/ui/metric-line-chart';
-import { ProgressMetricCard, type MetricPoint, type MetricSummary } from './components/ui/progress-metric-card';
-import { RankBars } from './components/ui/rank-bars';
 import { EarningsDateRangePicker } from './components/ui/earnings-date-range-picker';
 import { NotificationIcon, EyeToggleIcon, VolumeIcon, SaveIcon, DownloadIcon } from './components/ui/animated-state-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -52,11 +50,11 @@ import { drawJourney } from './lib/journey-map';
 import LockedFeature from './components/LockedFeature';
 import { TAB_FEATURE, FEATURE_LABEL, type Entitlements, type FeatureKey } from './lib/entitlements';
 import TrueProfitSection, { TrueProfitForecast, TrueProfitTargets } from './components/analytics/TrueProfitSection';
-import { ActionMenu, AnalyticsCard, AnalyticsPageHeader, AnalyticsSection, SegmentedToggle } from './components/analytics/AnalyticsLayout';
+import { ActionMenu, AnalyticsPageHeader, AnalyticsSection, SegmentedToggle } from './components/analytics/AnalyticsLayout';
+import DriverProfitability, { type DriverShiftRow } from './components/analytics/DriverProfitability';
 import CostLedgerModal from './components/analytics/CostLedgerModal';
 import AnalyticsBreakdowns from './components/analytics/AnalyticsBreakdowns';
 import { computeTrueCost, computeTrueCostSeries, shiftRevenueFromLoads, DEFAULT_ANALYTICS_SETTINGS, VAT_RATE, type AnalyticsSettings, type OrgCost, type TrueCostResult, type VatMode } from './lib/true-cost';
-import { computeBreakdowns } from './lib/analytics-breakdowns';
 import DispatchDashboard from './pages/DispatchDashboard';
 import { computeShiftCompliance, walkaroundIssues, formatCheckDuration, type ComplianceCheck } from './lib/walkaround-compliance';
 import CarrierSettlementImportModal from './pages/CarrierSettlementImportModal';
@@ -720,6 +718,7 @@ export default function App() {
     persistRememberedEmail(loginEmail);
     setUserRole(role);
     localStorage.setItem('admin_role', role);
+    setCurrentOrgName(companyName ?? null);
     if (organizationId) {
       setCurrentOrgId(organizationId);
       loadOrgAlertSettings(organizationId);
@@ -783,6 +782,9 @@ export default function App() {
   // independent of the Settings modal's teamOrgInfo, which only loads when
   // Settings is opened. Compliance & Safety needs the org id on first visit.
   const [currentOrgId, setCurrentOrgId] = useState<string | null>(null);
+  // Company name from the sign-in role lookup — teamOrgInfo only loads
+  // when Settings opens, so this is what the Analytics greeting reads.
+  const [currentOrgName, setCurrentOrgName] = useState<string | null>(null);
   // Lifted from the two Compliance sub-pages purely to drive the sidebar
   // nav dot — each page owns all its own data otherwise. A page's count
   // stays at its last-known value while unmounted (the other sub-page is
@@ -1944,6 +1946,7 @@ export default function App() {
           }
           setUserRole(role);
           localStorage.setItem('admin_role', role);
+          setCurrentOrgName(companyName ?? null);
           if (organizationId) {
             setCurrentOrgId(organizationId);
             loadOrgAlertSettings(organizationId);
@@ -8254,127 +8257,6 @@ export default function App() {
           };
           const shiftsWithRevenue = completedShiftsForAnalytics.filter(s => s.revenue_amount !== null && s.revenue_amount !== undefined);
 
-          // Fleet economics (unit economics + fuel efficiency in one card).
-          // Per day, over rated shifts that logged GPS mileage — so a
-          // period window's £/mile is always revenue and cost from the
-          // same shifts that earned those miles. GPS pings arrive roughly
-          // every 2 minutes, so miles (and therefore £/mile and mi/L) are
-          // a close estimate rather than odometer-exact; the card says so.
-          const approvedLitresByShift = new Map<string, number>();
-          for (const r of fuelReceipts) {
-            if (r.status !== 'approved' || !r.shift_id) continue;
-            approvedLitresByShift.set(r.shift_id, (approvedLitresByShift.get(r.shift_id) ?? 0) + (r.liters ?? 0));
-          }
-          const economicsByDay = new Map<string, { date: Date; revenue: number; wages: number; fuel: number; miles: number; litres: number }>();
-          shiftsWithRevenue.forEach(s => {
-            const miles = mileageByShift[s.id] ?? 0;
-            if (miles <= 0) return;
-            const d = new Date(s.start_time);
-            const key = d.toISOString().slice(0, 10);
-            const day = economicsByDay.get(key) ?? { date: d, revenue: 0, wages: 0, fuel: 0, miles: 0, litres: 0 };
-            day.revenue += vatUp(s.revenue_amount || 0);
-            day.wages += shiftWages(s);
-            day.fuel += shiftFuelCost(s);
-            day.miles += miles;
-            day.litres += approvedLitresByShift.get(s.id) ?? 0;
-            economicsByDay.set(key, day);
-          });
-          const economicsSeries: MetricPoint[] = Array.from(economicsByDay.values())
-            .sort((a, b) => a.date.getTime() - b.date.getTime())
-            .map(d => ({
-              date: d.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
-              value: Math.round(((d.revenue - d.wages - d.fuel) / d.miles) * 100) / 100,
-              revenue: d.revenue,
-              wages: d.wages,
-              fuel: d.fuel,
-              miles: d.miles,
-              litres: d.litres,
-            }));
-          const summarizeEconomics = (points: MetricPoint[]): MetricSummary => {
-            const sum = (field: string) => points.reduce((total, p) => total + Number(p[field] ?? 0), 0);
-            const miles = sum('miles');
-            const wages = sum('wages');
-            const fuel = sum('fuel');
-            const litres = sum('litres');
-            const rate = miles > 0 ? sum('revenue') / miles : 0;
-            const cost = miles > 0 ? (wages + fuel) / miles : 0;
-            const net = rate - cost;
-            const first = points[0]?.value;
-            const last = points[points.length - 1]?.value;
-            const opCost = wages + fuel;
-            const wagesShare = opCost > 0 ? (wages / opCost) * 100 : 0;
-            return {
-              headline: `${net < 0 ? '−' : ''}£${Math.abs(net).toFixed(2)}/mi`,
-              changePct: points.length >= 2 && first ? ((last - first) / Math.abs(first)) * 100 : null,
-              footerLeft: (
-                <span className="text-xs text-muted">
-                  <strong className="text-primary">£{rate.toFixed(2)}</strong> rate · <strong style={{ color: '#CC0000' }}>£{cost.toFixed(2)}</strong> cost per mile · {Math.round(miles).toLocaleString('en-GB')} mi
-                </span>
-              ),
-              footerRight: (
-                <span className="text-xs text-muted">
-                  <strong className="text-primary">{litres > 0 ? (miles / litres).toFixed(2) : '—'}</strong> mi/L · wages {wagesShare.toFixed(0)}% / fuel {opCost > 0 ? (100 - wagesShare).toFixed(0) : 0}%
-                </span>
-              ),
-            };
-          };
-
-          // Fallback for Fleet Economics when too few rated shifts have GPS
-          // mileage for per-mile figures: the same unit economics per
-          // driver-hour, which every rated shift has — so the card never
-          // sits as an empty block beside the driver list.
-          const hourlyByDay = new Map<string, { date: Date; revenue: number; wages: number; fuel: number; hours: number }>();
-          shiftsWithRevenue.forEach(s => {
-            const hours = s.total_hours ?? 0;
-            if (hours <= 0) return;
-            const d = new Date(s.start_time);
-            const key = d.toISOString().slice(0, 10);
-            const day = hourlyByDay.get(key) ?? { date: d, revenue: 0, wages: 0, fuel: 0, hours: 0 };
-            day.revenue += vatUp(s.revenue_amount || 0);
-            day.wages += shiftWages(s);
-            day.fuel += shiftFuelCost(s);
-            day.hours += hours;
-            hourlyByDay.set(key, day);
-          });
-          const hourlyEconomicsSeries: MetricPoint[] = Array.from(hourlyByDay.values())
-            .sort((a, b) => a.date.getTime() - b.date.getTime())
-            .map(d => ({
-              date: d.date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
-              value: Math.round(((d.revenue - d.wages - d.fuel) / d.hours) * 100) / 100,
-              revenue: d.revenue,
-              wages: d.wages,
-              fuel: d.fuel,
-              hours: d.hours,
-            }));
-          const summarizeHourlyEconomics = (points: MetricPoint[]): MetricSummary => {
-            const sum = (field: string) => points.reduce((total, p) => total + Number(p[field] ?? 0), 0);
-            const hours = sum('hours');
-            const wages = sum('wages');
-            const fuel = sum('fuel');
-            const rate = hours > 0 ? sum('revenue') / hours : 0;
-            const cost = hours > 0 ? (wages + fuel) / hours : 0;
-            const net = rate - cost;
-            const first = points[0]?.value;
-            const last = points[points.length - 1]?.value;
-            const opCost = wages + fuel;
-            const wagesShare = opCost > 0 ? (wages / opCost) * 100 : 0;
-            return {
-              headline: `${net < 0 ? '−' : ''}£${Math.abs(net).toFixed(2)}/h`,
-              changePct: points.length >= 2 && first ? ((last - first) / Math.abs(first)) * 100 : null,
-              footerLeft: (
-                <span className="text-xs text-muted">
-                  <strong className="text-primary">£{rate.toFixed(2)}</strong> rate · <strong style={{ color: '#CC0000' }}>£{cost.toFixed(2)}</strong> cost per hour · {Math.round(hours).toLocaleString('en-GB')} h
-                </span>
-              ),
-              footerRight: (
-                <span className="text-xs text-muted">
-                  wages {wagesShare.toFixed(0)}% / fuel {opCost > 0 ? (100 - wagesShare).toFixed(0) : 0}% of running cost
-                </span>
-              ),
-            };
-          };
-          const economicsUsesHours = economicsSeries.length < 2 && hourlyEconomicsSeries.length >= 2;
-
           // Status strip — long shifts and the worst genuinely
           // loss-making shift (same per-shift profit formula as above).
           const flaggedShiftsCount = completedShiftsForAnalytics.filter(
@@ -8487,33 +8369,37 @@ export default function App() {
                 };
               });
 
-              // Driver ranking — the drivers' own profit from
-              // computeBreakdowns, so it matches their scorecards exactly.
-              const driverRanking = computeBreakdowns({
-                start: windowStart, end: windowEnd, shifts: analyticsShifts, fuel: fuelReceipts, costs: orgCosts,
-                settings: analyticsSettings, vatMode: analyticsVatMode,
-                targetCheckSeconds: orgAlertSettings.walkaroundCheckTargetMinutes * 60,
-                extras: { milesByShift: {}, checks: [], idleAlerts: [], incidents: [] },
-              }).drivers.sort((a, b) => b.profit - a.profit);
-              const lastShiftByDriver = new Map<string, string>();
-              completedShiftsForAnalytics.forEach(s => {
-                const last = lastShiftByDriver.get(s.driver_id);
-                if (!last || s.start_time > last) lastShiftByDriver.set(s.driver_id, s.start_time);
+              // Driver profitability — one row per completed shift, with pay
+              // from getShiftFinancials(), the same figure Compensation
+              // Summary shows. The card picks its own time-frame from these.
+              const driverShiftRows: DriverShiftRow[] = analyticsShifts.map(s => {
+                const loads = (s.loads ?? []).length;
+                return {
+                  id: s.id,
+                  driverId: s.driver_id,
+                  driverName: toTitleCase(driverNameById.get(s.driver_id) || s.driver_name || 'Unknown driver'),
+                  start: s.start_time,
+                  loads: loads > 0 ? loads : (s.revenue_amount !== null && s.revenue_amount !== undefined ? 1 : 0),
+                  unratedLoads: s.pending_loads ?? 0,
+                  revenue: s.revenue_amount === null || s.revenue_amount === undefined ? 0 : vatUp(s.revenue_amount),
+                  pay: getShiftFinancials(s).grossPay,
+                };
               });
+
+              // "Good morning / afternoon / evening, {company}" by the
+              // viewer's local time.
+              const hourNow = new Date().getHours();
+              const greeting = hourNow >= 5 && hourNow < 12 ? 'Good morning' : hourNow >= 12 && hourNow < 18 ? 'Good afternoon' : 'Good evening';
+              const companyName = currentOrgName || teamOrgInfo?.name || null;
 
               return (
             <>
             <div className="analytics-page">
-              {/* Page header (21st.dev page-header-2): what this page is,
-                  the period in view, and the page-wide controls. VAT mode
-                  and Costs & targets change every figure below, and the
-                  report buttons export the whole page, so they sit here
-                  rather than inside one section. AnalyticsBreakdowns
-                  mounts its report buttons into the header slot. */}
+              {/* Greeting header — a time-of-day greeting with the company
+                  name; the page-wide controls (VAT, Import, Export) stay on
+                  the right. AnalyticsBreakdowns mounts Export into the slot. */}
               <AnalyticsPageHeader
-                title="Analytics"
-                badge={<span className="an-badge"><Calendar size={12} /> {truePeriodLabel}</span>}
-                description={`Profit, costs and performance across your fleet · figures ${analyticsVatMode === 'inc' ? 'including' : 'excluding'} VAT.`}
+                title={companyName ? `${greeting}, ${companyName}` : greeting}
                 actions={
                   <>
                     <SegmentedToggle
@@ -8639,62 +8525,18 @@ export default function App() {
                   previous={truePrevious}
                   lastYear={trueLastYear}
                   settings={analyticsSettings}
-                  hasCosts={orgCosts.length > 0}
                 />
               </AnalyticsSection>
 
-              {/* 3 · Efficiency & ranking — unit economics and fuel
-                  efficiency (21st.dev progress-metric-card) beside the
-                  driver margin ranking (21st.dev rank-bars). */}
-              <AnalyticsSection title="Efficiency & driver ranking" description="What each mile or hour earns after wages and fuel, and which drivers contribute the most margin.">
-                <div className="an-grid an-grid--split-wide">
-                  <ProgressMetricCard
-                    title="Fleet Economics"
-                    subtitle={economicsUsesHours
-                      ? 'Net profit per driver-hour after wages and fuel. Per-mile figures appear once shifts log GPS mileage.'
-                      : 'Net profit per mile after wages and fuel, with fuel efficiency.'}
-                    icon={<Gauge size={15} color="var(--charcoal-light)" />}
-                    data={economicsUsesHours ? hourlyEconomicsSeries : economicsSeries}
-                    periodOptions={[
-                      { label: 'Last 7 days', points: 7 },
-                      { label: 'Last 14 days', points: 14 },
-                      { label: 'Whole period' },
-                    ]}
-                    summarize={economicsUsesHours ? summarizeHourlyEconomics : summarizeEconomics}
-                    valueFormatter={v => `${v < 0 ? '−' : ''}£${Math.abs(v).toFixed(2)}`}
-                    note={economicsUsesHours
-                      ? 'Hours come from each shift\'s clock-in and clock-out.'
-                      : 'Miles come from GPS pings every ~2 minutes, so per-mile and mi/L figures are close estimates.'}
-                    emptyTitle="Not enough mileage yet"
-                    emptyDescription="Needs rated shifts with logged GPS mileage on at least two days."
-                  />
-                  <AnalyticsCard
-                    title="Driver profitability"
-                    icon={<Users size={14} />}
-                    description="Revenue minus each driver's wages, NI & pension and fuel this period — the same figures as their scorecards."
-                  >
-                    <RankBars
-                      emptyText="No completed shifts yet for this period."
-                      items={driverRanking.map(d => ({
-                        key: d.driverId,
-                        label: toTitleCase(d.name),
-                        value: d.profit,
-                        valueLabel: money(d.profit),
-                        sub: `${d.shifts} shift${d.shifts === 1 ? '' : 's'} · ${d.hours.toFixed(1)} h`,
-                        meta: lastShiftByDriver.has(d.driverId)
-                          ? `Last ${new Date(lastShiftByDriver.get(d.driverId)!).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`
-                          : undefined,
-                      }))}
-                    />
-                  </AnalyticsCard>
-                </div>
-              </AnalyticsSection>
+              {/* 3 · Driver profitability — most to least, on load revenue
+                  against pay (salary, night-out, bonus, deductions). */}
+              <DriverProfitability shifts={driverShiftRows} periodStart={windowStart} periodEnd={windowEnd} periodLabel={truePeriodLabel} />
 
               {/* 4 · Drivers, vehicles & customers — the detailed
                   scorecards and tables (renders its own section header). */}
               <AnalyticsBreakdowns
                 organizationId={currentOrgId}
-                companyName={(teamOrgInfo as { name?: string } | null)?.name ?? null}
+                companyName={companyName}
                 start={windowStart}
                 end={windowEnd}
                 periodLabel={truePeriodLabel}
