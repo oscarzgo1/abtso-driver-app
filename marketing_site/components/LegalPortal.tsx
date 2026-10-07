@@ -19,6 +19,7 @@ export const LEGAL_PORTAL_DOCS: LegalPortalDoc[] = [
   { slug: "dpa", label: "Data Processing Addendum" },
   { slug: "telematics", label: "Telematics & GPS Policy" },
   { slug: "refund-policy", label: "Refund & Data Purge" },
+  { slug: "delete-account", label: "Delete Your Account" },
 ];
 
 export interface LegalPortalSection {
