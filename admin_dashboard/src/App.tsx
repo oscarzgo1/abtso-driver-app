@@ -15,7 +15,6 @@ import Papa from 'papaparse';
 import { BrandLogo } from './components/ui/brand-logo';
 import type { BadgeDeltaDirection, BadgeDeltaTone } from './components/ui/badge-delta';
 import TableFilter, { type TableFilterGroup } from './components/ui/table-filter';
-import { MetricLineChart, type MetricTile } from './components/ui/metric-line-chart';
 import { EarningsDateRangePicker } from './components/ui/earnings-date-range-picker';
 import { NotificationIcon, EyeToggleIcon, VolumeIcon, SaveIcon, DownloadIcon } from './components/ui/animated-state-icons';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -52,6 +51,7 @@ import { TAB_FEATURE, FEATURE_LABEL, type Entitlements, type FeatureKey } from '
 import TrueProfitSection, { TrueProfitForecast, TrueProfitTargets } from './components/analytics/TrueProfitSection';
 import { ActionMenu, AnalyticsPageHeader, AnalyticsSection, SegmentedToggle } from './components/analytics/AnalyticsLayout';
 import DriverProfitability, { type DriverShiftRow } from './components/analytics/DriverProfitability';
+import OverviewChart, { type OverviewKpi } from './components/analytics/OverviewChart';
 import CostLedgerModal from './components/analytics/CostLedgerModal';
 import AnalyticsBreakdowns from './components/analytics/AnalyticsBreakdowns';
 import { computeTrueCost, computeTrueCostSeries, shiftRevenueFromLoads, DEFAULT_ANALYTICS_SETTINGS, VAT_RATE, type AnalyticsSettings, type OrgCost, type TrueCostResult, type VatMode } from './lib/true-cost';
@@ -8275,7 +8275,7 @@ export default function App() {
               const prev = truePrevious ? figures(truePrevious) : null;
               // Which direction is good per figure: more revenue is good,
               // more cost is bad.
-              const tileDelta = (current: number | null, previous: number | null | undefined, good: 'up' | 'down', asPoints = false): MetricTile['delta'] => {
+              const tileDelta = (current: number | null, previous: number | null | undefined, good: 'up' | 'down', asPoints = false): OverviewKpi['delta'] => {
                 if (!prev || current === null || previous === null || previous === undefined) return null;
                 if (previous === 0 && current === 0) return null;
                 if (previous === 0) return { direction: current > 0 ? 'up' : 'down', label: 'New', tone: (current > 0) === (good === 'up') ? 'positive' : 'negative' };
@@ -8285,32 +8285,38 @@ export default function App() {
                 return { direction, tone, label: `${diff > 0 ? '+' : ''}${diff.toFixed(1)}${asPoints ? 'pp' : '%'}` };
               };
               const ratedShifts = trueCurrent.shiftCount - trueCurrent.unratedShifts;
-              const overviewMetrics: MetricTile[] = [
+              // Series styling follows the cnippet line-with-legend pattern:
+              // solid, dashed and dotted strokes so lines stay distinct.
+              const overviewKpis: OverviewKpi[] = [
                 {
-                  key: 'revenue', label: 'Revenue', value: cur.revenue, previous: prev?.revenue ?? null,
-                  format: money, axisFormat: moneyAxis, color: '#333333', delta: tileDelta(cur.revenue, prev?.revenue, 'up'),
+                  key: 'revenue', label: 'Revenue', value: cur.revenue, format: money,
+                  delta: tileDelta(cur.revenue, prev?.revenue, 'up'),
                   hint: trueCurrent.shiftCount === 0 ? 'No completed shifts yet' : `${ratedShifts} of ${trueCurrent.shiftCount} shifts fully rated`,
+                  series: { color: '#2563EB' },
                 },
                 {
-                  key: 'driverCost', label: 'Driver cost', value: cur.driverCost, previous: prev?.driverCost ?? null,
-                  format: money, axisFormat: moneyAxis, color: '#CC0000', delta: tileDelta(cur.driverCost, prev?.driverCost, 'down'),
+                  key: 'driverCost', label: 'Driver cost', value: cur.driverCost, format: money,
+                  delta: tileDelta(cur.driverCost, prev?.driverCost, 'down'),
                   hint: trueCurrent.oncost > 0
                     ? `Wages ${money(trueCurrent.payroll)} + NI & pension ${money(trueCurrent.oncost)}`
                     : `Wages · ${formatHoursMinutes(trueCurrent.hours)} worked`,
+                  series: { color: '#CC0000', dash: '4 2' },
                 },
                 {
-                  key: 'expenses', label: 'Expenses', value: cur.expenses, previous: prev?.expenses ?? null,
-                  format: money, axisFormat: moneyAxis, color: '#F59E0B', delta: tileDelta(cur.expenses, prev?.expenses, 'down'),
+                  key: 'expenses', label: 'Expenses', value: cur.expenses, format: money,
+                  delta: tileDelta(cur.expenses, prev?.expenses, 'down'),
                   hint: `Fuel ${money(trueCurrent.fuel)} · fixed costs ${money(trueCurrent.fixed)}`,
+                  series: { color: '#F59E0B', dash: '2 2' },
                 },
                 {
-                  key: 'profit', label: 'Profit', value: cur.profit, previous: prev?.profit ?? null,
-                  format: money, axisFormat: moneyAxis, color: '#10B981', delta: tileDelta(cur.profit, prev?.profit, 'up'),
+                  key: 'profit', label: 'Profit', value: cur.profit, format: money,
+                  delta: tileDelta(cur.profit, prev?.profit, 'up'),
                   hint: 'Revenue − driver cost − expenses',
+                  series: { color: '#10B981' },
                 },
                 {
-                  key: 'margin', label: 'Margin', value: cur.margin ?? 0, previous: prev ? (prev.margin ?? 0) : null,
-                  format: percent, color: '#64748B', delta: tileDelta(cur.margin, prev?.margin, 'up', true),
+                  key: 'margin', label: 'Margin', value: cur.margin ?? 0, format: percent,
+                  delta: tileDelta(cur.margin, prev?.margin, 'up', true),
                   hint: `Target >${analyticsSettings.target_margin_percent}%`,
                 },
               ];
@@ -8462,13 +8468,13 @@ export default function App() {
                   tiles (21st.dev line-charts-6); the selected one is
                   plotted day by day, with targets and the month-end
                   forecast beside the trend they describe. */}
-              <AnalyticsSection title="Overview" description="Revenue − driver cost − expenses = profit. Select a figure to plot it over the period.">
-                <MetricLineChart
-                  metrics={overviewMetrics}
+              <AnalyticsSection title="Overview" description="Revenue − driver cost − expenses = profit. Select a figure to show or hide its line.">
+                <OverviewChart
+                  kpis={overviewKpis}
                   data={overviewSeries}
-                  defaultKey="revenue"
-                  height={300}
-                  emptyText="The day-by-day trend appears once the period covers at least two days."
+                  axisFormat={moneyAxis}
+                  valueFormat={money}
+                  emptyText="The trend appears once the period covers at least two days."
                   aside={
                     <>
                       <TrueProfitTargets current={trueCurrent} settings={analyticsSettings} />

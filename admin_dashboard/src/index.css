@@ -2119,198 +2119,6 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 
 .badge-dark { background: var(--charcoal); color: #FFFFFF; border: 1px solid var(--charcoal); }
 
-/* ── Analytics › Overview (metric-line-chart.tsx) ────────── */
-.metric-tiles {
-  display: grid;
-  border-bottom: 1px solid var(--border-color);
-}
-.metric-tile {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 16px 18px;
-  background: transparent;
-  border: none;
-  border-left: 1px solid var(--border-color);
-  box-shadow: inset 0 -2px 0 transparent;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
-}
-.metric-tile:first-child { border-left: none; }
-.metric-tile:hover { background: var(--card-bg-hover); }
-.metric-tile.is-active {
-  background: var(--card-bg-hover);
-  box-shadow: inset 0 -2px 0 var(--tile-accent, var(--brand-red));
-}
-.metric-tile-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.metric-tile-label { font-size: 11.5px; font-weight: 700; color: var(--charcoal-mid); }
-.metric-tile-value {
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 1.2;
-  color: var(--charcoal);
-  font-variant-numeric: tabular-nums;
-}
-.metric-tile-sub { font-size: 11px; color: var(--charcoal-light); }
-.metric-chart-area {
-  padding: 8px 12px 4px;
-  background-image: radial-gradient(#E4E4E4 1px, transparent 1px);
-  background-size: 20px 20px;
-  background-position: 10px 10px;
-}
-.metric-chart-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 12px 20px;
-  border-top: 1px solid var(--border-color);
-}
-
-/* ── Analytics › Fleet economics (progress-metric-card.tsx) ─ */
-.pmc-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 360px;
-  height: 100%;
-  overflow: hidden;
-  border-radius: 14px;
-  background: var(--card-bg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-}
-.pmc-chart-region { position: absolute; top: 0; right: 0; bottom: 49px; width: 62%; z-index: 0; }
-.pmc-chart-glow { position: absolute; inset: 0; pointer-events: none; }
-.pmc-chart-dots {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image: radial-gradient(#DDDDDD 1px, transparent 1px);
-  background-size: 14px 14px;
-  -webkit-mask-image: linear-gradient(to right, transparent, black 55%);
-  mask-image: linear-gradient(to right, transparent, black 55%);
-}
-.pmc-body {
-  position: relative;
-  z-index: 1;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  padding: 20px 22px 0;
-  pointer-events: none;
-}
-.pmc-body button, .pmc-body select, .pmc-body label { pointer-events: auto; }
-.pmc-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.pmc-title { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: #1E293B; }
-.pmc-subtitle { margin: 4px 0 0; font-size: 11.5px; color: var(--charcoal-light); max-width: 45%; }
-.pmc-toggle {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  margin-left: 4px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--card-bg);
-}
-.pmc-toggle button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 22px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--charcoal-light);
-  cursor: pointer;
-}
-.pmc-toggle button.is-active { background: var(--card-bg-hover); color: var(--charcoal); }
-.pmc-period {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--charcoal-mid);
-  cursor: pointer;
-}
-.pmc-period select {
-  appearance: none;
-  border: none;
-  background: transparent;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--charcoal-mid);
-  padding-right: 2px;
-  cursor: pointer;
-}
-.pmc-headline {
-  margin-top: 22px;
-  font-size: 46px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -0.02em;
-  color: var(--charcoal);
-  font-variant-numeric: tabular-nums;
-}
-.pmc-note { margin: 10px 0 0; font-size: 11px; color: var(--charcoal-light); max-width: 42%; }
-.pmc-footer {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  min-height: 49px;
-  padding: 12px 22px;
-  border-top: 1px solid var(--border-color);
-  background: var(--card-bg);
-  font-size: 12px;
-}
-
-/* ── Analytics › Driver profitability (activity-list.tsx) ── */
-.activity-list {
-  height: 100%;
-  min-height: 360px;
-  padding: 20px 22px;
-  border-radius: 14px;
-  background: var(--card-bg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-}
-.activity-list-header { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
-.activity-list-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--charcoal-light);
-}
-.activity-list-subtitle { font-size: 11.5px; color: var(--charcoal-light); }
-.activity-list-items { margin: 0; padding: 0; list-style: none; overflow-y: auto; }
-.activity-list-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 0;
-  border-bottom: 1px solid var(--border-color);
-}
-.activity-list-row:last-child { border-bottom: none; }
-.activity-list-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.activity-list-name { font-size: 13.5px; font-weight: 700; color: var(--charcoal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.activity-list-desc { font-size: 11.5px; color: var(--charcoal-light); }
-.activity-list-end { display: flex; flex-direction: column; align-items: flex-end; flex-shrink: 0; }
-.activity-list-amount { font-size: 13.5px; font-weight: 800; font-variant-numeric: tabular-nums; }
-.activity-list-meta { font-size: 11px; color: var(--charcoal-light); }
-
 /* Always-visible, wider scrollbar (WebKit/Chromium + Firefox). Laptop
    users without a mouse rely on the scrollbar as a drag handle, and the
    OS-default overlay one is too thin and only fades in for a moment. */
@@ -2536,8 +2344,7 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 
 /* Cards — one surface style for every block on the page. */
 .an-card,
-.analytics-page .dash-panel,
-.analytics-page .pmc-card {
+.analytics-page .dash-panel {
   background: var(--card-bg);
   border: 1px solid var(--border-color);
   border-radius: 14px;
@@ -2578,11 +2385,50 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
   .an-grid--split, .an-grid--split-wide { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* Overview chart with targets + forecast beside it. */
-.metric-chart-body--aside { display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
-/* The chart grows to the aside's height instead of leaving a gap under it. */
-.metric-chart-body--aside .metric-chart-area { height: auto !important; min-height: 300px; }
-.metric-chart-aside {
+/* Overview — KPI cards over a multi-series line chart (OverviewChart.tsx,
+   21st.dev @cnippet-dev/cnippet-chart line-with-legend), with targets
+   and the forecast beside the chart. */
+.ov-panel {
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  min-width: 0;
+}
+.ov-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); border-bottom: 1px solid var(--border-color); }
+.ov-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: none;
+  border-left: 1px solid var(--border-color);
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  color: var(--charcoal);
+}
+.ov-kpi:first-child { border-left: none; }
+.ov-kpi--toggle { cursor: pointer; transition: background 0.15s ease, opacity 0.15s ease; }
+.ov-kpi--toggle:hover { background: var(--card-bg-hover); }
+.ov-kpi--toggle.is-off { opacity: 0.45; }
+.ov-kpi--toggle.is-off .ov-key { background: none !important; border-top-color: var(--charcoal-light) !important; }
+.ov-kpi-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ov-kpi-label { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--charcoal-mid); }
+/* Colour key showing the series' line style: solid, dashed or dotted. */
+.ov-key { display: inline-block; width: 16px; height: 0; border-top: 2.5px solid var(--key-color); border-radius: 2px; }
+.ov-key[data-dash="dashed"] { border-top-style: dashed; }
+.ov-key[data-dash="dotted"] { border-top-style: dotted; border-top-width: 3px; }
+.ov-kpi-value { font-size: 22px; font-weight: 800; line-height: 1.2; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.ov-kpi-hint { font-size: 11px; color: var(--charcoal-light); }
+.ov-body { min-width: 0; }
+.ov-body--aside { display: grid; grid-template-columns: minmax(0, 1fr) 320px; }
+.ov-chart { min-width: 0; padding: 18px 16px 12px 8px; }
+.ov-chart-container { aspect-ratio: auto; width: 100%; height: 340px; }
+.ov-empty { display: flex; align-items: center; justify-content: center; height: 340px; font-size: 13px; color: var(--charcoal-light); }
+.ov-aside {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -2590,12 +2436,12 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
   border-left: 1px solid var(--border-color);
   background: var(--bg-sidebar);
 }
-.metric-chart-aside > :last-child { flex: 1 1 auto; }
-.metric-chart-aside .an-card { padding: 14px 16px; box-shadow: none; }
-.metric-chart-aside .an-card-head { margin-bottom: 8px; }
+.ov-aside > :last-child { flex: 1 1 auto; }
+.ov-aside .an-card { padding: 14px 16px; box-shadow: none; }
+.ov-aside .an-card-head { margin-bottom: 8px; }
 @media (max-width: 1100px) {
-  .metric-chart-body--aside { grid-template-columns: minmax(0, 1fr); }
-  .metric-chart-aside { border-left: none; border-top: 1px solid var(--border-color); display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .ov-body--aside { grid-template-columns: minmax(0, 1fr); }
+  .ov-aside { border-left: none; border-top: 1px solid var(--border-color); display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 }
 
 /* True profit pieces */
