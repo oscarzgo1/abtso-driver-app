@@ -1,23 +1,21 @@
-import { AlertTriangle, Settings2, Target, TrendingDown, TrendingUp, Minus, CalendarClock } from 'lucide-react';
-import { COST_CATEGORY_LABEL, type AnalyticsSettings, type CostCategory, type TrueCostResult, type VatMode } from '../../lib/true-cost';
+import { AlertTriangle, Target, TrendingDown, TrendingUp, Minus, CalendarClock, PieChart, Receipt, Coins } from 'lucide-react';
+import { COST_CATEGORY_LABEL, type AnalyticsSettings, type CostCategory, type TrueCostResult } from '../../lib/true-cost';
+import { AnalyticsCard } from './AnalyticsLayout';
 
 // "Where is my money leaking? What state are we in? Are we improving?" —
-// the three questions from the analytics brief, answered in one block:
-// a revenue → true-profit breakdown, comparisons with the previous period
-// and the same period last year, targets, and a month-end forecast.
+// the three questions from the analytics brief. The revenue → true-profit
+// breakdown, where every £1 goes, per-shift unit economics and what isn't
+// counted yet live in TrueProfitSection; targets and the month-end
+// forecast are separate cards so the page can place them beside the
+// overview trend they relate to. The VAT switch and "Costs & targets"
+// live in the page header — they change every figure on the page.
 
 interface TrueProfitSectionProps {
-  periodLabel: string;
   current: TrueCostResult;
   previous: TrueCostResult | null;
   lastYear: TrueCostResult | null;
-  forecast: { projected: number; monthLabel: string; daysLeft: number } | null;
   settings: AnalyticsSettings;
   hasCosts: boolean;
-  vatMode: VatMode;
-  onVatModeChange: (mode: VatMode) => void;
-  /** Payroll admins only — logistics sees the figures read-only. */
-  onManageCosts?: () => void;
 }
 
 const money = (v: number) => `${v < 0 ? '−' : ''}£${Math.abs(v).toLocaleString('en-GB', { maximumFractionDigits: 0 })}`;
@@ -30,7 +28,7 @@ function Delta({ current, previous, label }: { current: number; previous: number
   const down = diff < -0.5;
   const Icon = up ? TrendingUp : down ? TrendingDown : Minus;
   return (
-    <span className="flex items-center text-xs" style={{ gap: '5px', color: up ? 'var(--charcoal)' : down ? 'var(--brand-red)' : 'var(--charcoal-light)' }}>
+    <span className="tp-delta" style={{ color: up ? 'var(--charcoal)' : down ? 'var(--brand-red)' : 'var(--charcoal-light)' }}>
       <Icon size={13} />
       <strong>{up ? '+' : ''}{money(diff)}</strong>
       {pct !== null && <span>({up ? '+' : ''}{pct.toFixed(0)}%)</span>}
@@ -42,33 +40,52 @@ function Delta({ current, previous, label }: { current: number; previous: number
 function TargetRow({ label, actual, target, format }: { label: string; actual: number | null; target: number | null; format: (v: number) => string }) {
   if (target === null) {
     return (
-      <div className="flex items-center justify-between text-xs" style={{ padding: '8px 0', borderTop: '1px solid var(--border-color)' }}>
-        <span className="text-secondary">{label}</span>
-        <span className="text-muted">No target set</span>
+      <div className="tp-target">
+        <div className="tp-target-line">
+          <span className="text-secondary">{label}</span>
+          <span className="text-muted">No target set</span>
+        </div>
       </div>
     );
   }
   const hit = actual !== null && actual >= target;
   const ratio = actual !== null && target > 0 ? Math.max(0, Math.min(1, actual / target)) : 0;
   return (
-    <div style={{ padding: '8px 0', borderTop: '1px solid var(--border-color)' }}>
-      <div className="flex items-center justify-between text-xs" style={{ marginBottom: '5px' }}>
+    <div className="tp-target">
+      <div className="tp-target-line">
         <span className="text-secondary">{label}</span>
         <span>
           <strong style={{ color: hit ? 'var(--charcoal)' : 'var(--brand-red)' }}>{actual === null ? '—' : format(actual)}</strong>
           <span className="text-muted"> / {format(target)}</span>
         </span>
       </div>
-      <div style={{ height: '5px', borderRadius: '3px', background: 'var(--border-color)', overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${ratio * 100}%`, background: hit ? 'var(--charcoal)' : 'var(--brand-red)' }} />
+      <div className="tp-target-track">
+        <div style={{ width: `${ratio * 100}%`, background: hit ? '#10B981' : 'var(--brand-red)' }} />
       </div>
     </div>
   );
 }
 
-export default function TrueProfitSection({
-  periodLabel, current, previous, lastYear, forecast, settings, hasCosts, vatMode, onVatModeChange, onManageCosts,
-}: TrueProfitSectionProps) {
+export function TrueProfitTargets({ current, settings }: { current: TrueCostResult; settings: AnalyticsSettings }) {
+  return (
+    <AnalyticsCard title="Targets" icon={<Target size={14} />} description="True profit against the targets set under Costs & targets.">
+      <TargetRow label="Margin" actual={current.marginPct} target={settings.target_margin_percent} format={v => `${v.toFixed(1)}%`} />
+      <TargetRow label="Revenue per truck per day" actual={current.revenuePerTruckDay} target={settings.target_revenue_per_truck_day} format={v => money(v)} />
+      <TargetRow label="Profit per week" actual={current.weeklyProfit} target={settings.target_weekly_profit} format={v => money(v)} />
+    </AnalyticsCard>
+  );
+}
+
+export function TrueProfitForecast({ forecast }: { forecast: { projected: number; monthLabel: string; daysLeft: number } }) {
+  return (
+    <AnalyticsCard title={`${forecast.monthLabel} forecast`} icon={<CalendarClock size={14} />}>
+      <p className="tp-figure" style={{ color: forecast.projected < 0 ? 'var(--brand-red)' : 'var(--charcoal)' }}>{money(forecast.projected)}</p>
+      <p className="text-xs text-muted m-0">If the month continues at its current daily rate · {forecast.daysLeft} day{forecast.daysLeft === 1 ? '' : 's'} left</p>
+    </AnalyticsCard>
+  );
+}
+
+export default function TrueProfitSection({ current, previous, lastYear, settings, hasCosts }: TrueProfitSectionProps) {
   const rows: { label: string; value: number }[] = [
     { label: 'Payroll (wages)', value: current.payroll },
     ...(current.oncost > 0 ? [{ label: `Employer NI & pension (${settings.employer_oncost_percent}%)`, value: current.oncost }] : []),
@@ -79,132 +96,82 @@ export default function TrueProfitSection({
   ];
   const scale = Math.max(current.revenue, current.totalCost, 1);
   const biggestLeak = [...rows].sort((a, b) => b.value - a.value)[0];
+  const missing = current.unratedShifts > 0 || current.pendingFuel > 0 || current.pendingFixed > 0 || !hasCosts;
 
   return (
-    <div className="analytics-container">
-      <div className="analytics-section-head">
-        <p className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.16em', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ width: '16px', height: '2px', background: 'var(--brand-red)', display: 'inline-block' }} />
-          True profit · {periodLabel}
-        </p>
-        <div className="flex items-center" style={{ gap: '8px' }}>
-          <div className="flex" style={{ border: '1px solid var(--border-color)', borderRadius: '999px', padding: '2px' }} role="group" aria-label="VAT">
-            {(['ex', 'inc'] as VatMode[]).map(mode => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => onVatModeChange(mode)}
-                aria-pressed={vatMode === mode}
-                style={{
-                  border: 'none', cursor: 'pointer', borderRadius: '999px', padding: '5px 12px', fontSize: '11.5px', fontWeight: 700,
-                  background: vatMode === mode ? 'var(--charcoal)' : 'transparent', color: vatMode === mode ? '#fff' : 'var(--charcoal-light)',
-                }}
-              >
-                {mode === 'ex' ? 'Ex VAT' : 'Inc VAT'}
-              </button>
-            ))}
-          </div>
-          {onManageCosts && (
-            <button type="button" className="btn btn-secondary flex items-center" style={{ gap: '6px', padding: '6px 12px', fontSize: '11px' }} onClick={onManageCosts}>
-              <Settings2 size={14} /> Costs &amp; targets
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Both columns stretch to the same height (was alignItems: start,
-          which left a blank block under whichever column was shorter). */}
-      <div className="grid grid-cols-1 lg:grid-cols-12" style={{ gap: '16px', alignItems: 'stretch' }}>
+    <div className="an-stack-sm">
+      {missing && (
+        <AnalyticsCard title="Not in these figures yet" icon={<AlertTriangle size={14} />} tone="alert">
+          <ul className="tp-missing">
+            {current.unratedShifts > 0 && (
+              <li><strong className="text-primary">{current.unratedShifts} shift{current.unratedShifts === 1 ? '' : 's'}</strong> awaiting a load rate — wages are counted{current.unratedWages > 0 ? ` (${money(current.unratedWages)} on shifts with no rate yet)` : ''}; revenue counts as each load is rated.</li>
+            )}
+            {current.pendingFuel > 0 && <li><strong className="text-primary">{money(current.pendingFuel)}</strong> of fuel receipts awaiting approval.</li>}
+            {current.pendingFixed > 0 && <li><strong className="text-primary">{money(current.pendingFixed)}</strong> of costs marked pending.</li>}
+            {!hasCosts && <li>No fixed costs entered — add finance, insurance, overheads and more under <strong className="text-primary">Costs &amp; targets</strong>.</li>}
+          </ul>
+        </AnalyticsCard>
+      )}
+      <div className="an-grid an-grid--split">
         {/* Revenue → costs → true profit */}
-        <div className="glass-card lg:col-span-8 flex flex-col" style={{ padding: '18px 20px' }}>
-          <div className="flex items-end justify-between" style={{ gap: '12px', flexWrap: 'wrap', marginBottom: '14px' }}>
+        <AnalyticsCard
+          title="Revenue to true profit"
+          icon={<Receipt size={14} />}
+          description="Every cost taken off this period's rated revenue."
+          className="flex flex-col"
+        >
+          <div className="tp-headline">
             <div>
-              <p className="text-xs text-muted m-0">True profit after every cost</p>
-              <p className="font-black m-0 tabular-nums" style={{ fontSize: '34px', lineHeight: 1.1, color: current.profit < 0 ? 'var(--brand-red)' : 'var(--charcoal)' }}>
-                {money(current.profit)}
-              </p>
+              <p className="tp-hero" style={{ color: current.profit < 0 ? 'var(--brand-red)' : 'var(--charcoal)' }}>{money(current.profit)}</p>
               <p className="text-xs text-secondary m-0">
                 {current.marginPct === null ? 'No rated revenue yet' : `${current.marginPct.toFixed(1)}% margin`} · {current.shiftCount} shifts
               </p>
             </div>
-            <div className="flex flex-col" style={{ gap: '4px', alignItems: 'flex-end' }}>
+            <div className="tp-deltas">
               <Delta current={current.profit} previous={previous?.profit ?? null} label="vs previous period" />
               <Delta current={current.profit} previous={lastYear?.profit ?? null} label="vs same period last year" />
             </div>
           </div>
 
-          <div className="flex flex-col" style={{ gap: '7px' }}>
+          <div className="flex flex-col" style={{ gap: '9px', marginBottom: '16px' }}>
             <BarRow label="Revenue" value={current.revenue} scale={scale} tone="ink" />
             {rows.map(r => <BarRow key={r.label} label={r.label} value={-r.value} scale={scale} tone="red" />)}
-            <div style={{ borderTop: '2px solid var(--charcoal)', marginTop: '4px', paddingTop: '8px' }}>
-              <BarRow label="True profit" value={current.profit} scale={scale} tone={current.profit < 0 ? 'red' : 'ink'} bold />
+            <div style={{ borderTop: '1px solid var(--border-color)', marginTop: '4px', paddingTop: '10px' }}>
+              <BarRow label="True profit" value={current.profit} scale={scale} tone={current.profit < 0 ? 'red' : 'green'} bold />
             </div>
           </div>
 
           {biggestLeak && biggestLeak.value > 0 && current.revenue > 0 && (
-            <p className="text-xs text-secondary m-0 mt-12">
+            <p className="tp-callout" style={{ marginTop: 'auto' }}>
               Biggest cost: <strong className="text-primary">{biggestLeak.label}</strong> — {((biggestLeak.value / current.revenue) * 100).toFixed(0)}p of every £1 earned.
             </p>
           )}
+        </AnalyticsCard>
 
-          {/* Pinned to the bottom of the card so it fills the height the
-              side column gives it instead of leaving empty space. */}
-          <div style={{ marginTop: 'auto', paddingTop: '18px' }}>
+        <div className="an-stack-sm">
+          <AnalyticsCard title="Where every £1 goes" icon={<PieChart size={14} />}>
             <PoundSplit current={current} />
+          </AnalyticsCard>
+          <AnalyticsCard title="Per shift" icon={<Coins size={14} />}>
             <UnitEconomics current={current} />
-          </div>
-        </div>
-
-        <div className="lg:col-span-4 flex flex-col tp-side" style={{ gap: '16px' }}>
-          <div className="glass-card" style={{ padding: '14px 16px' }}>
-            <p className="flex items-center text-xs font-bold text-muted uppercase m-0 mb-8" style={{ gap: '6px', letterSpacing: '0.08em' }}>
-              <Target size={13} /> Targets
-            </p>
-            <TargetRow label="Margin" actual={current.marginPct} target={settings.target_margin_percent} format={v => `${v.toFixed(1)}%`} />
-            <TargetRow label="Revenue per truck per day" actual={current.revenuePerTruckDay} target={settings.target_revenue_per_truck_day} format={v => money(v)} />
-            <TargetRow label="Profit per week" actual={current.weeklyProfit} target={settings.target_weekly_profit} format={v => money(v)} />
-          </div>
-
-          {forecast && (
-            <div className="glass-card" style={{ padding: '14px 16px' }}>
-              <p className="flex items-center text-xs font-bold text-muted uppercase m-0 mb-4" style={{ gap: '6px', letterSpacing: '0.08em' }}>
-                <CalendarClock size={13} /> {forecast.monthLabel} forecast
-              </p>
-              <p className="font-black m-0 tabular-nums" style={{ fontSize: '22px', color: forecast.projected < 0 ? 'var(--brand-red)' : 'var(--charcoal)' }}>{money(forecast.projected)}</p>
-              <p className="text-xs text-muted m-0">If the month continues at its current daily rate · {forecast.daysLeft} day{forecast.daysLeft === 1 ? '' : 's'} left</p>
-            </div>
-          )}
-
-          {(current.unratedShifts > 0 || current.pendingFuel > 0 || current.pendingFixed > 0 || !hasCosts) && (
-            <div className="glass-card" style={{ padding: '14px 16px', borderColor: 'var(--brand-red)' }}>
-              <p className="flex items-center text-xs font-bold uppercase m-0 mb-8" style={{ gap: '6px', letterSpacing: '0.08em', color: 'var(--brand-red)' }}>
-                <AlertTriangle size={13} /> Not in these figures yet
-              </p>
-              <ul className="text-xs text-secondary m-0" style={{ paddingLeft: '16px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
-                {current.unratedShifts > 0 && (
-                  <li><strong className="text-primary">{current.unratedShifts} shift{current.unratedShifts === 1 ? '' : 's'}</strong> awaiting a load rate — their {money(current.unratedWages)} wages are counted, their revenue isn't yet.</li>
-                )}
-                {current.pendingFuel > 0 && <li><strong className="text-primary">{money(current.pendingFuel)}</strong> of fuel receipts awaiting approval.</li>}
-                {current.pendingFixed > 0 && <li><strong className="text-primary">{money(current.pendingFixed)}</strong> of costs marked pending.</li>}
-                {!hasCosts && <li>No fixed costs entered — add finance, insurance, overheads and more under <strong className="text-primary">Costs &amp; targets</strong>.</li>}
-              </ul>
-            </div>
-          )}
+          </AnalyticsCard>
         </div>
       </div>
     </div>
   );
 }
 
-function BarRow({ label, value, scale, tone, bold }: { label: string; value: number; scale: number; tone: 'ink' | 'red'; bold?: boolean }) {
+const BAR_TONE = { ink: 'var(--charcoal)', red: 'var(--brand-red)', green: '#10B981' } as const;
+
+function BarRow({ label, value, scale, tone, bold }: { label: string; value: number; scale: number; tone: keyof typeof BAR_TONE; bold?: boolean }) {
   const width = Math.min(100, (Math.abs(value) / scale) * 100);
   return (
-    <div className="grid items-center" style={{ gridTemplateColumns: 'minmax(120px, 190px) 1fr 90px', gap: '10px' }}>
-      <span className={`text-xs ${bold ? 'font-black text-primary' : 'text-secondary'}`} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
-      <span style={{ height: bold ? '10px' : '8px', borderRadius: '4px', background: 'var(--card-bg-hover)', overflow: 'hidden' }}>
-        <span style={{ display: 'block', height: '100%', width: `${width}%`, background: tone === 'ink' ? 'var(--charcoal)' : 'var(--brand-red)', opacity: bold ? 1 : 0.85 }} />
+    <div className="tp-bar-row">
+      <span className={`text-sm ${bold ? 'font-bold text-primary' : 'text-secondary'}`} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+      <span className="tp-bar-track" style={{ height: bold ? '10px' : '8px' }}>
+        <span style={{ width: `${width}%`, background: BAR_TONE[tone], opacity: bold ? 1 : 0.85 }} />
       </span>
-      <span className={`text-xs tabular-nums ${bold ? 'font-black' : 'font-bold'}`} style={{ textAlign: 'right', color: value < 0 ? 'var(--brand-red)' : 'var(--charcoal)' }}>
+      <span className={`text-sm tabular-nums ${bold ? 'font-black' : 'font-bold'}`} style={{ textAlign: 'right', color: value < 0 ? 'var(--brand-red)' : 'var(--charcoal)' }}>
         {money(value)}
       </span>
     </div>
@@ -215,40 +182,38 @@ function BarRow({ label, value, scale, tone, bold }: { label: string; value: num
  *  what's left as profit, as one stacked bar with a pence-per-£1 legend. */
 function PoundSplit({ current }: { current: TrueCostResult }) {
   if (current.revenue <= 0) {
-    return (
-      <p className="text-xs text-muted m-0" style={{ marginBottom: '12px' }}>
-        Where every £1 goes appears once shifts in this period have a load rate.
-      </p>
-    );
+    return <p className="text-xs text-muted m-0">Appears once shifts in this period have a load rate.</p>;
   }
-  const fixed = current.fixed;
   const parts = [
     { label: 'Wages', value: current.payroll, color: 'var(--brand-red)' },
     { label: 'NI & pension', value: current.oncost, color: 'rgba(204, 0, 0, 0.5)' },
     { label: 'Fuel', value: current.fuel, color: '#F59E0B' },
-    { label: 'Fixed costs', value: fixed, color: 'var(--charcoal-light)' },
+    { label: 'Fixed costs', value: current.fixed, color: 'var(--charcoal-light)' },
     { label: 'Profit', value: Math.max(0, current.profit), color: '#10B981' },
   ].filter(p => p.value > 0);
   const scale = Math.max(current.revenue, current.totalCost, 1);
   return (
-    <div style={{ marginBottom: '12px' }}>
-      <div className="flex items-center justify-between" style={{ marginBottom: '6px', gap: '8px', flexWrap: 'wrap' }}>
-        <span className="text-xs font-bold text-muted uppercase" style={{ letterSpacing: '0.08em' }}>Where every £1 goes</span>
-        <span className="flex items-center text-xs text-secondary" style={{ gap: '10px', flexWrap: 'wrap' }}>
-          {parts.map(p => (
-            <span key={p.label} className="flex items-center" style={{ gap: '4px' }}>
-              <span style={{ width: '8px', height: '8px', borderRadius: '999px', background: p.color, display: 'inline-block' }} />
-              {p.label} <strong className="text-primary tabular-nums">{Math.round((p.value / current.revenue) * 100)}p</strong>
-            </span>
-          ))}
-        </span>
-      </div>
+    <>
       <div className="pound-split" role="img" aria-label="Revenue split into costs and profit">
         {parts.map(p => (
           <span key={p.label} title={`${p.label}: ${money(p.value)}`} style={{ width: `${(p.value / scale) * 100}%`, background: p.color }} />
         ))}
       </div>
-    </div>
+      <ul className="tp-legend">
+        {parts.map(p => (
+          <li key={p.label}>
+            <span className="flex items-center" style={{ gap: '8px' }}>
+              <span style={{ width: '9px', height: '9px', borderRadius: '3px', background: p.color, display: 'inline-block' }} />
+              {p.label}
+            </span>
+            <span className="tabular-nums">
+              <span className="text-muted">{money(p.value)}</span>
+              <strong className="text-primary" style={{ display: 'inline-block', minWidth: '42px', textAlign: 'right' }}>{Math.round((p.value / current.revenue) * 100)}p</strong>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 

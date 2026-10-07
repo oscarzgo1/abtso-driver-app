@@ -79,8 +79,26 @@ export interface TrueCostShift {
   id: string;
   start_time: string;
   total_pay: number | null;
+  total_hours?: number | null;
   revenue_amount?: number | null;
   vehicle_id?: string | null;
+  /** Loads on this shift still waiting for a rate (see shiftRevenueFromLoads). */
+  pending_loads?: number;
+}
+
+/** What a shift has actually earned so far: the sum of its rated loads.
+ *  shift_revenue.revenue_amount (migration 063's roll-up) stays NULL until
+ *  EVERY load on the shift is rated, which hid real, already-agreed rates
+ *  on a shift with one rated and one unrated load. Falls back to the
+ *  shift-level figure when no load carries a rate (rates entered before
+ *  loads existed). pendingLoads counts loads still waiting for a rate. */
+export function shiftRevenueFromLoads(s: { revenue_amount?: number | null; loads?: { revenue_amount: number | null }[] }): { revenue: number | null; pendingLoads: number } {
+  const loads = s.loads ?? [];
+  const rated = loads.filter(l => l.revenue_amount !== null && l.revenue_amount !== undefined);
+  const pendingLoads = loads.length - rated.length;
+  if (rated.length > 0) return { revenue: rated.reduce((t, l) => t + (Number(l.revenue_amount) || 0), 0), pendingLoads };
+  const fallback = s.revenue_amount === null || s.revenue_amount === undefined ? null : Number(s.revenue_amount);
+  return { revenue: fallback, pendingLoads: fallback === null ? pendingLoads : 0 };
 }
 
 export interface TrueCostFuelReceipt {
@@ -105,8 +123,11 @@ export interface TrueCostResult {
   /** Shown separately, never inside profit. */
   pendingFuel: number;
   pendingFixed: number;
+  /** Shifts with no revenue yet, or with some loads still unrated. */
   unratedShifts: number;
+  /** Wages on shifts with no revenue at all yet. */
   unratedWages: number;
+  hours: number;
   shiftCount: number;
   truckDays: number;
   revenuePerTruckDay: number | null;
@@ -115,7 +136,7 @@ export interface TrueCostResult {
 
 /** Fuel receipts are gross (VAT included) at the pump; everything else in
  *  the ledger is stored ex-VAT. Payroll and on-costs never carry VAT. */
-export function computeTrueCost(opts: {
+export interface TrueCostInput {
   start: Date;
   end: Date;
   shifts: TrueCostShift[];
@@ -123,7 +144,9 @@ export function computeTrueCost(opts: {
   costs: OrgCost[];
   settings: AnalyticsSettings;
   vatMode: VatMode;
-}): TrueCostResult {
+}
+
+export function computeTrueCost(opts: TrueCostInput): TrueCostResult {
   const { start, end, costs, settings, vatMode } = opts;
   const vatUp = (exVat: number) => (vatMode === 'inc' ? exVat * (1 + VAT_RATE) : exVat);
   const fuelAs = (gross: number) => (vatMode === 'inc' ? gross : gross / (1 + VAT_RATE));
@@ -139,14 +162,17 @@ export function computeTrueCost(opts: {
   let unratedShifts = 0;
   let unratedWages = 0;
   const truckDaySet = new Set<string>();
+  let hours = 0;
   for (const s of inWindow) {
     const pay = Number(s.total_pay) || 0;
     payroll += pay;
+    hours += Number(s.total_hours) || 0;
     if (s.revenue_amount === null || s.revenue_amount === undefined) {
       unratedShifts += 1;
       unratedWages += pay;
     } else {
       revenueEx += Number(s.revenue_amount) || 0;
+      if ((s.pending_loads ?? 0) > 0) unratedShifts += 1;
     }
     if (s.vehicle_id) truckDaySet.add(`${s.vehicle_id}:${new Date(s.start_time).toDateString()}`);
   }
@@ -198,9 +224,43 @@ export function computeTrueCost(opts: {
     pendingFixed,
     unratedShifts,
     unratedWages,
+    hours,
     shiftCount: inWindow.length,
     truckDays: truckDaySet.size,
     revenuePerTruckDay: truckDaySet.size > 0 ? revenue / truckDaySet.size : null,
     weeklyProfit: (profit / days) * 7,
   };
+}
+
+/** The same true-cost figures split into consecutive slices of the
+ *  window — daily up to ~3 months, weekly beyond — for the Overview
+ *  chart. Every slice runs through computeTrueCost with the window
+ *  clipped, so the slices add up exactly to the headline totals. */
+export function computeTrueCostSeries(opts: TrueCostInput): { label: string; result: TrueCostResult }[] {
+  const { start, end } = opts;
+  if (end.getTime() <= start.getTime()) return [];
+  const weekly = end.getTime() - start.getTime() > 92 * DAY_MS;
+  const first = new Date(start);
+  first.setHours(0, 0, 0, 0);
+  const slices: { start: Date; end: Date }[] = [];
+  for (let cursor = first; cursor.getTime() < end.getTime();) {
+    const next = new Date(cursor);
+    next.setDate(next.getDate() + (weekly ? 7 : 1));
+    slices.push({
+      start: new Date(Math.max(cursor.getTime(), start.getTime())),
+      end: new Date(Math.min(next.getTime(), end.getTime())),
+    });
+    cursor = next;
+  }
+  const byIndex = new Map<number, TrueCostShift[]>();
+  for (const s of opts.shifts) {
+    const t = new Date(s.start_time).getTime();
+    const i = slices.findIndex(sl => t >= sl.start.getTime() && t < sl.end.getTime());
+    if (i < 0) continue;
+    byIndex.set(i, [...(byIndex.get(i) ?? []), s]);
+  }
+  return slices.map((sl, i) => ({
+    label: `${weekly ? 'w/c ' : ''}${sl.start.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`,
+    result: computeTrueCost({ ...opts, start: sl.start, end: sl.end, shifts: byIndex.get(i) ?? [] }),
+  }));
 }

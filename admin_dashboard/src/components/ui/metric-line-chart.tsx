@@ -16,7 +16,8 @@ export interface MetricTile {
   axisFormat?: (value: number) => string;
   color: string;
   delta: { label: string; direction: BadgeDeltaDirection; tone: BadgeDeltaTone } | null;
-  /** Shown under the value when there's no previous period to compare. */
+  /** Shown under the value; falls back to "from <previous>" when absent.
+   *  The previous value is also in the tile's hover title. */
   hint?: ReactNode;
 }
 
@@ -28,9 +29,11 @@ interface MetricLineChartProps {
   height?: number;
   emptyText?: string;
   footer?: ReactNode;
+  /** Rendered beside the chart (stacks under it on narrow screens). */
+  aside?: ReactNode;
 }
 
-export function MetricLineChart({ metrics, data, defaultKey, height = 320, emptyText = 'No data for this period yet.', footer }: MetricLineChartProps) {
+export function MetricLineChart({ metrics, data, defaultKey, height = 320, emptyText = 'No data for this period yet.', footer, aside }: MetricLineChartProps) {
   const [selectedKey, setSelectedKey] = useState(defaultKey ?? metrics[0]?.key);
   const selected = metrics.find(m => m.key === selectedKey) ?? metrics[0];
 
@@ -58,6 +61,7 @@ export function MetricLineChart({ metrics, data, defaultKey, height = 320, empty
             onClick={() => setSelectedKey(metric.key)}
             className={`metric-tile ${metric.key === selected?.key ? 'is-active' : ''}`}
             style={{ '--tile-accent': metric.color } as CSSProperties}
+            title={metric.previous !== null ? `${metric.label}: ${metric.format(metric.value)} · previous period ${metric.format(metric.previous)}` : undefined}
           >
             <span className="metric-tile-top">
               <span className="metric-tile-label">{metric.label}</span>
@@ -65,42 +69,45 @@ export function MetricLineChart({ metrics, data, defaultKey, height = 320, empty
             </span>
             <span className="metric-tile-value">{metric.format(metric.value)}</span>
             <span className="metric-tile-sub">
-              {metric.previous !== null ? `from ${metric.format(metric.previous)}` : metric.hint}
+              {metric.hint ?? (metric.previous !== null ? `from ${metric.format(metric.previous)}` : null)}
             </span>
           </button>
         ))}
       </div>
 
-      <div className="metric-chart-area" style={{ height }}>
-        {data.length < 2 || !selected ? (
-          <div className="flex items-center justify-center text-sm text-muted" style={{ height: '100%' }}>{emptyText}</div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data} margin={{ top: 20, right: 24, left: 8, bottom: 8 }}>
-              <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#888888' }} tickMargin={10} interval="preserveStartEnd" minTickGap={16} />
-              <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 11, fill: '#888888' }}
-                tickMargin={8}
-                tickCount={6}
-                width={64}
-                tickFormatter={v => (selected.axisFormat ?? selected.format)(Number(v))}
-              />
-              <Tooltip content={ChartTooltip} cursor={{ strokeDasharray: '3 3', stroke: '#BBBBBB' }} />
-              {/* Recharts' entry animation never resolves in this app — see fleet-status-donut-chart.tsx. */}
-              <Line
-                type="monotone"
-                dataKey={selected.key}
-                stroke={selected.color}
-                strokeWidth={2.25}
-                dot={false}
-                activeDot={{ r: 5, fill: selected.color, stroke: '#FFFFFF', strokeWidth: 2 }}
-                isAnimationActive={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        )}
+      <div className={aside ? 'metric-chart-body metric-chart-body--aside' : 'metric-chart-body'}>
+        <div className="metric-chart-area" style={{ height }}>
+          {data.length < 2 || !selected ? (
+            <div className="flex items-center justify-center text-sm text-muted" style={{ height: '100%' }}>{emptyText}</div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={data} margin={{ top: 20, right: 24, left: 8, bottom: 8 }}>
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#888888' }} tickMargin={10} interval="preserveStartEnd" minTickGap={16} />
+                <YAxis
+                  axisLine={false}
+                  tickLine={false}
+                  tick={{ fontSize: 11, fill: '#888888' }}
+                  tickMargin={8}
+                  tickCount={6}
+                  width={64}
+                  tickFormatter={v => (selected.axisFormat ?? selected.format)(Number(v))}
+                />
+                <Tooltip content={ChartTooltip} cursor={{ strokeDasharray: '3 3', stroke: '#BBBBBB' }} />
+                {/* Recharts' entry animation never resolves in this app — see fleet-status-donut-chart.tsx. */}
+                <Line
+                  type="monotone"
+                  dataKey={selected.key}
+                  stroke={selected.color}
+                  strokeWidth={2.25}
+                  dot={false}
+                  activeDot={{ r: 5, fill: selected.color, stroke: '#FFFFFF', strokeWidth: 2 }}
+                  isAnimationActive={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+        {aside && <div className="metric-chart-aside">{aside}</div>}
       </div>
 
       {footer && <div className="metric-chart-footer">{footer}</div>}
