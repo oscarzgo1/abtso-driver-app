@@ -67,8 +67,8 @@
    would (see note above the Tailwind imports).  */
 @layer base {
   body {
-    font-family: 'Geist Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11", "tnum";
+    font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-feature-settings: "tnum";
     -webkit-font-smoothing: antialiased;
   }
 }
@@ -98,7 +98,7 @@
 }
 
 :root {
-  font-family: 'Inter', sans-serif;
+  font-family: 'Plus Jakarta Sans', 'Inter', sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
@@ -212,7 +212,7 @@ body {
    readable. Background now stays fully solid; only the glow pulses. */
 @keyframes alertPulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(204, 0, 0, 0.45);
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
   }
   50% {
     box-shadow: 0 0 16px 3px rgba(204, 0, 0, 0.65);
@@ -622,7 +622,7 @@ body {
 .nav-item.active .nav-icon { color: var(--charcoal); }
 .nav-item:hover:not(.active) .nav-icon {
   color: var(--brand-red);
-  filter: drop-shadow(0 0 5px rgba(204, 0, 0, 0.45));
+  filter: drop-shadow(0 0 5px rgba(220, 38, 38, 0.45));
 }
 .nav-icon { transition: color 0.15s ease-out, filter 0.2s ease-out; }
 
@@ -2474,7 +2474,7 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 
 
 /* ── Shipments → Live Tracking layout ─────────────────────────── */
-.ship-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 16px; align-items: start; max-width: 1600px; }
+.ship-grid { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: 16px; align-items: start; }
 .ship-list { padding: 16px; position: sticky; top: 8px; display: flex; flex-direction: column; max-height: calc(100vh - 140px); }
 .ship-list-scroll { overflow-y: auto; min-height: 0; padding-right: 2px; }
 .ship-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
@@ -2504,7 +2504,7 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 .stage-row--pending .stage-title { color: var(--charcoal-light); font-weight: 700; }
 .stage-detail { margin: 2px 0 0; font-size: 12px; color: var(--charcoal-light); overflow-wrap: anywhere; }
 .stage-time { padding-top: 4px; font-family: var(--font-mono, monospace); font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--charcoal-light); }
-@keyframes stage-pulse { 0% { box-shadow: 0 0 0 0 rgba(204, 0, 0, 0.45); } 70% { box-shadow: 0 0 0 10px rgba(204, 0, 0, 0); } 100% { box-shadow: 0 0 0 0 rgba(204, 0, 0, 0); } }
+@keyframes stage-pulse { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); } 70% { box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
 
 /* -- Live Map: map (3/4) + telemetry status (1/4) ------------- */
 .live-split {
@@ -2583,7 +2583,7 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 .driver-marker { display: flex; align-items: center; gap: 6px; width: max-content; transform: translate(-6px, -6px); }
 .driver-marker-label { padding: 2px 7px; border-radius: 6px; background: #fff; border: 1px solid rgba(15, 23, 42, 0.18); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); font-size: 10.5px; font-weight: 700; color: #333333; white-space: nowrap; line-height: 1.35; }
 .driver-marker-label span { color: #888888; font-weight: 600; }
-.driver-nosignal-dot { width: 11px; height: 11px; background-color: #7C2D12; border-radius: 50%; border: 2px solid #FFFFFF; box-shadow: 0 0 10px rgba(124, 45, 18, 0.7); animation: markerPulse 1s infinite; }
+.driver-nosignal-dot { width: 11px; height: 11px; background-color: #D99100; border-radius: 50%; border: 2px solid #FFFFFF; box-shadow: 0 0 10px rgba(124, 45, 18, 0.7); animation: markerPulse 1s infinite; }
 
 /* -- Journey History: map + timeline ------------------------- */
 .jh-split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr); gap: 20px; height: calc(100vh - 360px); min-height: 560px; }
@@ -2662,7 +2662,7 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 .stl-dot { position: absolute; top: -5px; left: 0; width: 13px; height: 13px; border-radius: 50%; border: 2px solid #D4D4D4; background: #fff; display: inline-flex; align-items: center; justify-content: center; color: #fff; }
 .stl-item--completed .stl-dot { border-color: var(--brand-red); background: var(--brand-red); }
 .stl-item--active .stl-dot { border-color: var(--brand-red); background: #fff; animation: stlPulse 1.6s ease-out infinite; }
-@keyframes stlPulse { 0% { box-shadow: 0 0 0 0 rgba(204, 0, 0, 0.35); } 100% { box-shadow: 0 0 0 9px rgba(204, 0, 0, 0); } }
+@keyframes stlPulse { 0% { box-shadow: 0 0 0 0 rgba(204, 0, 0, 0.35); } 100% { box-shadow: 0 0 0 9px rgba(220, 38, 38, 0); } }
 .stl-time { font-size: 10.5px; min-height: 14px; font-weight: 600; color: var(--charcoal-light); font-variant-numeric: tabular-nums; }
 .stl-title { font-size: 12px; font-weight: 700; line-height: 1.25; color: var(--charcoal); overflow-wrap: anywhere; }
 .stl-item--pending .stl-title { color: var(--charcoal-light); }
@@ -2779,7 +2779,7 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 
 /* ── Sidebar typography: one font for every row (buttons don't inherit it by default) ── */
 .nav-item, .nav-subitem, .nav-item span, .nav-subitem span {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -2896,27 +2896,19 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 .trailer-pin-label { padding: 1px 5px; border-radius: 4px; background: rgba(255, 255, 255, 0.94); color: #333333; font-size: 9.5px; font-weight: 700; letter-spacing: 0.3px; border: 1px solid rgba(0, 0, 0, 0.12); white-space: nowrap; text-transform: uppercase; }
 
 /* ── Map pins: 3D avatar (driver) and 3D trailer, teardrop shaped ── */
-.mp-pin { position: relative; width: 44px; height: 50px; cursor: pointer; }
-.mp-bubble { position: absolute; left: 3px; top: 0; width: 38px; height: 38px; border-radius: 50%; background: #fff; border: 3px solid var(--mp-accent, #333); box-shadow: 0 3px 8px rgba(0, 0, 0, 0.32), inset 0 -2px 4px rgba(0, 0, 0, 0.12); display: flex; align-items: center; justify-content: center; overflow: visible; z-index: 2; }
-.mp-bubble svg { border-radius: 50%; display: block; }
-.mp-tail { position: absolute; left: 15px; top: 30px; width: 14px; height: 14px; background: var(--mp-accent, #333); transform: rotate(45deg); border-radius: 0 0 3px 0; box-shadow: 2px 3px 5px rgba(0, 0, 0, 0.25); z-index: 1; }
-.mp-shadow { position: absolute; left: 11px; top: 44px; width: 22px; height: 6px; border-radius: 50%; background: rgba(0, 0, 0, 0.28); filter: blur(2px); }
-.mp-label { position: absolute; left: 46px; top: 8px; padding: 1px 6px; border-radius: 5px; background: rgba(255, 255, 255, 0.96); color: #333; border: 1px solid rgba(0, 0, 0, 0.12); font-size: 10px; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
+.mp-pin { position: relative; width: 34px; height: 44px; cursor: pointer; --mp-ink: #16A34A; --mp-tint: #DDF5E5; }
+.mp-bubble { position: absolute; left: 1px; top: 0; width: 32px; height: 32px; border-radius: 50%; background: var(--mp-tint); color: var(--mp-ink); border: 2.5px solid #fff; box-shadow: 0 2px 7px rgba(0, 0, 0, 0.24); display: flex; align-items: center; justify-content: center; z-index: 2; box-sizing: border-box; }
+.mp-bubble svg { display: block; }
+.mp-tail { position: absolute; left: 11px; top: 25px; width: 12px; height: 12px; background: var(--mp-tint); border: 2.5px solid #fff; border-top: 0; border-left: 0; transform: rotate(45deg); border-radius: 0 0 3px 0; box-shadow: 2px 3px 5px rgba(0, 0, 0, 0.16); z-index: 1; box-sizing: border-box; }
+.mp-label { position: absolute; left: 50%; bottom: 100%; margin-bottom: 4px; transform: translateX(-50%); padding: 1px 5px; border-radius: 5px; background: rgba(255, 255, 255, 0.96); color: #333; border: 1px solid rgba(0, 0, 0, 0.1); font-size: 9.5px; font-weight: 700; letter-spacing: 0.2px; white-space: nowrap; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14); pointer-events: none; z-index: 3; }
 .mp-label span { color: #999; font-weight: 600; }
-.mp-status { position: absolute; right: -4px; top: -3px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid #fff; background: #2E7D32; z-index: 3; }
-.mp-idle .mp-status { background: #CC0000; animation: mp-pulse 1.4s ease-in-out infinite; }
-.mp-nosignal .mp-status { background: #9A9A9A; }
-.mp-nosignal .mp-bubble { filter: grayscale(0.7); opacity: 0.85; }
-.mp-live .mp-status { animation: mp-pulse-green 2s ease-in-out infinite; }
-@keyframes mp-pulse { 50% { box-shadow: 0 0 0 5px rgba(204, 0, 0, 0.22); } }
-@keyframes mp-pulse-green { 50% { box-shadow: 0 0 0 5px rgba(46, 125, 50, 0.2); } }
-.mp-trailer { width: 36px; height: 42px; }
-.mp-trailer .mp-bubble { left: 2px; width: 32px; height: 32px; background: linear-gradient(#fff, #ECECEC); }
-.mp-trailer .mp-bubble svg { border-radius: 0; }
-.mp-trailer .mp-tail { left: 11px; top: 26px; width: 12px; height: 12px; }
-.mp-trailer .mp-shadow { left: 8px; top: 37px; width: 20px; }
-.mp-trailer .mp-label { left: 38px; top: 6px; font-size: 9.5px; }
-.mp-still .mp-status { background: #9A9A9A; }
+/* Green = moving, orange = stationary, red = idle, amber = no GPS, grey = parked or ended. */
+.mp-stationary { --mp-ink: #EA580C; --mp-tint: #FFE8D6; }
+.mp-idle { --mp-ink: #DC2626; --mp-tint: #FDE4E4; }
+.mp-nosignal { --mp-ink: #C98500; --mp-tint: #FFF1C9; }
+.mp-still { --mp-ink: #333333; --mp-tint: #E9E9E9; }
+.mp-trailer { --mp-ink: #333333; --mp-tint: #ECECEC; }
+.mp-idle .mp-bubble { animation: mp-pulse 1.6s ease-in-out infinite; }
 
 /* 3D avatar in the Live Tracking list (same character as the map pin) */
 .tp-face { position: relative; display: inline-flex; width: 34px; height: 34px; flex-shrink: 0; }
@@ -2924,3 +2916,88 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 .tp-face-img svg { display: block; }
 .tp-face-dot { position: absolute; right: -2px; bottom: -2px; width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--card-bg, #fff); }
 
+
+/* ── Assign-a-load popup: load cards ── */
+.dl-list { display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; padding-right: 2px; }
+.dl-card { display: flex; flex-direction: column; gap: 3px; text-align: left; width: 100%; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg); color: var(--charcoal); font-family: inherit; cursor: pointer; }
+.dl-card:hover { background: var(--card-bg-hover); }
+.dl-card--on { border-color: var(--brand-red); box-shadow: 0 0 0 1px var(--brand-red); }
+.dl-card--static { cursor: default; }
+.dl-card--static:hover { background: var(--card-bg); }
+.dl-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+/* ── Live Tracking: KPI cards, always one compact row ── */
+.ship-kpis--5 { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.ship-kpi { padding: 10px 12px !important; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; min-width: 0; }
+.ship-kpi-label { margin: 0; font-size: 11px; font-weight: 700; color: var(--charcoal-light); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ship-kpi-value { margin: 2px 0 0; font-size: 21px; font-weight: 800; line-height: 1.15; color: var(--charcoal); }
+.ship-kpi-foot { margin: 2px 0 0; font-size: 10.5px; color: var(--charcoal-light); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ship-kpi-ico { width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px; background: var(--brand-red-light); color: var(--brand-red); display: flex; align-items: center; justify-content: center; }
+.ship-kpi-ico svg { width: 15px; height: 15px; }
+
+/* ── Tracking List card (route line, places, carrier, ETA) ── */
+.tl-top { display: flex; align-items: center; gap: 8px; }
+.tl-ref { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-weight: 700; font-size: 14px; letter-spacing: 0.01em; color: var(--charcoal); overflow-wrap: anywhere; }
+.tl-route { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-top: 14px; }
+.tl-code { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-weight: 600; font-size: 12px; color: var(--charcoal-light); letter-spacing: 0.04em; }
+.tl-line { display: flex; align-items: center; gap: 6px; color: var(--charcoal); }
+.tl-line i { flex: 1; height: 1px; background: var(--border-color); }
+.tl-line em { font-style: normal; font-size: 10.5px; font-weight: 700; color: var(--charcoal-light); letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+.tl-places { display: flex; justify-content: space-between; gap: 12px; margin-top: 8px; font-size: 13.5px; color: var(--charcoal); }
+.tl-places strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.tl-places strong:last-child { text-align: right; }
+.tl-meta { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 8px; font-size: 11.5px; color: var(--charcoal-light); }
+.tl-meta-l { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tl-meta-l span { overflow: hidden; text-overflow: ellipsis; }
+.tl-dot { opacity: 0.6; }
+.tl-eta { white-space: nowrap; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; }
+.tl-eta b { color: var(--charcoal); font-weight: 700; }
+
+/* ── Shipment overview (lorry, route, estimate) ── */
+.sa { padding: 20px 22px; }
+.sa-head { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.sa-ref { margin: 0; font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 20px; font-weight: 700; color: var(--charcoal); overflow-wrap: anywhere; }
+.sa-grid { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(150px, 190px); gap: 28px; align-items: start; }
+.sa-truck { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.sa-model { margin: 10px 0 0; font-size: 15px; font-weight: 800; color: var(--charcoal); }
+.sa-sub { margin: 0; font-size: 12px; color: var(--charcoal-light); }
+.sa-make { margin-top: 8px; align-self: flex-start; font-family: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--card-bg); color: var(--charcoal); }
+.sa-route { min-width: 0; padding-top: 4px; }
+.sa-route-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.sa-route-head strong { font-size: 15px; color: var(--charcoal); }
+.sa-route-head span { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; color: var(--charcoal-light); }
+.sa-bar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; }
+.sa-seg { height: 6px; border-radius: 999px; background: var(--border-color); overflow: hidden; display: block; }
+.sa-seg > span { display: block; height: 100%; background: var(--charcoal); border-radius: 999px; }
+.sa-seg--now > span { background: #E8B100; }
+.sa-ends { display: flex; justify-content: space-between; gap: 12px; margin-top: 12px; font-size: 12px; font-weight: 700; color: var(--charcoal); letter-spacing: 0.03em; }
+.sa-ends span { display: inline-flex; align-items: center; gap: 6px; }
+.sa-ends--names { margin-top: 8px; font-size: 13.5px; letter-spacing: 0; }
+.sa-ends--foot { font-weight: 500; font-size: 11.5px; color: var(--charcoal-light); letter-spacing: 0; margin-top: 8px; }
+.sa-ends--foot b { color: var(--charcoal); }
+.sa-pin { width: 12px; height: 12px; border-radius: 50%; background: var(--border-color); display: inline-block; }
+.sa-side { display: flex; flex-direction: column; gap: 12px; }
+.sa-stat { position: relative; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: 14px; background: var(--card-bg); }
+.sa-stat p { margin: 0; font-size: 11px; color: var(--charcoal-light); }
+.sa-stat strong { display: block; margin-top: 6px; font-size: 15px; color: var(--charcoal); }
+.sa-stat em { display: block; font-style: normal; margin-top: 2px; font-size: 11px; color: var(--charcoal-light); }
+.sa-stat-ico { position: absolute; top: 10px; right: 12px; color: var(--charcoal-light); display: flex; }
+@media (max-width: 1100px) { .sa-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); } .sa-side { grid-column: 1 / -1; flex-direction: row; } .sa-side .sa-stat { flex: 1; } }
+@media (max-width: 700px) { .sa-grid { grid-template-columns: 1fr; } .sa-side { flex-direction: column; } }
+
+/* Proof of delivery inside the selected Tracking List card */
+.tl-proof { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color); cursor: default; }
+.tl-proof-title { margin: 0 0 8px; font-size: 12px; font-weight: 800; color: var(--charcoal); }
+
+@keyframes mp-pulse {
+  0%, 100% { box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22), 0 0 0 0 rgba(220, 38, 38, 0.45); }
+  50% { box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22), 0 0 0 6px rgba(220, 38, 38, 0); }
+}
+
+
+/* Compensation Summary: selection bar (N selected, Edit selected, clear) */
+.payroll-selected { font-size: 13px; font-weight: 600; color: var(--charcoal); white-space: nowrap; }
+.payroll-edit-selected { font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--brand-red); background: var(--brand-red); color: #fff; cursor: pointer; }
+.payroll-edit-selected:hover { background: #AA0000; }
+.payroll-clear-selection { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--charcoal-light); cursor: pointer; }
+.payroll-clear-selection:hover { background: var(--card-bg-hover); color: var(--charcoal); }

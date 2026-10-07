@@ -3,7 +3,7 @@ import { useSectionRefresh } from '../lib/section-refresh';
 import { useState, useEffect, useCallback } from 'react';
 import { ArrowRight, ShieldAlert, Plus, Camera, X, AlertTriangle, Wrench, Clock, CheckCircle2 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
-import { FleetStatusDonutChart, type DonutSlice } from '../components/ui/fleet-status-donut-chart';
+import { ProgressRings, type RingSlice } from '../components/ui/progress-rings';
 import { getAssetComplianceStatus, formatDaysRemaining, TIER_BADGE_CLASS } from '../lib/compliance';
 import DefectInspectionDrawer from './DefectInspectionDrawer';
 
@@ -323,11 +323,12 @@ export default function Compliance({ organizationId, thresholdDays, onViewGround
     .sort((a, b) => (a.status.daysRemaining ?? 0) - (b.status.daysRemaining ?? 0))
     .slice(0, 5);
 
-  const fleetDonutData: DonutSlice[] = [
+  // One ring per state; a state with no assets keeps its (empty) ring.
+  const fleetRingData: RingSlice[] = [
     { label: 'Compliant', value: compliantCount, color: '#10B981' },
     { label: 'Action Required', value: actionRequiredCount, color: '#F59E0B' },
     { label: 'VOR (Grounded)', value: vorCount, color: '#CC0000' },
-  ].filter(d => d.value > 0);
+  ];
 
   // Real triage metrics — see the file header for what's deliberately
   // NOT shown here (cost estimate, resolution turnaround, workshop status).
@@ -530,13 +531,7 @@ export default function Compliance({ organizationId, thresholdDays, onViewGround
       <div className="glass-card mb-16" style={{ display: 'flex', flexWrap: 'wrap', overflow: 'hidden' }}>
         <div className="p-24" style={{ flex: '1 1 320px', maxWidth: '400px', minWidth: 0, borderRight: '1px solid var(--border-color)' }}>
           <h3 className="text-sm font-bold text-primary mb-8">Current Fleet State</h3>
-          <FleetStatusDonutChart
-            data={fleetDonutData}
-            centerLabel="Assets"
-            height={220}
-            emptyTitle="No Fleet Assets Yet"
-            emptyDescription="Add trucks and trailers on Fleet Roadworthiness to see status here."
-          />
+          <ProgressRings data={fleetRingData} centerLabel="Assets" />
         </div>
         <div className="p-24" style={{ flex: '2 1 420px' }}>
           <div className="flex align-center justify-between mb-16">

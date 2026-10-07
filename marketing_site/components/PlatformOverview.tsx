@@ -4,12 +4,11 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import Image from "next/image";
 import {
-  BarChart3,
-  Building2,
   Fuel,
   ImageIcon,
   MapPinned,
   PoundSterling,
+  ShieldAlert,
   ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -42,7 +41,7 @@ const ITEMS: Item[] = [
     icon: MapPinned,
     title: "Live Dispatch Board",
     body: "Every driver, vehicle and load on one map in real time, with depot geofencing and shift KPIs — not a spreadsheet refreshed every hour.",
-    image: "/features/dashboard-screenshot.png",
+    image: "/features/dashboard-hero.jpg",
   },
   {
     id: "compliance",
@@ -66,18 +65,11 @@ const ITEMS: Item[] = [
     image: "/features/payroll.jpg",
   },
   {
-    id: "benchmarking",
-    icon: BarChart3,
-    title: "Depot-to-Depot Benchmarking",
-    body: "See which depot is actually pulling its weight, filterable by driver, agency and date range — not just which one shouts loudest.",
+    id: "defects",
+    icon: ShieldAlert,
+    title: "Vehicle Defects Registry",
+    body: "Every defect reported from the cab — mechanical fault, vehicle damage, near miss — logged with a photo and severity, tracked through to rectified or VOR.",
     image: "/features/benchmarking.jpg",
-  },
-  {
-    id: "secure",
-    icon: Building2,
-    title: "Secure, Invite-Only Accounts",
-    body: "Every company's data is isolated at the database level, with MFA on admin logins — accounts are set up by our team, no open sign-ups.",
-    image: "/features/secure.jpg",
   },
 ];
 
@@ -88,6 +80,7 @@ function ImageSlide({ item }: { item: Item }) {
         src={item.image}
         alt={item.title}
         fill
+        quality={90}
         sizes="(min-width: 1024px) 480px, 90vw"
         className="object-cover"
       />

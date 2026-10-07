@@ -1,3 +1,4 @@
+import { TRUCK_MAKES } from '../lib/truck-makes';
 import { useState } from 'react';
 import { X, Truck, FileSpreadsheet, User, Plus, Trash2, Settings2 } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -58,6 +59,7 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
   // Fuel theft/anomaly detection (migration 055) needs a real per-vehicle
   // capacity; optional here, null skips that check until it's set.
   const [fuelTankCapacity, setFuelTankCapacity] = useState('');
+  const [make, setMake] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
@@ -89,6 +91,7 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
         inspection_start_date: i.from || null,
         inspection_due_date: i.to,
         fuel_tank_capacity_litres: tank,
+        make: make || null,
       })));
       if (insertError) throw insertError;
       onSaved();
@@ -156,6 +159,13 @@ export default function AddAssetModal({ organizationId, onClose, onSaved }: AddA
                 <div className="input-group">
                   <span className="input-label">ASSET TYPE</span>
                   <CreatableCombobox value={assetTypeLabel} onChange={setAssetTypeLabel} options={ASSET_TYPE_OPTIONS.map(o => o.label)} placeholder="Tractor Unit, Trailer, or type your own…" />
+                </div>
+                <div className="input-group">
+                  <span className="input-label">MAKE — OPTIONAL (SHOWN IN LIVE TRACKING)</span>
+                  <select className="input-field" value={make} onChange={(e) => setMake(e.target.value)}>
+                    <option value="">Not set</option>
+                    {TRUCK_MAKES.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
                 </div>
                 <div className="input-group">
                   <span className="input-label">FUEL TANK CAPACITY (L) — OPTIONAL</span>

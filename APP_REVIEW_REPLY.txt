@@ -1,0 +1,74 @@
+=====================================================================
+1) RESOLUTION CENTER REPLY  (paste into the reply box in App Store Connect)
+=====================================================================
+
+Hello App Review team,
+
+Thank you for the feedback. We have added everything you asked for to the Notes field of the App Review Information section, and set out the answers below.
+
+1. Screen recording (physical iPhone, [iPHONE MODEL], iOS [VERSION]): [VIDEO LINK - unlisted, no login needed]
+It starts with launching the app and shows login, location permission prompts, clock in, vehicle selection, a walk-around check, accepting and completing a load with proof of delivery, shift history, a holiday request, clock out, the Request Account Deletion flow, and sign out.
+
+2. Purpose and audience: Tachyo is a free app for the employees (drivers) of haulage and logistics companies that use the Tachyo fleet platform. It replaces paper and phone calls: drivers clock in and out at their depot, complete vehicle checks, receive and complete deliveries with photo or signature proof, log fuel and parking, request holiday and see their hours. The employer sees the same data in a web dashboard.
+
+3. Access: there is no public sign-up, because employers create driver accounts. A demo account is provided in the App Review Information fields and in the Notes. It can clock in from any location.
+
+4. External services: Supabase (database, sign-in, file storage), OpenFreeMap/OpenStreetMap (map tiles), and Apple Core Location. No payments, advertising, analytics, crash reporting or AI services.
+
+5. Regions: the app works the same in every region. It is mainly used in the UK.
+
+6. Regulated industry: none. Tachyo is not a regulated service and includes no protected third-party material.
+
+Account deletion is available in the app: "Request Account Deletion" on the login screen and in Settings > Account. The employer confirms it in their dashboard and the driver's account and all attached data are then permanently deleted.
+
+The app has no user-generated public content, social features or messaging, so reporting and blocking mechanisms do not apply. There are no in-app purchases.
+
+Please let us know if you need anything else.
+
+Kind regards,
+[YOUR NAME]
+Tachyo
+
+
+=====================================================================
+2) APP REVIEW INFORMATION > NOTES  (paste into the Notes field; about 3,000 characters)
+=====================================================================
+
+DEMO ACCOUNT (sign-in required)
+Company code: oskar-ltd
+Driver ID: APPLE.REVIEW
+PIN: [DEMO PIN]
+The login screen has three fields: Company code, Driver ID and PIN. Apple's form has no field for the company code, so it is given here. The demo depot has no distance limit, so clock-in works from any location.
+
+SCREEN RECORDING
+[VIDEO LINK - unlisted, no login needed]
+Physical iPhone, [MODEL], iOS [VERSION]. Starts at app launch and shows login, location prompts, clock in, walk-around check, a delivery with proof of delivery, history, holiday request, account deletion request, clock out and sign out.
+
+PURPOSE AND AUDIENCE
+Tachyo is a free driver app for employees of haulage and logistics companies that use the Tachyo fleet platform. Drivers clock in and out inside a depot geofence, choose their tractor and trailer, complete walk-around checks, receive and complete loads from their dispatcher with timestamped GPS-tagged photos or an on-screen recipient signature, log fuel and parking, request holiday and see hours and pay. The employer's office sees the same data in a web dashboard. The app is used by many unrelated companies, not one organisation. There are no in-app purchases or paid features.
+
+HOW TO USE THE MAIN FEATURES
+1. Sign in with the demo account above. Allow location (While Using, then Always when asked).
+2. Clock in, then pick a vehicle and trailer.
+3. Complete the walk-around check (you can add a defect with a photo).
+4. Open the assigned demo load, accept it, enter the odometer, add a proof-of-delivery photo or signature, and finish it.
+5. History tab: hours and shifts. Request a holiday. Weekly Rota lets the driver submit their working days.
+6. Clock out, then sign out.
+
+EXTERNAL SERVICES
+Supabase (database, authentication, file storage, server functions); OpenFreeMap / OpenStreetMap (map tiles, no account); Apple Core Location via the Tracelet plugin (geofenced clock-in, route during an active shift, photo geotagging); on-device local notifications. No payment processors, advertising, analytics, crash reporting or AI services. No tracking.
+
+BACKGROUND LOCATION
+Used only while the driver is clocked in on an active shift, so the employer's dispatch can see position and confirm deliveries. It stops at clock-out, and the iOS location indicator shows while it runs. It is not used for advertising and is not sold.
+
+ACCOUNTS AND DELETION
+Employers create and manage driver accounts; there is no self-registration. Account deletion: "Request Account Deletion" on the login screen (signed out, using company code and Driver ID) or in Settings > Account (signed in). The request appears in the employer's dashboard; when the employer confirms it, the driver's account and all attached data (shifts, locations, checks, reports, receipts, holidays, rota and sign-in) are permanently deleted. Email: support@tachyo.co.uk.
+
+USER CONTENT
+No public or social content and no user-to-user messaging. Photos, signatures and reports are private to the driver's employer, so content reporting and blocking do not apply.
+
+REGIONS
+Identical in all regions. Currency, dates and rules follow the employer's configuration. Mainly used in the UK.
+
+REGULATED INDUSTRY
+Not a regulated service; no protected third-party material. It records driver hours, vehicle checks and delivery evidence for employers who hold goods-vehicle operator licences. Privacy notice: https://[YOUR DOMAIN]/legal. Company information: https://[YOUR DOMAIN]/pricing.

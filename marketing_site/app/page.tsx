@@ -2,7 +2,6 @@ import { ArrowRight } from "lucide-react";
 import { Container } from "@/components/Container";
 import { SectionHeader } from "@/components/SectionHeader";
 import { Button } from "@/components/Button";
-import { AdminPanelPreview } from "@/components/AdminPanelPreview";
 import { HeroGlow } from "@/components/HeroGlow";
 import { TextBlurIn } from "@/components/TextBlurIn";
 import { Reveal } from "@/components/Reveal";
@@ -10,6 +9,7 @@ import { CarrierLogos } from "@/components/CarrierLogos";
 import { ProblemFixSlideshow } from "@/components/ProblemFixSlideshow";
 import { DriverJourneyDemo } from "@/components/DriverJourneyDemo";
 import { PlatformOverview } from "@/components/PlatformOverview";
+import { TestimonialsMarquee } from "@/components/TestimonialsMarquee";
 import { REQUEST_ACCESS_PATH } from "@/lib/config";
 
 export default function HomePage() {
@@ -18,42 +18,35 @@ export default function HomePage() {
       {/* ── Hero ─────────────────────────────────────────────── */}
       <section id="platform" className="relative overflow-hidden border-b border-border bg-white">
         <HeroGlow />
-        <Container className="grid items-center gap-12 py-16 lg:grid-cols-2 lg:py-20">
-          <div className="flex flex-col gap-6">
-            <Reveal>
-              <span className="w-fit rounded-full bg-brand-red-light px-4 py-1.5 text-xs font-bold uppercase tracking-wide text-brand-red">
-                Built for UK Haulage Operators
-              </span>
-            </Reveal>
-            <h1 className="text-4xl font-black leading-[1.05] tracking-tight text-charcoal sm:text-5xl lg:text-[3.25rem]">
-              <TextBlurIn>Where is your money</TextBlurIn>{" "}
-              <TextBlurIn delay={0.35} className="text-brand-red">
-                leaking?
-              </TextBlurIn>
-            </h1>
-            <Reveal delay={0.15}>
-              <p className="max-w-xl text-lg leading-relaxed text-charcoal-mid">
-                Every unmonitored stop is a £20/hour driver sitting idle.
-                Every skipped walk-around is a fine waiting to happen, and
-                every load without proof of delivery is a dispute you can&apos;t
-                win. Tachyo catches all of it in real time, through the
-                phone already in your driver&apos;s pocket — zero hardware to
-                fit in the cab.
-              </p>
-            </Reveal>
-            <Reveal delay={0.25}>
-              <div className="flex flex-wrap gap-3">
-                <Button href={REQUEST_ACCESS_PATH} size="lg">
-                  Request Access <ArrowRight size={18} />
-                </Button>
-                <Button href="/features" variant="secondary" size="lg">
-                  Explore the Platform
-                </Button>
-              </div>
-            </Reveal>
-          </div>
-          <Reveal from="right" delay={0.2} className="flex justify-center lg:justify-end">
-            <AdminPanelPreview />
+        <Container className="flex flex-col items-center gap-7 py-20 text-center lg:py-28">
+          <Reveal>
+            <span className="w-fit rounded-full bg-brand-red-light px-4 py-1.5 text-xs font-bold uppercase tracking-wide text-brand-red">
+              Real Numbers From a Real Fleet
+            </span>
+          </Reveal>
+          <h1 className="max-w-4xl text-5xl font-black leading-[1.05] tracking-tight text-charcoal sm:text-6xl lg:text-7xl">
+            <TextBlurIn>Your trucks are moving.</TextBlurIn>{" "}
+            <TextBlurIn delay={0.35} className="text-brand-red">
+              Is your margin?
+            </TextBlurIn>
+          </h1>
+          <Reveal delay={0.15}>
+            <p className="max-w-2xl text-lg leading-relaxed text-charcoal-mid sm:text-xl">
+              Idle stops, rushed checks and missing proof of delivery all
+              cost real money — and most fleets only find out at month-end.
+              Tachyo catches every one the moment it happens, through the
+              phone your drivers already carry.
+            </p>
+          </Reveal>
+          <Reveal delay={0.25}>
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <Button href={REQUEST_ACCESS_PATH} size="lg">
+                Request Access <ArrowRight size={18} />
+              </Button>
+              <Button href="/features" variant="secondary" size="lg">
+                Explore the Platform
+              </Button>
+            </div>
           </Reveal>
         </Container>
       </section>
@@ -105,6 +98,22 @@ export default function HomePage() {
           </Reveal>
           <Reveal className="w-full">
             <DriverJourneyDemo />
+          </Reveal>
+        </Container>
+      </section>
+
+      {/* ── Testimonials ──────────────────────────────────────── */}
+      <section className="bg-white py-20 sm:py-28">
+        <Container className="flex flex-col items-center gap-12">
+          <Reveal>
+            <SectionHeader
+              kicker="What Operators Say"
+              title="Built Around How Fleets Actually Run"
+              subtitle="From the dispatch desk to the workshop floor, here is what teams say once Tachyo is live."
+            />
+          </Reveal>
+          <Reveal className="w-full">
+            <TestimonialsMarquee />
           </Reveal>
         </Container>
       </section>

@@ -242,6 +242,14 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
   const fmt = (k: string) => new Date(k + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
   const range = (h: { start_date: string; end_date: string }) => (h.end_date !== h.start_date ? `${fmt(h.start_date)} – ${fmt(h.end_date)}` : fmt(h.start_date));
   const plural = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
+
+  // Approved holidays that include today: who is away right now, and when they are back.
+  const onHolidayNow = useMemo(() => {
+    const today = dateKey(new Date());
+    return holidays
+      .filter(h => h.status === 'approved' && h.start_date <= today && h.end_date >= today)
+      .sort((a, b) => a.end_date.localeCompare(b.end_date) || (a.driver_name ?? '').localeCompare(b.driver_name ?? ''));
+  }, [holidays]);
   const addDaysKey = (k: string, n: number) => {
     const [y, m, d] = k.split('-').map(Number);
     return dateKey(new Date(y, m - 1, d + n));
@@ -372,8 +380,8 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
         <div className="glass-card" style={{ padding: '14px 16px', minWidth: 0 }}>
           <div className="flex align-center justify-between mb-12" style={{ gap: '10px', flexWrap: 'wrap' }}>
             <div className="flex align-center" style={{ gap: '8px' }}>
-              <span style={{ minWidth: '250px' }}>
-                <EarningsDateRangePicker
+              <span>
+                <EarningsDateRangePicker compact
                   startDate={win.from}
                   endDate={win.to}
                   onChange={(from, to) => { if (from) setWin({ from, to: to || from }); }}
@@ -526,7 +534,8 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
           )}
         </div>
 
-        {/* ── Holiday bookings waiting for approval (right half) ── */}
+        {/* ── Right column: bookings waiting for approval, and who is on holiday right now ── */}
+        <div className="flex flex-col" style={{ gap: '16px', minWidth: 0 }}>
         <div className="glass-card" style={{ padding: '14px 16px', minWidth: 0 }}>
           <div className="flex align-center justify-between" style={{ marginBottom: '4px' }}>
             <p className="font-black text-primary m-0" style={{ fontSize: '14px' }}>Holidays Bookings</p>
@@ -569,6 +578,32 @@ export default function EmployeeHolidays({ organizationId, onReviewRequest, onBa
               ))}
             </div>
           )}
+        </div>
+
+        {/* ── On holiday right now ── */}
+        <div className="glass-card" style={{ padding: '14px 16px', minWidth: 0 }}>
+          <div className="flex align-center justify-between" style={{ marginBottom: '4px' }}>
+            <p className="font-black text-primary m-0" style={{ fontSize: '14px' }}>On Holiday Now</p>
+            <span className="text-xs text-muted">{onHolidayNow.length} away</span>
+          </div>
+          <p className="text-xs text-muted" style={{ margin: '0 0 12px' }}>Approved holidays that include today.</p>
+          {onHolidayNow.length === 0 ? (
+            <NoData />
+          ) : (
+            <div className="flex flex-col" style={{ gap: '8px' }}>
+              {onHolidayNow.map(h => {
+                const back = new Date(`${h.end_date}T00:00:00`); back.setDate(back.getDate() + 1);
+                return (
+                  <div key={h.id} style={{ padding: '8px 10px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--card-bg)' }}>
+                    <p className="font-semibold text-primary m-0" style={{ fontSize: '12.5px' }}>{h.driver_name ?? 'Employee'}</p>
+                    <p className="font-mono text-xs m-0" style={{ fontWeight: 700, color: 'var(--charcoal)' }}>{range(h)} · {plural(dayCount(h.start_date, h.end_date))}</p>
+                    <p className="text-xs text-muted m-0 mt-4">{LEAVE_LABEL[h.leave_type] ?? 'Leave'} · back {back.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
         </div>
       </div>
       )}

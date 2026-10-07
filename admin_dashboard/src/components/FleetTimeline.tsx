@@ -108,8 +108,8 @@ export default function FleetTimeline({ groups, onOpen }: { groups: FleetTimelin
           <p className="text-xs text-muted m-0 mt-4">The exact date each inspection, MOT, road tax and insurance runs out. Click a unit to open it below.</p>
         </div>
         <div className="flex align-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
-          <span style={{ minWidth: '250px' }}>
-            <EarningsDateRangePicker startDate={win.from} endDate={win.to} onChange={(from, to) => { if (from) setWin({ from, to: to || from }); }} />
+          <span>
+            <EarningsDateRangePicker compact startDate={win.from} endDate={win.to} onChange={(from, to) => { if (from) setWin({ from, to: to || from }); }} />
           </span>
           <button type="button" className="comp-edit-btn" onClick={() => setWin(defaultWindow())}>Today</button>
         </div>

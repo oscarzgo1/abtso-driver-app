@@ -10,16 +10,32 @@
  * popular plan ringed, and a full feature-comparison matrix underneath
  * instead of bullet lists buried inside each card. Rebuilt on Tachyo's
  * own real feature set (drawn from what's already documented elsewhere
- * on this site) rather than the reference's placeholder copy, and kept
- * on "Custom quote" pricing throughout since Tachyo is sold per-fleet,
- * not a fixed self-serve number — never inventing a price that doesn't
- * exist. */
+ * on this site) rather than the reference's placeholder copy.
+ *
+ * Prices are per driver per month and come from lib/pricing.ts, the one
+ * place amounts live. A fleet-size picker applies each plan's own rules
+ * (Starter covers a few drivers free, the others charge from the first)
+ * so every card shows its real price for that fleet; billed annually shows
+ * the year's price and the plan's own annual deal. A plan with no
+ * published price there shows "Custom quote" instead, so the page can
+ * never display a number nobody agreed to. */
 
 import { useState } from "react";
 import { Check, Minus } from "lucide-react";
 import { Button } from "./Button";
-
-type Tier = "starter" | "growth" | "enterprise";
+import { REQUEST_ACCESS_PATH } from "@/lib/config";
+import {
+  DRIVERS,
+  PRICING,
+  TRIAL_DAYS,
+  annualDealLabel,
+  formatGBP,
+  hasPublishedPrices,
+  monthlyPrice,
+  rateLine,
+  yearlyPrice,
+  type Tier,
+} from "@/lib/pricing";
 
 const TIER_RANK: Record<Tier, number> = { starter: 0, growth: 1, enterprise: 2 };
 
@@ -66,9 +82,52 @@ const FEATURES: { name: string; minTier: Tier }[] = [
 export function PricingTable() {
   const [selected, setSelected] = useState<Tier>("growth");
   const [interval, setBillingInterval] = useState<"monthly" | "annual">("monthly");
+  const [drivers, setDrivers] = useState<number>(DRIVERS.initial);
+  const annual = interval === "annual";
+
+  const setDriverCount = (raw: string) => {
+    const n = parseInt(raw, 10);
+    if (Number.isNaN(n)) return;
+    setDrivers(Math.min(Math.max(n, DRIVERS.min), DRIVERS.maxTyped));
+  };
 
   return (
     <div className="flex w-full flex-col gap-10">
+      <div className="flex justify-center">
+        <span className="rounded-full bg-brand-red-light px-5 py-2 text-xs font-bold uppercase tracking-wide text-brand-red">
+          {TRIAL_DAYS} day free trial on every plan · No contract
+        </span>
+      </div>
+
+      {hasPublishedPrices && (
+        <div className="mx-auto flex w-full max-w-xl flex-col gap-3 rounded-2xl border border-border bg-bg-alt p-5">
+          <div className="flex items-center justify-between gap-4">
+            <label htmlFor="driver-count" className="text-sm font-bold text-charcoal">
+              How many drivers do you run?
+            </label>
+            <input
+              id="driver-count"
+              type="number"
+              inputMode="numeric"
+              min={DRIVERS.min}
+              max={DRIVERS.maxTyped}
+              value={drivers}
+              onChange={(e) => setDriverCount(e.target.value)}
+              className="w-24 rounded-lg border border-border bg-white px-3 py-1.5 text-right text-sm font-bold text-charcoal"
+            />
+          </div>
+          <input
+            type="range"
+            aria-label="Number of drivers"
+            min={DRIVERS.min}
+            max={DRIVERS.max}
+            value={Math.min(drivers, DRIVERS.max)}
+            onChange={(e) => setDriverCount(e.target.value)}
+            className="w-full accent-brand-red"
+          />
+        </div>
+      )}
+
       <div className="flex justify-center">
         <div className="inline-flex rounded-full border border-border bg-bg-alt p-1">
           {(["monthly", "annual"] as const).map((opt) => (
@@ -89,6 +148,11 @@ export function PricingTable() {
       <div className="grid gap-6 lg:grid-cols-3">
         {PLANS.map((plan) => {
           const isSelected = selected === plan.id;
+          const monthly = monthlyPrice(plan.id, drivers);
+          const yearly = yearlyPrice(plan.id, drivers);
+          const deal = annualDealLabel(plan.id);
+          const headline = annual ? yearly : monthly;
+          const yearlySaving = monthly !== null && yearly !== null ? Math.round((monthly * 12 - yearly) * 100) / 100 : 0;
           return (
             <button
               key={plan.id}
@@ -110,19 +174,47 @@ export function PricingTable() {
               </div>
               <p className="text-sm text-charcoal-light">{plan.forWhom}</p>
               <div className="flex flex-col gap-1">
-                <p className="text-3xl font-black text-charcoal">
-                  Custom <span className="text-base font-semibold text-charcoal-light">quote</span>
-                </p>
-                {interval === "annual" && (
-                  <span className="text-xs font-semibold text-brand-red">Ask about annual billing savings</span>
+                {headline === null ? (
+                  <>
+                    <p className="text-3xl font-black text-charcoal">
+                      Custom <span className="text-base font-semibold text-charcoal-light">quote</span>
+                    </p>
+                    {annual && (
+                      <span className="text-xs font-semibold text-brand-red">Ask about annual billing savings</span>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p className="text-3xl font-black text-charcoal">
+                      {headline === 0 ? "Free" : formatGBP(headline)}{" "}
+                      {headline !== 0 && (
+                        <span className="text-base font-semibold text-charcoal-light">
+                          / {annual ? "year" : "month"}
+                        </span>
+                      )}
+                    </p>
+                    <span className="text-xs text-charcoal-light">{rateLine(plan.id)}</span>
+                    <span className="text-xs text-charcoal-light">
+                      {drivers < PRICING[plan.id].minBilledDrivers
+                        ? `Billed at the ${PRICING[plan.id].minBilledDrivers} driver minimum`
+                        : `For ${drivers} driver${drivers === 1 ? "" : "s"}`}
+                      {annual && headline !== 0 && yearly !== null ? ` · ${formatGBP(Math.round((yearly / 12) * 100) / 100)} a month` : ""}
+                    </span>
+                    {annual && deal && headline !== 0 && (
+                      <span className="text-xs font-semibold text-brand-red">
+                        Billed annually: {deal}
+                        {yearlySaving > 0 ? ` (save ${formatGBP(yearlySaving)} a year)` : ""}
+                      </span>
+                    )}
+                  </>
                 )}
               </div>
               <Button
-                href="/contact"
+                href={REQUEST_ACCESS_PATH}
                 variant={isSelected ? "primary" : "secondary"}
                 className="mt-auto w-full justify-center"
               >
-                Request a Quote
+                {headline === null ? "Request a Quote" : "Start Free Trial"}
               </Button>
             </button>
           );

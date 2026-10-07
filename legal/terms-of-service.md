@@ -58,7 +58,7 @@ The Customer must not, and must not permit any user of its account to:
 
 ## 5. Fees and the free trial period
 
-5.1. Tachyo is currently made available to new Customers on a free trial basis for a period communicated at sign-up (currently 180 days from registration), after which access is suspended unless the Customer converts to a paid plan.
+5.1. Tachyo is currently made available to new Customers on a free trial basis for a period communicated at sign-up (currently 120 days from registration), after which access is suspended unless the Customer converts to a paid plan.
 
 5.2. Where the Customer's trial ends without conversion, Tachyo will retain the Customer's data in a suspended state for a further period (currently 30 days) before it is permanently deleted, as described in Section 9 (Suspension and termination).
 

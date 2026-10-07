@@ -422,7 +422,7 @@ export default function CarrierSettlementImportModal({ organizationId, onClose, 
         <div className="flex items-center justify-between mb-16">
           <h3 className="text-lg font-black text-primary m-0 flex items-center" style={{ gap: '8px' }}>
             <FileSpreadsheet size={20} color="#CC0000" />
-            Import Carrier Load Files
+            Import Carrier
           </h3>
           <button type="button" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)' }}>
             <X size={18} />

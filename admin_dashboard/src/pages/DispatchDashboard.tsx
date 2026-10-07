@@ -142,19 +142,19 @@ function duration(fromIso: string, toIso?: string | null): string {
 
 // ── small presentational pieces ───────────────────────────────
 
-function Panel({ icon, title, subtitle, action, className, bodyClassName, children }: {
-  icon: ReactNode; title: string; subtitle?: string; action?: ReactNode; className?: string; bodyClassName?: string; children: ReactNode;
+function Panel({ icon, title, subtitle, action, className, bodyClassName, headless, children }: {
+  icon: ReactNode; title: string; subtitle?: string; action?: ReactNode; className?: string; bodyClassName?: string; /** no heading row: the content starts at the top */ headless?: boolean; children: ReactNode;
 }) {
   return (
     <section className={`dash-panel ${className ?? ''}`}>
-      <div className="dash-panel-header">
+      {!headless && <div className="dash-panel-header">
         <span className="telemetry-header-icon">{icon}</span>
         <div className="dash-panel-heading">
           <h3 className="telemetry-title">{title}</h3>
           {subtitle && <p className="dash-panel-subtitle">{subtitle}</p>}
         </div>
         {action}
-      </div>
+      </div>}
       <div className={bodyClassName ?? 'dash-panel-body'}>{children}</div>
     </section>
   );
@@ -468,7 +468,7 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
               switch to the daily/weekly bar chart. Absorbs the old
               "Vehicles On The Road" panel so both fit into one cell
               (item 2). */}
-          <div className="lg:col-span-2 flex flex-col" style={{ gap: '16px' }}>
+          <div className="lg:col-span-2 xl:col-span-3 flex flex-col" style={{ gap: '16px', minWidth: 0 }}>
           <Panel
             icon={<Activity size={14} />}
             title="Shipment Activities"
@@ -540,11 +540,8 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
             className="flex-1"
             icon={<Activity size={14} />}
             title="Shipments Activity"
-            subtitle="Click a row to follow it in Tracking"
             bodyClassName=""
-            action={showFinancials ? (
-              <button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '10px' }} onClick={() => onNavigate('shipments')}>Open Shipments</button>
-            ) : undefined}
+            headless
           >
             <div className="telemetry-tabs">
               {tabOptions.map(o => (
@@ -630,6 +627,8 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
 
           </Panel>
           </div>
+          {/* Revenue (or Loads Attached) and Tracking share one column beside the table. */}
+          <div className="lg:col-span-2 xl:col-span-1 grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-1" style={{ gap: '16px', alignContent: 'start', minWidth: 0 }}>
           <div className="flex flex-col" style={{ gap: '16px' }}>
             {showFinancials ? (
               <Panel
@@ -663,42 +662,6 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
                 </SemiGauge>
               </Panel>
             )}
-          <Panel
-            className="flex-1"
-            icon={<Clock size={14} />}
-            title="Idle Employees"
-            subtitle={idleDetectionEnabled
-              ? `Anyone on shift not moving for over ${idleThresholdMinutes} mins`
-              : "Idle detection is turned off"}
-            action={idleDetectionEnabled
-              ? <button type="button" className="btn btn-secondary" style={{ padding: '5px 10px', fontSize: '10px' }} onClick={() => onNavigate('alerts')}>Alert Panel</button>
-              : undefined}
-          >
-            {!idleDetectionEnabled ? (
-              <div className="dash-numeric" style={{ cursor: 'default' }}>
-                <span className="dash-numeric-label">Idle detection</span>
-                <span className="dash-numeric-value">Off</span>
-                <span className="dash-numeric-hint">Turn it on again from Settings → Alerts.</span>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => idleDrivers.length > 0 ? onNavigate('alerts') : undefined}
-                className="dash-numeric"
-                style={{ cursor: idleDrivers.length > 0 ? 'pointer' : 'default' }}
-              >
-                <span className="dash-numeric-label">Idle right now</span>
-                <span className="dash-numeric-value" style={{ color: idleDrivers.length > 0 ? BRAND_RED : undefined }}>{idleDrivers.length}</span>
-                <span className="dash-numeric-hint">
-                  {idleDrivers.length === 0
-                    ? 'Everyone on shift is moving or has reported recently.'
-                    : idleDrivers.length === 1
-                      ? `${idleDrivers[0].name} · idle ${duration(idleDrivers[0].since)}`
-                      : `Longest: ${idleDrivers[0].name} — ${duration(idleDrivers[0].since)}`}
-                </span>
-              </button>
-            )}
-          </Panel>
           </div>
           <Panel
             className="flex-1"
@@ -765,6 +728,7 @@ export default function DispatchDashboard({ liveLocations, employees, shifts, al
               <NoData className="py-10" />
             )}
           </Panel>
+          </div>
         </div>
       </div>
     </div>

@@ -1,22 +1,12 @@
 // ============================================================
-// Map pins — one look for every live map: a teardrop pin holding a 3D-style
-// character avatar for a driver (colours, hair and shirt are picked from the
-// driver's name so the same person always looks the same), and a matching pin
-// with a 3D trailer for a coupled trailer. Returned as HTML for L.divIcon;
-// styles live in index.css (.mp-*).
+// Map pins: small rounded pins in one style for drivers and trailers (soft
+// tinted circle, white ring, short tail, glyph in the state's colour).
+// Returned as HTML for L.divIcon; styles live in index.css (.mp-*).
+// avatarSvg / trailerSvg are the round pictures used in lists.
 // ============================================================
-
-// One simple avatar for every employee and one simple trailer icon for every
-// trailer: neutral, flat and on-brand, so the map reads at a glance and nobody
-// is represented by a cartoon.
-const DRIVER_RIM = '#CC0000';
-const TRAILER_RIM = '#333333';
 
 export const escapeHtml = (v: string) =>
   v.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
-
-/** The rim colour of an employee's pin (the same for everyone). */
-export const accentFor = (_name?: string) => DRIVER_RIM;
 
 /** A simple person (head and shoulders), the same for every employee. */
 export function avatarSvg(_name?: string, size = 34): string {
@@ -38,29 +28,31 @@ export function trailerSvg(size = 26): string {
 </svg>`;
 }
 
-export type PinState = 'live' | 'idle' | 'nosignal' | 'still';
+export type PinState = 'live' | 'stationary' | 'idle' | 'nosignal' | 'still';
 
-/** Teardrop pin with the driver's avatar; `label` (e.g. the tractor reg) sits beside it. */
+/** Small solid glyphs for the map pins (they take the pin's colour). */
+const PERSON_GLYPH = '<circle cx="12" cy="8" r="3.6"/><path d="M5 20c0-4.1 3.2-6.4 7-6.4s7 2.3 7 6.4z"/>';
+const TRAILER_GLYPH = '<rect x="2.5" y="6" width="17" height="9" rx="1.6"/><rect x="19.5" y="11" width="2.5" height="2"/><circle cx="7" cy="17.4" r="1.9"/><circle cx="14" cy="17.4" r="1.9"/>';
+const glyph = (body: string, size: number) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="currentColor" aria-hidden="true">${body}</svg>`;
+
+/**
+ * Small rounded pin: a soft tinted circle with a white ring, a short tail and
+ * a glyph in the state's colour (green moving, orange stationary, red idle, amber
+ * no GPS, grey parked or ended). `label` (e.g. the tractor reg) sits above it.
+ */
 export function driverPinHtml(opts: { name: string; state?: PinState; label?: string | null }): string {
   const state = opts.state ?? 'live';
-  const accent = accentFor(opts.name || '?');
   const label = opts.label ? `<span class="mp-label">${opts.label}</span>` : '';
-  return `<div class="mp-pin mp-driver mp-${state}" style="--mp-accent:${accent}">
-<span class="mp-shadow"></span>
-<span class="mp-bubble">${avatarSvg(opts.name || '?', 32)}<i class="mp-status"></i></span>
-<span class="mp-tail"></span>${label}</div>`;
+  return `<div class="mp-pin mp-driver mp-${state}"><span class="mp-tail"></span><span class="mp-bubble">${glyph(PERSON_GLYPH, 19)}</span>${label}</div>`;
 }
 
-/** Teardrop pin with a 3D trailer. */
+/** The same pin for a trailer. */
 export function trailerPinHtml(reg: string): string {
-  return `<div class="mp-pin mp-trailer" style="--mp-accent:${TRAILER_RIM}">
-<span class="mp-shadow"></span>
-<span class="mp-bubble">${trailerSvg(24)}</span>
-<span class="mp-tail"></span><span class="mp-label">${escapeHtml(reg)}</span></div>`;
+  return `<div class="mp-pin mp-trailer"><span class="mp-tail"></span><span class="mp-bubble">${glyph(TRAILER_GLYPH, 19)}</span><span class="mp-label">${escapeHtml(reg)}</span></div>`;
 }
 
-/** divIcon options shared by both pins (the tip of the drop is the position). */
-export const DRIVER_PIN_SIZE: [number, number] = [44, 50];
-export const DRIVER_PIN_ANCHOR: [number, number] = [22, 48];
-export const TRAILER_PIN_SIZE: [number, number] = [36, 42];
-export const TRAILER_PIN_ANCHOR: [number, number] = [18, 40];
+/** divIcon options shared by both pins (the tip of the tail is the position). */
+export const DRIVER_PIN_SIZE: [number, number] = [34, 44];
+export const DRIVER_PIN_ANCHOR: [number, number] = [17, 42];
+export const TRAILER_PIN_SIZE: [number, number] = [34, 44];
+export const TRAILER_PIN_ANCHOR: [number, number] = [17, 42];

@@ -38,6 +38,7 @@ export const DEFAULT_JOURNEY_OPTIONS: JourneyOptions = { stoppedMinutes: 15, max
 
 const MOVING_SPEED_MS = 1.0; // about 2 mph
 const MOVING_DISTANCE_M = 120; // more than GPS drift between two pings
+const MIN_MOVE_M = 40; // a speed reading only counts as moving when the position really changed this much
 
 export function haversineM(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const R = 6371000;
@@ -67,7 +68,8 @@ export function buildJourney(pings: Ping[], endAt: number, opts: JourneyOptions 
       intervals.push({ label: 'no_signal', a, b, dist });
       continue;
     }
-    const moving = (b.speed ?? 0) >= MOVING_SPEED_MS || dist >= MOVING_DISTANCE_M;
+    // A speed reading with almost no distance behind it is GPS jitter, not driving.
+    const moving = dist >= MOVING_DISTANCE_M || ((b.speed ?? 0) >= MOVING_SPEED_MS && dist >= MIN_MOVE_M);
     intervals.push({ label: moving ? 'moving' : 'still', a, b, dist });
   }
   // The tail between the last ping and the end of the shift.
@@ -135,7 +137,69 @@ export function buildJourney(pings: Ping[], endAt: number, opts: JourneyOptions 
       out.push({ ...seg });
     }
   }
-  return out;
+  return simplify(out, stoppedMs);
+}
+
+// ── Tidy-up ───────────────────────────────────────────────────────────────
+// Raw pings give a lot of tiny fragments: a pause of under a minute, a "move"
+// of 0.0 km between two parks at the same yard. Those are noise, so they are
+// folded into their neighbours: what is left is a short list that reads as a
+// journey (drove, parked, drove, parked), not a log of every ping.
+const BLIP_MAX_MS = 4 * 60000; // a "move" this short ...
+const BLIP_MAX_M = 300; // ... covering this little ground ...
+const SAME_PLACE_M = 250; // ... between two stops this close is not a journey
+const TINY_STOP_MS = 2 * 60000; // a pause shorter than this next to driving is just driving
+
+function joinSegments(a: Segment, b: Segment, label: JourneyLabel): Segment {
+  return {
+    label, start: a.start, end: b.end, durationMs: b.end - a.start, distanceM: a.distanceM + b.distanceM,
+    from: a.from, to: b.to, path: [...a.path, ...b.path],
+  };
+}
+
+function simplify(input: Segment[], stoppedMs: number): Segment[] {
+  const still = (l: JourneyLabel) => l === 'stationary' || l === 'stopped';
+  const stillLabel = (s: Segment): JourneyLabel => (s.durationMs >= stoppedMs ? 'stopped' : 'stationary');
+  const segs = input.map(s => ({ ...s }));
+  for (let guard = 0; guard < 200; guard++) {
+    let changed = false;
+    // 1. a short move that goes nowhere, between two stops at the same place: one stop
+    for (let i = 1; i < segs.length - 1 && !changed; i++) {
+      const p = segs[i - 1]; const m = segs[i]; const n = segs[i + 1];
+      if (m.label === 'moving' && still(p.label) && still(n.label) && m.durationMs <= BLIP_MAX_MS && m.distanceM <= BLIP_MAX_M && haversineM(p.to, n.from) <= SAME_PLACE_M) {
+        const merged = joinSegments(joinSegments(p, m, 'stationary'), n, 'stationary');
+        merged.label = stillLabel(merged);
+        segs.splice(i - 1, 3, merged);
+        changed = true;
+      }
+    }
+    if (changed) continue;
+    // 2. two stops (or two drives) side by side are one
+    for (let i = 0; i < segs.length - 1 && !changed; i++) {
+      const a = segs[i]; const b = segs[i + 1];
+      if (still(a.label) && still(b.label)) {
+        const merged = joinSegments(a, b, 'stationary');
+        merged.label = stillLabel(merged);
+        segs.splice(i, 2, merged);
+        changed = true;
+      } else if (a.label === 'moving' && b.label === 'moving') {
+        segs.splice(i, 2, joinSegments(a, b, 'moving'));
+        changed = true;
+      }
+    }
+    if (changed) continue;
+    // 3. a tiny pause next to driving is part of the drive
+    for (let i = 0; i < segs.length && !changed; i++) {
+      const s = segs[i];
+      if (s.label === 'stationary' && s.durationMs < TINY_STOP_MS) {
+        const p = segs[i - 1]; const n = segs[i + 1];
+        if (p?.label === 'moving') { segs.splice(i - 1, 2, joinSegments(p, s, 'moving')); changed = true; }
+        else if (n?.label === 'moving') { segs.splice(i, 2, joinSegments(s, n, 'moving')); changed = true; }
+      }
+    }
+    if (!changed) break;
+  }
+  return segs;
 }
 
 export interface JourneySummary {
@@ -168,7 +232,7 @@ export function formatDuration(ms: number): string {
 
 export const LABEL_META: Record<JourneyLabel, { text: string; color: string }> = {
   moving: { text: 'Moving', color: '#16A34A' },
-  stationary: { text: 'Stationary', color: '#D97706' },
+  stationary: { text: 'Stationary', color: '#EA580C' },
   stopped: { text: 'Stopped', color: '#DC2626' },
-  no_signal: { text: 'No signal', color: '#888888' },
+  no_signal: { text: 'No signal', color: '#D99100' },
 };

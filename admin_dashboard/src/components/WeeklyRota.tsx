@@ -138,6 +138,23 @@ export default function WeeklyRota({ organizationId, drivers }: { organizationId
   };
 
   const todayKey = dateKey(new Date());
+
+  // The confirmed rotas on the calendar: for each employee, the days and hours they are
+  // rostered to work, one card per week. This is the availability the system will use to
+  // decide which driver a load can go to.
+  const confirmedWeeks = useMemo(() => {
+    const m = new Map<string, { key: string; driverId: string; weekStart: string; rows: RotaRow[] }>();
+    rows.filter(r => r.status === 'confirmed' && !r.day_off && r.start_time && r.end_time).forEach(r => {
+      const ws = sundayKey(r.work_date);
+      const key = `${r.driver_id}|${ws}`;
+      if (!m.has(key)) m.set(key, { key, driverId: r.driver_id, weekStart: ws, rows: [] });
+      m.get(key)!.rows.push(r);
+    });
+    return [...m.values()]
+      .map(w => ({ ...w, rows: w.rows.sort((a, b) => a.work_date.localeCompare(b.work_date)) }))
+      .filter(w => !search.trim() || (nameOf.get(w.driverId)?.full_name ?? '').toLowerCase().includes(search.trim().toLowerCase()))
+      .sort((a, b) => a.weekStart.localeCompare(b.weekStart) || (nameOf.get(a.driverId)?.full_name ?? '').localeCompare(nameOf.get(b.driverId)?.full_name ?? ''));
+  }, [rows, nameOf, search]);
   const trackW = days.length * COL_W;
   const cellText = (r: RotaRow) => (r.day_off ? 'Off' : `${hhmm(r.start_time)}–${hhmm(r.end_time)}`);
 
@@ -147,8 +164,8 @@ export default function WeeklyRota({ organizationId, drivers }: { organizationId
       <div className="glass-card" style={{ padding: '14px 16px', minWidth: 0 }}>
         <div className="flex align-center justify-between mb-12" style={{ gap: '10px', flexWrap: 'wrap' }}>
           <div className="flex align-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ minWidth: '250px' }}>
-              <EarningsDateRangePicker
+            <span>
+              <EarningsDateRangePicker compact
                 startDate={range.from}
                 endDate={range.to}
                 onChange={(from, to) => { if (from) setRange({ from, to: to || from }); }}
@@ -260,7 +277,8 @@ export default function WeeklyRota({ organizationId, drivers }: { organizationId
         )}
       </div>
 
-      {/* ── Rotas sent by employees (1/4) ── */}
+      {/* ── Right column: rotas requested, and the rotas live right now ── */}
+      <div className="flex flex-col" style={{ gap: '16px', minWidth: 0 }}>
       <div className="glass-card" style={{ padding: '14px 16px', minWidth: 0 }}>
         <div className="flex align-center justify-between" style={{ marginBottom: '4px' }}>
           <p className="font-black text-primary m-0" style={{ fontSize: '14px' }}>Rotas Requested</p>
@@ -316,6 +334,36 @@ export default function WeeklyRota({ organizationId, drivers }: { organizationId
             })}
           </div>
         )}
+      </div>
+
+      {/* ── Live rotas: the confirmed rotas on the calendar ── */}
+      <div className="glass-card" style={{ padding: '14px 16px', minWidth: 0 }}>
+        <div className="flex align-center justify-between" style={{ marginBottom: '4px' }}>
+          <p className="font-black text-primary m-0" style={{ fontSize: '14px' }}>Live Rotas</p>
+          <span className="text-xs text-muted">{confirmedWeeks.length} confirmed</span>
+        </div>
+        <p className="text-xs text-muted" style={{ margin: '0 0 12px' }}>The confirmed rotas shown on the calendar: when each employee is available to work.</p>
+        {confirmedWeeks.length === 0 ? (
+          <NoData />
+        ) : (
+          <div className="flex flex-col" style={{ gap: '10px', maxHeight: '520px', overflowY: 'auto', paddingRight: '2px' }}>
+            {confirmedWeeks.map(w => (
+              <div key={w.key} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid var(--border-color)', background: 'var(--card-bg)' }}>
+                <p className="font-semibold text-primary m-0" style={{ fontSize: '12.5px' }}>{nameOf.get(w.driverId)?.full_name ?? 'Employee'}</p>
+                <p className="font-mono text-xs m-0" style={{ color: 'var(--charcoal)', fontWeight: 700 }}>Week of {shortDay(w.weekStart)}</p>
+                <div style={{ marginTop: '6px', display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: '10px', rowGap: '2px' }}>
+                  {w.rows.map(r => (
+                    <div key={r.work_date} style={{ display: 'contents' }}>
+                      <span className="text-xs" style={{ color: r.work_date === todayKey ? 'var(--brand-red)' : 'var(--charcoal-light)', fontWeight: r.work_date === todayKey ? 800 : 400 }}>{parseKey(r.work_date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })}</span>
+                      <span className="font-mono text-xs" style={{ fontWeight: 700, color: 'var(--charcoal)' }}>{cellText(r)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
       </div>
     </div>
   );

@@ -14,6 +14,8 @@ export interface PoolLoadRow {
   booking_cutoff_at: string | null; // ISO
   trailer_number: string | null;
   carrier_name: string | null;
+  /** the load's price, when the file has a price / rate column (GBP) */
+  price: number | null;
   status: 'waiting' | 'completed';
 }
 
@@ -21,6 +23,8 @@ export interface ParsedLoadFile {
   rows: PoolLoadRow[];
   skipped: number;
   missingColumns: string[];
+  /** the file's price column, if one was found */
+  priceColumn: string | null;
 }
 
 const ALIASES = {
@@ -30,6 +34,7 @@ const ALIASES = {
   cutoff: ['booking cutoff', 'booking cutoff time', 'cutoff', 'cut off', 'cutoff time', 'scheduled arrival', 'delivery by', 'due', 'due date'],
   trailer: ['trailer', 'trailer number', 'trailer id', 'trailer no', 'trailer #'],
   carrier: ['carrier', 'customer', 'customer / carrier', 'carrier name', 'shipper'],
+  price: ['price', 'load price', 'rate', 'load rate', 'trip rate', 'trip price', 'revenue', 'payout', 'total payout', 'amount', 'total amount', 'total price', 'total rate', 'gross', 'gross pay', 'charge', 'fee', 'freight', 'freight rate', 'cost', 'value', 'price gbp', 'price £', 'rate gbp', 'rate £', 'amount gbp', 'amount £'],
   status: ['status', 'load status', 'trip status', 'delivery status', 'state'],
 } as const;
 
@@ -66,6 +71,20 @@ function toIso(raw: unknown): string | null {
   return Number.isNaN(native.getTime()) ? null : native.toISOString();
 }
 
+/** "£1,250.50", "1 250,50", 250 → 1250.5 / 250. Anything that is not a plain amount is no price. */
+function toPrice(raw: unknown): number | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) && raw > 0 ? Math.round(raw * 100) / 100 : null;
+  let s = String(raw ?? '').trim();
+  if (!s) return null;
+  s = s.replace(/[£$€]|gbp|eur|usd/gi, '').replace(/\s/g, '');
+  if (/^\d{1,3}(\.\d{3})+,\d{1,2}$/.test(s)) s = s.replace(/\./g, '').replace(',', '.');
+  else if (/^\d+,\d{1,2}$/.test(s)) s = s.replace(',', '.');
+  else s = s.replace(/,/g, '');
+  if (!/^\d+(\.\d+)?$/.test(s)) return null;
+  const n = Number(s);
+  return n > 0 ? Math.round(n * 100) / 100 : null;
+}
+
 const text = (v: unknown): string | null => {
   const s = String(v ?? '').trim();
   return s ? s : null;
@@ -79,7 +98,7 @@ export async function parseLoadFile(file: File): Promise<ParsedLoadFile> {
   } else {
     raw = Papa.parse<Record<string, unknown>>(await file.text(), { header: true, skipEmptyLines: true }).data;
   }
-  if (raw.length === 0) return { rows: [], skipped: 0, missingColumns: [] };
+  if (raw.length === 0) return { rows: [], skipped: 0, missingColumns: [], priceColumn: null };
 
   const headers = Object.keys(raw[0]);
   const key = {
@@ -89,12 +108,13 @@ export async function parseLoadFile(file: File): Promise<ParsedLoadFile> {
     cutoff: findKey(headers, ALIASES.cutoff),
     trailer: findKey(headers, ALIASES.trailer),
     carrier: findKey(headers, ALIASES.carrier),
+    price: findKey(headers, ALIASES.price),
     status: findKey(headers, ALIASES.status),
   };
   const missingColumns: string[] = [];
   if (!key.vrid) missingColumns.push('VRID / load reference');
   if (!key.status) missingColumns.push('Status');
-  if (!key.vrid) return { rows: [], skipped: raw.length, missingColumns };
+  if (!key.vrid) return { rows: [], skipped: raw.length, missingColumns, priceColumn: null };
 
   const rows: PoolLoadRow[] = [];
   let skipped = 0;
@@ -109,8 +129,9 @@ export async function parseLoadFile(file: File): Promise<ParsedLoadFile> {
       booking_cutoff_at: key.cutoff ? toIso(r[key.cutoff]) : null,
       trailer_number: key.trailer ? text(r[key.trailer]) : null,
       carrier_name: key.carrier ? text(r[key.carrier]) : null,
+      price: key.price ? toPrice(r[key.price]) : null,
       status: COMPLETED_WORDS.some(w => statusText === w || statusText.startsWith(w)) ? 'completed' : 'waiting',
     });
   }
-  return { rows, skipped, missingColumns };
+  return { rows, skipped, missingColumns, priceColumn: key.price };
 }

@@ -34,22 +34,21 @@ export function drawJourney(
     const dim = selected !== null && selected !== i;
 
     if (seg.label === 'moving' || seg.label === 'no_signal') {
+      // The route is one dotted line: round dots in the colour of what the driver was doing.
+      // (A gap with no signal is drawn with wider spacing: it is a guess, not a recorded road.)
       L.polyline(pts, {
         renderer,
         color: meta.color,
-        weight: 2,
-        opacity: dim ? 0.2 : 0.55,
-        dashArray: seg.label === 'no_signal' ? '2 10' : '1 7',
+        weight: seg.label === 'moving' ? 5 : 4,
+        opacity: dim ? 0.25 : 0.95,
+        dashArray: seg.label === 'no_signal' ? '0.1 14' : '0.1 9',
         lineCap: 'round',
         interactive: false,
       }).addTo(layer);
-      // One dot per recorded position (not for a no-signal gap: nothing was recorded inside it).
-      const dots = seg.label === 'moving' ? pts : [pts[0], pts[pts.length - 1]];
-      dots.forEach(p => {
-        L.circleMarker(p, { renderer, radius: 3.5, color: '#fff', weight: 1.5, fillColor: meta.color, fillOpacity: dim ? 0.3 : 1 })
-          .addTo(layer)
-          .on('click', () => onSelect?.(i));
-      });
+      // A wide, invisible line on top so the route can still be clicked to select that stretch.
+      L.polyline(pts, { renderer, color: meta.color, weight: 14, opacity: 0, lineCap: 'round' })
+        .addTo(layer)
+        .on('click', () => onSelect?.(i));
       return;
     }
 
@@ -72,6 +71,14 @@ export function drawJourney(
       renderer, radius: big ? 3.5 : 2.5, color: '#fff', weight: 0, fillColor: '#fff', fillOpacity: dim ? 0.5 : 1, interactive: false,
     }).addTo(layer);
   });
+
+  // Where the journey starts.
+  const first = segments[0]?.path[0];
+  if (first) {
+    L.circleMarker([first.lat, first.lng], { renderer, radius: 6, color: '#fff', weight: 2.5, fillColor: '#111', fillOpacity: 1 })
+      .addTo(layer)
+      .bindTooltip('Start');
+  }
 
   return bounds;
 }

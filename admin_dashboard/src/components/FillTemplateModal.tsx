@@ -1,3 +1,4 @@
+import { formulaDisplay } from '../lib/formula-eval';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { UploadCloud, FileSpreadsheet, AlertTriangle, CheckCircle2, Download, X, ChevronDown, Eye, ChevronLeft } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
@@ -405,10 +406,8 @@ export default function FillTemplateModal({
         const nCols = Math.min(Math.max(ws.columnCount, ws.actualColumnCount, 1), 30);
         const text = (r: number, c: number) => {
           const cell = ws.getRow(r).getCell(c);
-          if (isFormulaCell(cell)) {
-            const v = cell.value as { formula?: string; sharedFormula?: string };
-            return `=${v.formula ?? v.sharedFormula ?? ''}`;
-          }
+          // Formula cells show their worked-out number, never the formula text.
+          if (isFormulaCell(cell)) return formulaDisplay(ws, cell, cellText(cell));
           return cellText(cell);
         };
         const header = Array.from({ length: nCols }, (_, i) => text(sheet.headerRow, i + 1));
@@ -418,7 +417,10 @@ export default function FillTemplateModal({
           if (cells.every(c => c === '')) continue;
           rows.push({ row: r, cells, filled: cells.map((_, i) => written.has(r) && mapped.has(i + 1)) });
         }
-        return { name: plan.sheetName, header, rows };
+        // Only columns that hold something: a column with no heading and no data is dropped.
+        const keep = header.map((h, i) => h !== '' || rows.some(r => r.cells[i] !== ''));
+        const pick = <T,>(arr: T[]) => arr.filter((_, i) => keep[i]);
+        return { name: plan.sheetName, header: pick(header), rows: rows.map(r => ({ row: r.row, cells: pick(r.cells), filled: pick(r.filled) })) };
       });
       setPreview({ blob, outName, sheets });
     } catch (e) {
@@ -669,7 +671,7 @@ export default function FillTemplateModal({
                 {sh.rows.map(r => (
                   <tr key={r.row}>
                     <td className="ft-rownum">{r.row}</td>
-                    {r.cells.map((c, i) => <td key={i} className={`${r.filled[i] ? 'ft-filled' : ''} ${c.startsWith('=') ? 'ft-formula' : ''}`}>{c}</td>)}
+                    {r.cells.map((c, i) => <td key={i} className={r.filled[i] ? 'ft-filled' : ''} style={{ whiteSpace: 'nowrap' }}>{c}</td>)}
                   </tr>
                 ))}
               </tbody>

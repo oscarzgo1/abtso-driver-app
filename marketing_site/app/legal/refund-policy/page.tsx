@@ -21,7 +21,7 @@ export default function RefundPolicyPage() {
     <LegalPortalShell
       activeSlug="refund-policy"
       title="Refund & Data Purge Policy"
-      updated="16 September 2026"
+      updated="6 October 2026"
       sections={sections}
       intro={
         <p>
@@ -39,8 +39,8 @@ export default function RefundPolicyPage() {
     >
       <LegalClause id="trial-vs-refund" heading="1. This is separate from the free trial">
         <p>
-          <strong>1.1</strong> New Customers get a free trial (currently 180 days from
-          registration, see Terms of Service Clause 7.1) before any payment is taken. Nothing in
+          <strong>1.1</strong> New Customers get a free trial (currently 120 days from
+          registration, see Terms of Service Clause 7.4) before any payment is taken. Nothing in
           this policy shortens that trial. This policy applies only once a Customer has actually
           converted to, and paid for, a paid plan.
         </p>

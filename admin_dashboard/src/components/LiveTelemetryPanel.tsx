@@ -56,9 +56,9 @@ interface Row {
 
 const STATUS_META: Record<TelemetryStatus, { label: string; color: string; soft: string; pulse: boolean }> = {
   moving: { label: 'Moving', color: '#16A34A', soft: 'rgba(22,163,74,0.12)', pulse: true },
-  stationary: { label: 'Stationary', color: '#D97706', soft: 'rgba(217,119,6,0.12)', pulse: false },
+  stationary: { label: 'Stationary', color: '#EA580C', soft: 'rgba(234,88,12,0.12)', pulse: false },
   idle: { label: 'Idle', color: '#DC2626', soft: 'rgba(220,38,38,0.12)', pulse: true },
-  no_signal: { label: 'No GPS signal', color: '#7C2D12', soft: 'rgba(124,45,18,0.14)', pulse: true },
+  no_signal: { label: 'No GPS signal', color: '#D99100', soft: 'rgba(217,145,0,0.14)', pulse: true },
   offline: { label: 'Off shift', color: '#888888', soft: 'rgba(136,136,136,0.14)', pulse: false },
 };
 

@@ -5,10 +5,13 @@ import { SectionHeader } from "@/components/SectionHeader";
 import { Button } from "@/components/Button";
 import { Reveal } from "@/components/Reveal";
 import { PricingTable } from "@/components/PricingTable";
+import { TRIAL_DAYS, hasPublishedPrices } from "@/lib/pricing";
 
 export const metadata: Metadata = {
   title: "Pricing",
-  description: "Tachyo pricing, built around your fleet size. Talk to us for a plan and quote.",
+  description: hasPublishedPrices
+    ? `Tachyo pricing per driver, per month, with a ${TRIAL_DAYS} day free trial and no contract. Pick a plan and your fleet size to see exactly what you'd pay.`
+    : "Tachyo pricing, built around your fleet size. Talk to us for a plan and quote.",
 };
 
 export default function PricingPage() {
@@ -19,7 +22,11 @@ export default function PricingPage() {
           <SectionHeader
             kicker="Pricing"
             title="Simple Plans, Built Around Your Fleet"
-            subtitle="Every haulage operation is different — pricing is quoted against your fleet size and the modules you need, not a one-size-fits-all number. Talk to us and we'll put a plan together."
+            subtitle={
+              hasPublishedPrices
+                ? `Priced per driver, per month, with a ${TRIAL_DAYS} day free trial and no contract. Choose your fleet size and see exactly what each plan costs. Running multiple depots or need something bespoke? Talk to us.`
+                : "Every haulage operation is different — pricing is quoted against your fleet size and the modules you need, not a one-size-fits-all number. Talk to us and we'll put a plan together."
+            }
           />
         </Container>
       </section>

@@ -13,7 +13,7 @@ const sections: LegalPortalSection[] = [
   { id: "o-licence", label: "4. Operator Licence compliance" },
   { id: "financial-analytics", label: "5. Financial analytics & OCR" },
   { id: "liability", label: "6. Limitation of liability" },
-  { id: "guarantee-purge", label: "7. Guarantee, cancellation & purge" },
+  { id: "guarantee-purge", label: "7. Guarantee, trial, cancellation & purge" },
   { id: "governing-law", label: "8. Governing law & jurisdiction" },
 ];
 
@@ -22,7 +22,7 @@ export default function TermsPage() {
     <LegalPortalShell
       activeSlug="terms"
       title="B2B Master SaaS Agreement & Terms of Service"
-      updated="16 September 2026"
+      updated="6 October 2026"
       sections={sections}
     >
       <LegalClause id="definitions" heading="1. Definitions & commercial B2B status">
@@ -149,7 +149,7 @@ export default function TermsPage() {
         </ul>
       </LegalClause>
 
-      <LegalClause id="guarantee-purge" heading="7. 14-day commercial guarantee, cancellation & cryptographic data purge">
+      <LegalClause id="guarantee-purge" heading="7. 14-day commercial guarantee, cancellation, free trial & cryptographic data purge">
         <p><strong>7.1 14-Day Money-Back Commercial Guarantee:</strong></p>
         <ul className="list-disc space-y-1.5 pl-5">
           <li>(a) New enterprise subscribers may terminate their subscription within fourteen (14) calendar days of the initial subscription payment date.</li>
@@ -164,6 +164,12 @@ export default function TermsPage() {
         <ul className="list-disc space-y-1.5 pl-5">
           <li>(a) Exactly at 23:59 BST on the fourteenth (14th) calendar day following termination, the system automatically executes a script executing a permanent hard delete across all Customer databases, database backups, uploaded walkaround defect photos, and fuel receipt dockets stored within AWS London (eu-west-2).</li>
           <li>(b) Following this automated event, data recovery is mathematically impossible. Tachyo LTD disclaims all responsibility for Customer records lost due to failure to export compliance logs within the 14-day window prior to statutory DVSA audits.</li>
+        </ul>
+        <p><strong>7.4 Free Trial Period:</strong></p>
+        <ul className="list-disc space-y-1.5 pl-5">
+          <li>(a) New Customers are made available the Service on a free trial for a period of one hundred and twenty (120) calendar days from registration, with no minimum contract term.</li>
+          <li>(b) When the trial ends, access is suspended unless the Customer has converted to a paid plan.</li>
+          <li>(c) Where the trial ends without conversion, Tachyo LTD retains the Customer&apos;s data in a suspended state for a further thirty (30) calendar days, after which it is permanently deleted.</li>
         </ul>
       </LegalClause>
 

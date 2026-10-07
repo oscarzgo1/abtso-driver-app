@@ -19,12 +19,14 @@ interface EarningsDateRangePickerProps {
   startDate: string;
   endDate: string;
   onChange: (start: string, end: string) => void;
+  /** Icon-only button (the range shows on hover) for filter bars. */
+  compact?: boolean;
 }
 
 const toYMD = (d: Date) => format(d, 'yyyy-MM-dd');
 const fromYMD = (s: string) => (s ? new Date(`${s}T00:00:00`) : undefined);
 
-export function EarningsDateRangePicker({ startDate, endDate, onChange }: EarningsDateRangePickerProps) {
+export function EarningsDateRangePicker({ startDate, endDate, onChange, compact = false }: EarningsDateRangePickerProps) {
   const [open, setOpen] = useState(false);
   const from = fromYMD(startDate);
   const to = fromYMD(endDate);
@@ -41,6 +43,18 @@ export function EarningsDateRangePicker({ startDate, endDate, onChange }: Earnin
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
+        {compact ? (
+          <button
+            type="button"
+            className="telemetry-filter-icon-btn"
+            title={label}
+            aria-label={`Date range: ${label}`}
+            style={{ position: 'relative', color: from || to ? 'var(--brand-red)' : 'var(--charcoal)', cursor: 'pointer' }}
+          >
+            <CalendarIcon size={16} />
+            {(from || to) && <span style={{ position: 'absolute', top: 5, right: 5, width: 6, height: 6, borderRadius: '50%', background: 'var(--brand-red)' }} />}
+          </button>
+        ) : (
         <button
           type="button"
           className="input-field flex items-center"
@@ -53,6 +67,7 @@ export function EarningsDateRangePicker({ startDate, endDate, onChange }: Earnin
             {label}
           </span>
         </button>
+        )}
       </PopoverTrigger>
       <PopoverContent className="w-auto p-0" align="start" style={{ zIndex: 1100 }}>
         <Calendar

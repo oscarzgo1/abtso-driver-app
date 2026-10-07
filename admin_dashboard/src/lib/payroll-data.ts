@@ -266,7 +266,9 @@ export const PAYROLL_FIELDS: FieldDef[] = [
   { key: 'rate_mf', label: 'Hourly rate Mon-Fri', group: 'Rates', kind: 'money', get: e => e.rates.mf },
   { key: 'rate_sat', label: 'Hourly rate Saturday', group: 'Rates', kind: 'money', get: e => e.rates.sat },
   { key: 'rate_sun', label: 'Hourly rate Sunday', group: 'Rates', kind: 'money', get: e => e.rates.sun },
-  { key: 'avg_rate', label: 'Hourly rate (average for the period)', group: 'Rates', kind: 'money', get: e => (e.hours > 0 ? r2(e.basicPay / e.hours) : 0) },
+  // The rate as set for the employee (Compensation), not a figure worked back from pay and hours,
+  // which drifts (for example 15.90 when the rate is 16.00). Only when no rate is set is the average used.
+  { key: 'avg_rate', label: 'Hourly rate (as set for the employee)', group: 'Rates', kind: 'money', get: e => (e.rates.mf > 0 ? e.rates.mf : e.hours > 0 ? r2(e.basicPay / e.hours) : 0) },
   { key: 'pay_mf', label: 'Pay for Mon-Fri hours', group: 'Pay', kind: 'money', get: e => e.payMonFri },
   { key: 'pay_sat', label: 'Pay for Saturday hours', group: 'Pay', kind: 'money', get: e => e.paySat },
   { key: 'pay_sun', label: 'Pay for Sunday hours', group: 'Pay', kind: 'money', get: e => e.paySun },

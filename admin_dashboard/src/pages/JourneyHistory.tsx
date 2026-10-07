@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from '
 import L from 'leaflet';
 import { Download, Printer, MapPin, Route, Navigation, Hourglass, OctagonX, SignalZero, Timer, ChevronDown, ChevronUp, UserRound, Container, Truck } from 'lucide-react';
 import { EarningsDateRangePicker } from '../components/ui/earnings-date-range-picker';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { supabase, isMockMode } from '../App';
 import NoData from '../components/ui/no-data';
 import { driverPinHtml, trailerPinHtml, escapeHtml, DRIVER_PIN_SIZE, DRIVER_PIN_ANCHOR, TRAILER_PIN_SIZE, TRAILER_PIN_ANCHOR } from '../lib/map-pins';
@@ -157,10 +158,14 @@ export default function JourneyHistory({ embedded = false, shifts, employees, de
     let bestD = Infinity;
     for (const d of depots) {
       const dist = haversineM(pt, { lat: d.latitude, lng: d.longitude });
-      if (dist <= Math.max(d.geofence_radius_m, 150) && dist < bestD) { best = d; bestD = dist; }
+      // A depot with an "anywhere" radius would claim every position, so a depot only counts
+      // as the place when the driver was inside its real surroundings (at most 1 km).
+      if (dist <= Math.min(Math.max(d.geofence_radius_m, 150), 1000) && dist < bestD) { best = d; bestD = dist; }
     }
-    return best ? `At depot: ${best.name}` : `${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}`;
+    return best ? `At depot: ${best.name}` : coordsOf(pt);
   };
+  const coordsOf = (pt: { lat: number; lng: number }) => `${pt.lat.toFixed(5)}, ${pt.lng.toFixed(5)}`;
+  const mapsLink = (pt: { lat: number; lng: number }) => `https://www.google.com/maps/search/?api=1&query=${pt.lat},${pt.lng}`;
 
   // ── Map ───────────────────────────────────────────────────
   const hasShift = !!shift;
@@ -192,9 +197,9 @@ export default function JourneyHistory({ embedded = false, shifts, employees, de
       const who = employees.find(e => e.id === driverId)?.full_name ?? shift?.driver_name ?? 'Driver';
       const unit = shift?.vehicle_number ? escapeHtml(String(shift.vehicle_number)) : null;
       L.marker([end.lat, end.lng], {
-        icon: L.divIcon({ className: '', html: driverPinHtml({ name: who, state: shift?.end_time ? 'still' : 'live', label: unit }), iconSize: DRIVER_PIN_SIZE, iconAnchor: DRIVER_PIN_ANCHOR }),
+        icon: L.divIcon({ className: '', html: driverPinHtml({ name: who, state: shift?.end_time ? 'still' : lastSeg?.label === 'no_signal' ? 'nosignal' : lastSeg?.label === 'stopped' ? 'idle' : lastSeg?.label === 'stationary' ? 'stationary' : 'live', label: unit }), iconSize: DRIVER_PIN_SIZE, iconAnchor: DRIVER_PIN_ANCHOR }),
         zIndexOffset: 500,
-      }).addTo(layer).bindTooltip(who, { direction: 'top', offset: [0, -44] });
+      }).addTo(layer).bindTooltip(who, { direction: 'top', offset: [0, -42] });
       if (shift?.trailer_number) {
         L.marker([end.lat - 0.00018, end.lng + 0.00028], {
           icon: L.divIcon({ className: '', html: trailerPinHtml(String(shift.trailer_number)), iconSize: TRAILER_PIN_SIZE, iconAnchor: TRAILER_PIN_ANCHOR }),
@@ -275,10 +280,29 @@ ${segments.map((s, i) => `<tr><td><span class="b" style="background:${LABEL_META
             <p className="text-xs text-muted m-0 mt-4">The full GPS trail of a shift from clock-in, with every stretch labelled. Kept so you can come back to it.</p>
           </div>
         )}
-        <div className="flex" style={{ gap: '8px' }}>
-          <button type="button" className="btn btn-secondary flex align-center" style={{ gap: '6px' }} disabled={segments.length === 0} onClick={exportCsv}><Download size={14} /> Export CSV</button>
-          <button type="button" className="btn btn-secondary flex align-center" style={{ gap: '6px' }} disabled={segments.length === 0} onClick={printReport}><Printer size={14} /> Print report</button>
-        </div>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button type="button" className="payroll-pill-btn" disabled={segments.length === 0}>
+              <Download size={13} /> Export <ChevronDown size={13} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[210px] p-1" align="end">
+            {([
+              ['Export CSV', <Download key="c" size={13} />, exportCsv],
+              ['Print report', <Printer key="p" size={13} />, printReport],
+            ] as [string, ReactNode, () => void][]).map(([label, icon, run]) => (
+              <button
+                key={label}
+                type="button"
+                onClick={run}
+                className="flex items-center gap-2 w-full text-sm"
+                style={{ padding: '8px 10px', borderRadius: '6px', border: 'none', background: 'transparent', color: 'var(--charcoal)', fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}
+              >
+                {icon} {label}
+              </button>
+            ))}
+          </PopoverContent>
+        </Popover>
       </div>
 
       <div className="glass-card" style={{ padding: '14px 16px', marginBottom: '16px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
@@ -289,9 +313,8 @@ ${segments.map((s, i) => `<tr><td><span class="b" style="background:${LABEL_META
             {drivers.map(d => <option key={d.id} value={d.id}>{d.full_name}</option>)}
           </select>
         </div>
-        <div className="input-group" style={{ margin: 0, minWidth: '250px' }}>
-          <label className="input-label">DATE RANGE</label>
-          <EarningsDateRangePicker
+        <div className="input-group" style={{ margin: 0 }}>
+          <EarningsDateRangePicker compact
             startDate={rangeStart}
             endDate={rangeEnd}
             onChange={(start, end) => { setRangeStart(start); setRangeEnd(end); }}
@@ -383,15 +406,14 @@ ${segments.map((s, i) => `<tr><td><span class="b" style="background:${LABEL_META
                         <span className="tp-coords" style={{ fontSize: '11.5px' }}>
                           {s.label === 'moving' || s.label === 'no_signal' ? `${placeOf(s.from)} to ${placeOf(s.to)}` : placeOf(s.from)}
                         </span>
-                        <a
-                          className="tp-link"
-                          href={`https://www.google.com/maps/search/?api=1&query=${s.from.lat},${s.from.lng}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={e => e.stopPropagation()}
-                        >
-                          Maps
-                        </a>
+                        <span style={{ display: 'flex', gap: '10px', flexShrink: 0 }}>
+                          <a className="tp-link" href={mapsLink(s.from)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>
+                            {s.label === 'moving' || s.label === 'no_signal' ? 'Start' : 'Maps'}
+                          </a>
+                          {(s.label === 'moving' || s.label === 'no_signal') && (
+                            <a className="tp-link" href={mapsLink(s.to)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}>End</a>
+                          )}
+                        </span>
                       </div>
                     </button>
                     </Fragment>

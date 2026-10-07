@@ -430,6 +430,7 @@ interface FleetVehicle {
   vehicle_number: string;
   vehicle_type: 'truck' | 'trailer';
   is_active: boolean;
+  make?: string | null;
 }
 
 interface Shift {
@@ -919,7 +920,10 @@ export default function App() {
 
   // Database States
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employeeSearch, setEmployeeSearch] = useState('');
   const [isDispatchOpen, setIsDispatchOpen] = useState(false);
+  // 'assign' = pick a load for a driver (from a Tracking List card); 'files' = Import Carrier.
+  const [dispatchMode, setDispatchMode] = useState<'assign' | 'files'>('assign');
   const [shipmentsView, setShipmentsView] = useState<'tracking' | 'history'>('tracking');
   const [dispatchDriverId, setDispatchDriverId] = useState('');
   // Loads the office has assigned that are still open — shown on the Active
@@ -1256,7 +1260,7 @@ export default function App() {
   const [reportDateStart, setReportDateStart] = useState('');
   const [reportDateEnd, setReportDateEnd] = useState('');
   const [showOnlyNightOutRequested, setShowOnlyNightOutRequested] = useState(false);
-  const [reportViewMode, setReportViewMode] = useState<'detailed' | 'summary'>('detailed');
+  const [reportViewMode, setReportViewMode] = useState<'detailed' | 'weekly' | 'monthly'>('detailed');
   const [summaryMenuOpen, setSummaryMenuOpen] = useState(false);
   const [flagsMenuOpen, setFlagsMenuOpen] = useState(false);
   const [selectedShiftIds, setSelectedShiftIds] = useState<Set<string>>(new Set());
@@ -1563,7 +1567,7 @@ export default function App() {
       // carrier settlement rows by registration during import.
       const { data: fVehicles } = await supabase!
         .from('vehicles')
-        .select('id, vehicle_number, vehicle_type, is_active')
+        .select('id, vehicle_number, vehicle_type, is_active, make')
         .eq('is_active', true)
         .order('vehicle_number', { ascending: true });
       setFleetVehicles((fVehicles || []) as FleetVehicle[]);
@@ -1588,6 +1592,27 @@ export default function App() {
         showToast('Could not load shifts: ' + shiftsError.message, 'error');
       }
 
+      // Prices of delivered loads (typed in, or read from the carrier file): a shift with no
+      // revenue of its own (settlement or manual) takes the sum of the loads its driver delivered during it.
+      const { data: pricedLoads } = await supabase!
+        .from('dispatch_loads')
+        .select('driver_id, price, completed_at')
+        .eq('status', 'completed')
+        .not('price', 'is', null)
+        .not('completed_at', 'is', null)
+        .limit(5000);
+      const loadRevenueFor = (s: any): number | null => {
+        const from = new Date(s.start_time).getTime();
+        const to = s.end_time ? new Date(s.end_time).getTime() : Date.now();
+        let sum = 0; let found = false;
+        for (const l of (pricedLoads ?? []) as { driver_id: string; price: number | string; completed_at: string }[]) {
+          if (l.driver_id !== s.driver_id) continue;
+          const t = new Date(l.completed_at).getTime();
+          if (t >= from && t <= to) { sum += Number(l.price) || 0; found = true; }
+        }
+        return found ? Math.round(sum * 100) / 100 : null;
+      };
+
       const mappedShifts = (sfts || []).map((s: any) => {
         // shift_id is shift_revenue's own primary key, so PostgREST treats
         // this as a one-to-one embed and returns a single object — but
@@ -1601,7 +1626,7 @@ export default function App() {
           extras_amount: s.extras_amount ?? null,
           extras_note: s.extras_note ?? null,
           total_pay: s.total_pay ?? null,
-          revenue_amount: revenueRow?.revenue_amount ?? null,
+          revenue_amount: revenueRow?.revenue_amount ?? loadRevenueFor(s),
           load_reference: revenueRow?.load_reference ?? null,
           load_delivered_at: revenueRow?.delivered_at ?? null,
           delivery_paperwork_path: revenueRow?.delivery_paperwork_path ?? null,
@@ -5119,7 +5144,9 @@ export default function App() {
     const escHtml = (v: string) => v.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
     // With "Show trailers" on, only trailer icons are drawn: the driver avatars
     // are hidden so the two never overlap.
-    (showTrailers ? [] : liveLocations).forEach(loc => {
+    // With a driver selected (their journey is on the map) only that driver is shown.
+    const visibleLocations = trailDriverId ? liveLocations.filter(l => l.driver_id === trailDriverId) : liveLocations;
+    (showTrailers ? [] : visibleLocations).forEach(loc => {
       // Overlap jitter: a small fixed offset per driver (derived from the id,
       // so markers stay put between refreshes) keeps two units parked
       // together from sitting exactly on top of each other.
@@ -5141,7 +5168,7 @@ export default function App() {
       void dotClass;
       const markerHtml = driverPinHtml({
         name: loc.driver_name || 'Driver',
-        state: noSignal ? 'nosignal' : loc.status === 'idle' ? 'idle' : 'live',
+        state: noSignal ? 'nosignal' : loc.status === 'idle' ? 'idle' : loc.status === 'stationary' ? 'stationary' : 'live',
         label: labelParts.length ? labelParts.join(' ') : null,
       });
       const unitLines = [
@@ -5153,7 +5180,7 @@ export default function App() {
             <b style="font-size:13px;color:#333333;">${escHtml(loc.driver_name)}</b><br>
             ${unitLines}
             <span style="color:#888888;font-size:11px;">Speed: ${loc.speed_mph.toFixed(0)} mph</span><br>
-            <span style="color:${loc.status === 'idle' || noSignal ? '#CC0000' : '#2E7D32'};font-size:11px;font-weight:bold;">
+            <span style="color:${noSignal ? '#D99100' : loc.status === 'idle' ? '#DC2626' : loc.status === 'stationary' ? '#EA580C' : '#16A34A'};font-size:11px;font-weight:bold;">
               Status: ${statusLabel}
             </span><br>
             <a href="https://www.google.com/maps/search/?api=1&query=${loc.latitude},${loc.longitude}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;font-size:11px;color:#CC0000;font-weight:bold;text-decoration:none;">View in Google Maps</a>
@@ -5177,7 +5204,7 @@ export default function App() {
     // now; a trailer with its own tracker would report source 'tracker'.
     const wantedTrailerKeys = new Set<string>();
     if (showTrailers) {
-      liveLocations.forEach(loc => {
+      visibleLocations.forEach(loc => {
         const sh = shifts.find(x => (x.driver_id === loc.driver_id) && !x.end_time && x.status !== 'completed');
         if (!sh?.trailer_number) return;
         const key = `trailer-${sh.trailer_number}`;
@@ -5252,14 +5279,14 @@ export default function App() {
           delete markersRef.current[id];
         }
       } else {
-        if (showTrailers || !liveLocations.find(l => l.driver_id === id)) {
+        if (showTrailers || !visibleLocations.find(l => l.driver_id === id)) {
           markersRef.current[id].remove();
           delete markersRef.current[id];
         }
       }
     });
 
-  }, [isAuthenticated, activeTab, liveSubTab, liveLocations, alerts, depots, shifts, noSignalDriverIds, showTrailers]);
+  }, [isAuthenticated, activeTab, liveSubTab, liveLocations, alerts, depots, shifts, noSignalDriverIds, showTrailers, trailDriverId]);
 
   // ── Render login Page if Unauthenticated ───────────────────
   // ── Two-step sign-in code ─────────────────────────────────
@@ -6137,7 +6164,7 @@ export default function App() {
       </Sidebar>
 
       {/* ── Main Dashboard Content ─────────────────────────── */}
-      <div className="p-32 flex flex-col overflow-auto" style={{ height: '100vh', flex: 1, minWidth: 0 }}>
+      <div className="p-32 flex flex-col overflow-auto" style={{ height: '100vh', boxSizing: 'border-box', flex: 1, minWidth: 0 }}>
         
         {activeTab === 'dashboard' && (
           <DispatchDashboard
@@ -6152,7 +6179,7 @@ export default function App() {
             showFinancials={userRole === 'payroll_admin'}
             unitRisk={unitRisk}
             onOpenFleet={openFleetUnit}
-            onAssign={(driverId) => { setDispatchDriverId(driverId); setIsDispatchOpen(true); }}
+            onAssign={(driverId) => { setDispatchDriverId(driverId); setDispatchMode('assign'); setIsDispatchOpen(true); }}
             onNavigate={setActiveTab}
           />
         )}
@@ -6808,29 +6835,14 @@ export default function App() {
                   to a static button matching the rest of this app's
                   buttons. */}
               <div className="flex align-center" style={{ gap: '8px' }}>
-                <button
-                  type="button"
-                  className="btn btn-secondary flex align-center"
-                  style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700 }}
-                  onClick={handleExportEmployees}
-                >
-                  <Download size={15} /> Export Drivers
+                <button type="button" className="payroll-pill-btn" onClick={handleExportEmployees}>
+                  <Download size={13} /> Export Drivers
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary flex align-center"
-                  style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700 }}
-                  onClick={() => setIsDriverBulkImportOpen(true)}
-                >
-                  <UploadCloud size={15} /> Import Data
+                <button type="button" className="payroll-pill-btn" onClick={() => setIsDriverBulkImportOpen(true)}>
+                  <UploadCloud size={13} /> Import Data
                 </button>
-                <button
-                  type="button"
-                  className="btn flex align-center"
-                  style={{ gap: '6px', padding: '6px 12px', fontSize: '11px', fontWeight: 700, backgroundColor: 'var(--brand-red)', color: '#FFFFFF', borderColor: 'var(--brand-red)' }}
-                  onClick={() => setIsAddingEmployee(!isAddingEmployee)}
-                >
-                  <UserPlus size={15} /> Add Employee
+                <button type="button" className="payroll-pill-btn" onClick={() => setIsAddingEmployee(!isAddingEmployee)}>
+                  <UserPlus size={13} /> Add Employee
                 </button>
               </div>
             </div>
@@ -6975,7 +6987,7 @@ export default function App() {
                 profession); now a single icon trigger, one click, showing
                 every worker organised by profession in one panel instead
                 of three separate entry points. */}
-            <div className="mb-24">
+            <div className="mb-24 flex items-center" style={{ gap: '10px' }}>
               <Popover>
                 <PopoverTrigger asChild>
                   <button type="button" className="flags-bell-btn" aria-label="View employees by profession">
@@ -7004,6 +7016,9 @@ export default function App() {
                   })}
                 </PopoverContent>
               </Popover>
+              <div style={{ flex: 1, maxWidth: '440px' }}>
+                <TableFilter groups={[]} className="fg--block" search={{ value: employeeSearch, onChange: setEmployeeSearch, placeholder: 'Search name, driver ID, phone, role…' }} />
+              </div>
             </div>
 
              {/* Employees list table — Compensation Profiles merged in as
@@ -7023,7 +7038,10 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {employees.map(drv => {
+                  {employees.filter(e => {
+                    const q = employeeSearch.trim().toLowerCase();
+                    return !q || `${e.full_name} ${e.driver_id} ${e.phone ?? ''} ${e.profession ?? 'driver'} ${e.is_active ? 'active' : 'inactive'}`.toLowerCase().includes(q);
+                  }).map(drv => {
                     // Find latest shift for time tracking. shifts is sorted by
                     // start_time descending, but a stray future-dated row (bad
                     // seed/test data) would otherwise outrank the driver's real
@@ -7122,8 +7140,8 @@ export default function App() {
                             {activeShift && (
                               <button
                                 type="button"
-                                className="comp-edit-btn"
-                                onClick={() => { setDispatchDriverId(drv.id); setIsDispatchOpen(true); }}
+                                className="payroll-mini-btn"
+                                onClick={() => { setDispatchDriverId(drv.id); setDispatchMode('assign'); setIsDispatchOpen(true); }}
                                 title={`Assign a load to ${toTitleCase(drv.full_name)}`}
                               >
                                 <Truck size={12} /> Assign load
@@ -7131,14 +7149,15 @@ export default function App() {
                             )}
                             {activeShift ? (
                               <button
-                                className="alert-ack-btn"
+                                className="payroll-mini-btn"
+                                style={{ background: 'var(--brand-red)', borderColor: 'var(--brand-red)', color: '#fff' }}
                                 onClick={() => handleManualClockOut(drv.id, activeShift.id)}
                               >
                                 <Clock size={12} /> Clock Out
                               </button>
                             ) : (
                               <button
-                                className="comp-edit-btn"
+                                className="payroll-mini-btn"
                                 onClick={() => handleManualClockIn(drv.id)}
                                 disabled={!drv.is_active}
                                 style={!drv.is_active ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
@@ -7146,7 +7165,7 @@ export default function App() {
                                 <Clock size={12} /> Clock In
                               </button>
                             )}
-                            <button className="comp-edit-btn" onClick={() => openEditEmployeeModal(drv)}>
+                            <button className="payroll-mini-btn" onClick={() => openEditEmployeeModal(drv)}>
                               <Pencil size={12} /> Edit
                             </button>
                             <button
@@ -7197,6 +7216,9 @@ export default function App() {
                       </tr>
                     );
                   })}
+                  {employees.length > 0 && employeeSearch.trim() && !employees.some(e => `${e.full_name} ${e.driver_id} ${e.phone ?? ''} ${e.profession ?? 'driver'} ${e.is_active ? 'active' : 'inactive'}`.toLowerCase().includes(employeeSearch.trim().toLowerCase())) && (
+                    <tr><td colSpan={7}><NoData className="py-10" /></td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -7279,7 +7301,7 @@ export default function App() {
           />
         )}
 
-        {isDispatchOpen && <DispatchLoadsModal drivers={employees} initialDriverId={dispatchDriverId} onChanged={loadDispatchBoard} onClose={() => { setIsDispatchOpen(false); setDispatchDriverId(''); }} />}
+        {isDispatchOpen && <DispatchLoadsModal mode={dispatchMode} drivers={employees} initialDriverId={dispatchDriverId} onChanged={loadDispatchBoard} onOpenSettlement={() => { setIsDispatchOpen(false); setDispatchDriverId(''); setIsImportModalOpen(true); }} onClose={() => { setIsDispatchOpen(false); setDispatchDriverId(''); }} />}
 
         {isImportModalOpen && (
           <CarrierSettlementImportModal
@@ -7393,7 +7415,47 @@ export default function App() {
                   <p className="text-xs text-muted mt-4">Shift-by-shift earnings, Night Out allowances, and exports for the selected period</p>
                 </div>
 
-                <div className="flex align-center gap-8" style={{ flexWrap: 'wrap' }}>
+              </div>
+
+              {/* -- Filter bar --------------------------------------- */}
+              <div className="payroll-filter-bar">
+                <div className="payroll-filter-field">
+                  <span className="input-label">Filters</span>
+                  <TableFilter
+                    groups={[
+                      {
+                        key: 'agency', label: 'Agency', single: true, neutral: 'all',
+                        options: [{ value: 'all', label: 'All Agencies' }, ...agencies.map(ag => ({ value: ag, label: ag }))],
+                        selected: [reportAgencyFilter],
+                        onChange: (v) => setReportAgencyFilter(v[0] ?? 'all'),
+                      },
+                      {
+                        key: 'driver', label: 'Driver', single: true, neutral: 'all',
+                        options: [{ value: 'all', label: 'All Drivers' }, ...employees.map(d => ({ value: d.id, label: d.full_name }))],
+                        selected: [reportEmployeeFilter],
+                        onChange: (v) => {
+                          const id = v[0] ?? 'all';
+                          if (id === 'all') clearDriverFilter();
+                          else selectDriver(id, employees.find(d => d.id === id)?.full_name ?? '');
+                        },
+                      },
+                      {
+                        key: 'nightout', label: `Night Out${pendingNightOutsCount > 0 ? ` (${pendingNightOutsCount})` : ''}`, single: true, neutral: 'all',
+                        options: [{ value: 'all', label: 'All shifts' }, { value: 'requested', label: 'N/O requests only' }],
+                        selected: [showOnlyNightOutRequested ? 'requested' : 'all'],
+                        onChange: (v) => setShowOnlyNightOutRequested(v[0] === 'requested'),
+                      },
+                    ]}
+                    search={{ value: summarySearch, onChange: setSummarySearch, placeholder: 'Search employee, agency, depot, vehicle…' }}
+                  />
+                </div>
+
+                <div className="payroll-filter-field" style={{ flexDirection: 'row', alignItems: 'center', gap: '8px' }}>
+                  <EarningsDateRangePicker compact
+                    startDate={reportDateStart}
+                    endDate={reportDateEnd}
+                    onChange={(start, end) => { setReportDateStart(start); setReportDateEnd(end); }}
+                  />
                   {/* Flags & Reviews — a notification-bell icon button
                       instead of a text pill; click (not hover) opens the
                       same categorized list (Critical Anomalies / Night
@@ -7464,60 +7526,14 @@ export default function App() {
                 </div>
               </div>
 
-              {/* -- Filter bar --------------------------------------- */}
-              <div className="payroll-filter-bar">
-                <div className="payroll-filter-field">
-                  <span className="input-label">Filters</span>
-                  <TableFilter
-                    groups={[
-                      {
-                        key: 'agency', label: 'Agency', single: true, neutral: 'all',
-                        options: [{ value: 'all', label: 'All Agencies' }, ...agencies.map(ag => ({ value: ag, label: ag }))],
-                        selected: [reportAgencyFilter],
-                        onChange: (v) => setReportAgencyFilter(v[0] ?? 'all'),
-                      },
-                      {
-                        key: 'driver', label: 'Driver', single: true, neutral: 'all',
-                        options: [{ value: 'all', label: 'All Drivers' }, ...employees.map(d => ({ value: d.id, label: d.full_name }))],
-                        selected: [reportEmployeeFilter],
-                        onChange: (v) => {
-                          const id = v[0] ?? 'all';
-                          if (id === 'all') clearDriverFilter();
-                          else selectDriver(id, employees.find(d => d.id === id)?.full_name ?? '');
-                        },
-                      },
-                      {
-                        key: 'nightout', label: `Night Out${pendingNightOutsCount > 0 ? ` (${pendingNightOutsCount})` : ''}`, single: true, neutral: 'all',
-                        options: [{ value: 'all', label: 'All shifts' }, { value: 'requested', label: 'N/O requests only' }],
-                        selected: [showOnlyNightOutRequested ? 'requested' : 'all'],
-                        onChange: (v) => setShowOnlyNightOutRequested(v[0] === 'requested'),
-                      },
-                    ]}
-                    search={{ value: summarySearch, onChange: setSummarySearch, placeholder: 'Search employee, agency, depot, vehicle…' }}
-                  />
-                </div>
-
-                <div className="payroll-filter-field" style={{ minWidth: '220px' }}>
-                  <span className="input-label">Date Range</span>
-                  <EarningsDateRangePicker
-                    startDate={reportDateStart}
-                    endDate={reportDateEnd}
-                    onChange={(start, end) => { setReportDateStart(start); setReportDateEnd(end); }}
-                  />
-                </div>
-              </div>
-
-              {/* -- Action row: view toggle, exports, bulk edit ------ */}
+              {/* -- Action row: view menu (left), bulk edit, Export menu (right) ------ */}
               <div className="payroll-action-row">
                 <div className="payroll-action-group">
-                  {/* Detailed View / Weekly Summary / Export Summary used to
-                      be three permanently-visible pills; consolidated into
-                      one dropdown so the row doesn't eat so much width. */}
                   <Popover open={summaryMenuOpen} onOpenChange={setSummaryMenuOpen}>
                     <PopoverTrigger asChild>
                       <button type="button" className="payroll-pill-btn payroll-pill-btn--outline">
                         {reportViewMode === 'detailed' ? <ListChecks size={13} /> : <BarChart3 size={13} />}
-                        {reportViewMode === 'detailed' ? 'Detailed View' : 'Weekly Summary'}
+                        {reportViewMode === 'detailed' ? 'Detailed View' : reportViewMode === 'weekly' ? 'Weekly Summary' : 'Monthly Summary'}
                         <ChevronDown size={13} />
                       </button>
                     </PopoverTrigger>
@@ -7532,81 +7548,130 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => { setReportViewMode('summary'); setSummaryMenuOpen(false); }}
+                        onClick={() => { setReportViewMode('weekly'); setSummaryMenuOpen(false); }}
                         className="flex items-center gap-2 w-full text-sm"
-                        style={{ padding: '8px 10px', borderRadius: '6px', border: 'none', background: reportViewMode === 'summary' ? 'var(--brand-red-light)' : 'transparent', color: reportViewMode === 'summary' ? 'var(--brand-red)' : 'var(--charcoal)', fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}
+                        style={{ padding: '8px 10px', borderRadius: '6px', border: 'none', background: reportViewMode === 'weekly' ? 'var(--brand-red-light)' : 'transparent', color: reportViewMode === 'weekly' ? 'var(--brand-red)' : 'var(--charcoal)', fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}
                       >
                         <BarChart3 size={13} /> Weekly Summary
                       </button>
-                      <div style={{ borderTop: '1px solid var(--border-color)', margin: '4px 0' }} />
                       <button
                         type="button"
-                        onClick={() => { handleExportSummaryCSV(); setSummaryMenuOpen(false); }}
+                        onClick={() => { setReportViewMode('monthly'); setSummaryMenuOpen(false); }}
                         className="flex items-center gap-2 w-full text-sm"
-                        style={{ padding: '8px 10px', borderRadius: '6px', border: 'none', background: 'transparent', color: 'var(--charcoal)', fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}
+                        style={{ padding: '8px 10px', borderRadius: '6px', border: 'none', background: reportViewMode === 'monthly' ? 'var(--brand-red-light)' : 'transparent', color: reportViewMode === 'monthly' ? 'var(--brand-red)' : 'var(--charcoal)', fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}
                       >
-                        <Download size={13} /> Export Summary
+                        <BarChart3 size={13} /> Monthly Summary
                       </button>
                     </PopoverContent>
                   </Popover>
-                  <button className="payroll-pill-btn" onClick={exportCSV}>
-                    <DownloadIcon done={justExported === 'csv'} /> Export CSV
-                  </button>
-                  <button className="payroll-pill-btn" onClick={exportExcel}>
-                    <FileSpreadsheet size={13} /> Export Excel
-                  </button>
-                  <button className="payroll-pill-btn" onClick={() => setFillTemplateOpen(true)}>
-                    <FileSpreadsheet size={13} /> Fill in the template
-                  </button>
                 </div>
 
                 {reportViewMode === 'detailed' && (
-                  <div className="payroll-bulk-bar">
+                  <div className="payroll-bulk-bar" style={{ flex: 1 }}>
                     {selectedShiftIds.size > 0 ? (
                       <>
-                        <span className="text-sm font-black text-primary">{selectedShiftIds.size} SELECTED</span>
+                        <span className="payroll-selected">{selectedShiftIds.size} selected</span>
                         <button
-                          className="payroll-pill-btn"
+                          className="payroll-edit-selected"
                           onClick={() => openActionModal('bulk', Array.from(selectedShiftIds), 'Bulk Update')}
                         >
-                          Edit Selected
+                          Edit selected
                         </button>
-                        <button className="btn btn-secondary text-xs" onClick={() => setSelectedShiftIds(new Set())}>CANCEL</button>
+                        <button className="payroll-clear-selection" onClick={() => setSelectedShiftIds(new Set())} aria-label="Clear selection" title="Clear selection">
+                          <X size={14} />
+                        </button>
                       </>
-                    ) : (
-                      <span className="text-xs text-muted">Use checkboxes to edit multiple shifts at once</span>
-                    )}
+                    ) : null}
                   </div>
                 )}
+
+                {/* Import (left of Export): the template fill is chosen from its menu. */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="payroll-pill-btn" style={{ marginLeft: 'auto' }}>
+                      <UploadCloud size={13} /> Import <ChevronDown size={13} />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[220px] p-1" align="end">
+                    <button
+                      type="button"
+                      onClick={() => setFillTemplateOpen(true)}
+                      className="flex items-center gap-2 w-full text-sm"
+                      style={{ padding: '8px 10px', borderRadius: '6px', border: 'none', background: 'transparent', color: 'var(--charcoal)', fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}
+                    >
+                      <FileSpreadsheet size={13} /> Fill in the template
+                    </button>
+                  </PopoverContent>
+                </Popover>
+
+                {/* One Export button: the format is chosen from its menu. */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="payroll-pill-btn">
+                      <Download size={13} /> Export <ChevronDown size={13} />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[220px] p-1" align="end">
+                    {([
+                      ['Export CSV', <DownloadIcon key="c" done={justExported === 'csv'} />, exportCSV],
+                      ['Export Excel', <FileSpreadsheet key="x" size={13} />, exportExcel],
+                      ['Export Summary', <BarChart3 key="s" size={13} />, handleExportSummaryCSV],
+                    ] as [string, React.ReactNode, () => void][]).map(([label, icon, run]) => (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={run}
+                        className="flex items-center gap-2 w-full text-sm"
+                        style={{ padding: '8px 10px', borderRadius: '6px', border: 'none', background: 'transparent', color: 'var(--charcoal)', fontWeight: 600, cursor: 'pointer', textAlign: 'left' }}
+                      >
+                        {icon} {label}
+                      </button>
+                    ))}
+                  </PopoverContent>
+                </Popover>
               </div>
 
               {/* -- Reports Payroll Data Table / Dual View ----------- */}
-              {reportViewMode === 'summary' ? (
+              {reportViewMode !== 'detailed' ? (
                 <>
-                  <div className="payroll-table-wrap">
-                    <table className="payroll-table">
+                  <div className="table-container">
+                    <table className="data-table">
                       <thead>
                         <tr>
                           <th>Employee</th>
                           <th>Agency</th>
+                          <th>{reportViewMode === 'weekly' ? 'Week' : 'Month'}</th>
                           <th>Shifts Logged</th>
                           <th>Total Hours</th>
                           <th>Night Outs</th>
                           <th>Total Extras</th>
-                          <th>Total Gross Pay</th>
+                          <th style={{ textAlign: 'right' }}>Total Gross Pay</th>
                         </tr>
                       </thead>
                       <tbody>
                         {(() => {
+                          // One row per employee per week (Monday to Sunday) or per month.
+                          const periodOf = (iso: string): { key: string; label: string } => {
+                            const d = new Date(iso);
+                            if (reportViewMode === 'monthly') {
+                              return { key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, label: d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }) };
+                            }
+                            const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+                            return { key: `${mon.getFullYear()}-${String(mon.getMonth() + 1).padStart(2, '0')}-${String(mon.getDate()).padStart(2, '0')}`, label: `w/c ${mon.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}` };
+                          };
                           const summaryData: any = {};
                           filteredShifts.forEach(shift => {
                              const { grossPay, noAmt, extrasAmt, liveHours } = getShiftFinancials(shift);
                              const id = shift.driver_id;
-                             if (!summaryData[id]) {
-                                 summaryData[id] = {
+                             const period = periodOf(shift.start_time);
+                             const rowKey = `${id}|${period.key}`;
+                             if (!summaryData[rowKey]) {
+                                 summaryData[rowKey] = {
                                      driver_name: shift.driver_name,
                                      driver_code: shift.driver_code,
                                      agency: employeeRates[id]?.agency_name || 'Direct',
+                                     period: period.label,
+                                     periodKey: period.key,
                                      total_hours: 0,
                                      total_gross: 0,
                                      total_night_outs: 0,
@@ -7614,34 +7679,35 @@ export default function App() {
                                      shift_count: 0
                                  };
                              }
-                             summaryData[id].total_hours += liveHours;
-                             summaryData[id].total_gross += grossPay;
-                             summaryData[id].total_extras += extrasAmt;
-                             summaryData[id].total_night_outs += (noAmt > 0 ? 1 : 0);
+                             summaryData[rowKey].total_hours += liveHours;
+                             summaryData[rowKey].total_gross += grossPay;
+                             summaryData[rowKey].total_extras += extrasAmt;
+                             summaryData[rowKey].total_night_outs += (noAmt > 0 ? 1 : 0);
                              // Prevent double counting split shifts
                              if (!shift.is_week_boundary || shift.boundary_label?.includes('Part 1')) {
-                                 summaryData[id].shift_count += 1;
+                                 summaryData[rowKey].shift_count += 1;
                              }
                           });
 
-                          const rows = Object.values(summaryData);
+                          const rows = (Object.values(summaryData) as any[]).sort((a, b) => b.periodKey.localeCompare(a.periodKey) || String(a.driver_name).localeCompare(String(b.driver_name)));
                           if (rows.length === 0) return (
                             <tr>
-                              <td colSpan={7}>
-                                <NoData className="py-16" />
+                              <td colSpan={8}>
+                                <NoData />
                               </td>
                             </tr>
                           );
 
                           return rows.map((row: any) => (
-                             <tr key={row.driver_code}>
-                                <td className="font-bold text-primary">{row.driver_name}</td>
+                             <tr key={`${row.driver_code}|${row.periodKey}`}>
+                                <td><MemberCell name={toTitleCase(row.driver_name || 'Driver')} sub={row.driver_code} /></td>
                                 <td><span className="payroll-agency-badge">{row.agency}</span></td>
+                                <td className="text-sm font-semibold">{row.period}</td>
                                 <td className="font-semibold">{row.shift_count}</td>
                                 <td>{row.total_hours.toFixed(2)} hrs</td>
                                 <td>{row.total_night_outs > 0 ? <span className="text-success font-bold">+{row.total_night_outs} (N/O)</span> : '—'}</td>
                                 <td>{row.total_extras !== 0 ? <span className="text-primary font-bold">£{row.total_extras.toFixed(2)}</span> : '—'}</td>
-                                <td className="font-black text-success text-md">£{row.total_gross.toFixed(2)}</td>
+                                <td className="font-black text-success text-md" style={{ textAlign: 'right' }}>£{row.total_gross.toFixed(2)}</td>
                              </tr>
                           ));
                         })()}
@@ -7678,14 +7744,13 @@ export default function App() {
                       stuck-shift/N-O/flag badges, Force Clock Out / Time /
                       Edit Payroll actions, gross pay) is unchanged. */}
                   {(() => {
-                    const detailedGridCols = '36px 1.3fr 110px 1.2fr 90px 130px 110px 2fr 100px';
                     const allShiftsSelected = filteredShifts.length > 0 && selectedShiftIds.size === new Set(filteredShifts.map(s => s.real_id || s.id)).size;
                     return (
-                  <div className="rounded-lg border" style={{ borderColor: 'var(--border-color)', backgroundColor: 'var(--card-bg)', overflow: 'hidden' }}>
-                    <div style={{ overflowX: 'auto' }}>
-                      <div style={{ minWidth: '1100px' }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: detailedGridCols, alignItems: 'center', padding: '10px 12px', fontSize: '10px', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--charcoal-light)', background: 'var(--card-bg-hover)', borderBottom: '1px solid var(--border-color)' }}>
-                          <div style={{ display: 'flex', justifyContent: 'center' }}>
+                  <div className="table-container">
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: '36px', textAlign: 'center' }}>
                             <input
                                type="checkbox"
                                style={{ cursor: 'pointer', width: '15px', height: '15px' }}
@@ -7698,19 +7763,20 @@ export default function App() {
                                   }
                                }}
                             />
-                          </div>
-                          <div>Driver Name</div>
-                          <div>Fleet Agency</div>
-                          <div>Shift Schedule</div>
-                          <div>Hours</div>
-                          <div>Hourly Rate</div>
-                          <div>Night Out</div>
-                          <div>Flags &amp; Actions</div>
-                          <div style={{ textAlign: 'right' }}>Gross Pay (£)</div>
-                        </div>
-
+                          </th>
+                          <th>Driver Name</th>
+                          <th>Fleet Agency</th>
+                          <th>Shift Schedule</th>
+                          <th>Hours</th>
+                          <th>Hourly Rate</th>
+                          <th>Night Out</th>
+                          <th>Flags &amp; Actions</th>
+                          <th style={{ textAlign: 'right' }}>Gross Pay (£)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
                         {filteredShifts.length === 0 ? (
-                          <NoData className="py-24" />
+                          <tr><td colSpan={9}><NoData /></td></tr>
                         ) : (
                           filteredShifts.map(shift => {
                             const {
@@ -7768,8 +7834,8 @@ export default function App() {
                             }
 
                             return (
-                              <div key={shift.id} style={{ display: 'grid', gridTemplateColumns: detailedGridCols, alignItems: 'center', padding: '10px 12px', borderBottom: '1px solid var(--border-color)', ...rowStyle }}>
-                                <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', justifyContent: 'center' }}>
+                              <tr key={shift.id} style={rowStyle}>
+                                <td onClick={(e) => e.stopPropagation()} style={{ textAlign: 'center' }}>
                                   <input
                                     type="checkbox"
                                     style={{ cursor: 'pointer', width: '15px', height: '15px' }}
@@ -7782,21 +7848,21 @@ export default function App() {
                                         setSelectedShiftIds(newSet);
                                     }}
                                   />
-                                </div>
-                                <div>
+                                </td>
+                                <td>
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                    <span className="font-medium text-primary" style={{ fontSize: '13px' }}>{shift.driver_name ? toTitleCase(shift.driver_name) : '—'}</span>
+                                    <MemberCell name={shift.driver_name ? toTitleCase(shift.driver_name) : '—'} />
                                     {isRequested && (
                                       <span className="badge badge-warning text-xs font-bold" style={{ alignSelf: 'flex-start', padding: '2px 6px', fontSize: '10px' }}>
                                         N/O REQUESTED
                                       </span>
                                     )}
                                   </div>
-                                </div>
-                                <div>
+                                </td>
+                                <td>
                                   <span className="payroll-agency-badge">{agency}</span>
-                                </div>
-                                <div>
+                                </td>
+                                <td>
                                   {(() => {
                                     const startObj = new Date(shift.start_time);
                                     const endObj = shift.end_time ? new Date(shift.end_time) : null;
@@ -7834,8 +7900,8 @@ export default function App() {
                                       );
                                     }
                                   })()}
-                                </div>
-                                <div className="font-mono tabular-nums text-secondary" style={{ fontSize: '12px' }}>
+                                </td>
+                                <td className="font-mono tabular-nums text-secondary" style={{ fontSize: '12px' }}>
                                   {shift.end_time ? (
                                     formatHoursMinutes(shift.total_hours || 0)
                                   ) : isStaleOrphan ? (
@@ -7854,8 +7920,8 @@ export default function App() {
                                       Ignored Test Shift
                                     </span>
                                   )}
-                                </div>
-                                <div className="font-mono tabular-nums" style={{ fontSize: '12.5px', color: 'var(--charcoal)' }}>
+                                </td>
+                                <td className="font-mono tabular-nums" style={{ fontSize: '12.5px', color: 'var(--charcoal)' }}>
                                   {isFixedRate ? (
                                     <span>
                                       £{startRateVal.toFixed(2)} <span style={{ fontSize: '10.5px', fontWeight: 'normal', color: 'var(--charcoal-light)' }}>(Fixed/Shift)</span>
@@ -7868,8 +7934,8 @@ export default function App() {
                                   ) : (
                                     <span>£{startRateVal.toFixed(2)}/hr</span>
                                   )}
-                                </div>
-                                <div>
+                                </td>
+                                <td>
                                   {noAmount > 0 ? (
                                     <span className="badge badge-success font-bold">
                                       +£{noAmount.toFixed(2)} N/O
@@ -7877,8 +7943,8 @@ export default function App() {
                                   ) : (
                                     <span className="text-muted text-xs">—</span>
                                   )}
-                                </div>
-                                <div>
+                                </td>
+                                <td>
                                   <div className="flex align-center gap-6" style={{ flexWrap: 'wrap' }}>
                                     {shift.is_week_boundary && (
                                       <span className="badge badge-warning text-xs" style={{ padding: '2px 6px', fontWeight: 'bold', marginRight: '6px' }}>
@@ -7930,16 +7996,16 @@ export default function App() {
                                       </div>
                                     )}
                                   </div>
-                                </div>
-                                <div className="font-mono font-semibold tabular-nums" style={{ fontSize: '13.5px', textAlign: 'right', color: shiftGrossPay > 0 ? 'var(--charcoal)' : 'var(--charcoal-light)' }}>
+                                </td>
+                                <td className="font-mono font-semibold tabular-nums" style={{ fontSize: '13.5px', textAlign: 'right', color: shiftGrossPay > 0 ? 'var(--charcoal)' : 'var(--charcoal-light)' }}>
                                   £{shiftGrossPay.toFixed(2)}
-                                </div>
-                              </div>
+                                </td>
+                              </tr>
                             );
                           })
                         )}
-                      </div>
-                    </div>
+                      </tbody>
+                    </table>
                   </div>
                     );
                   })()}
@@ -8490,8 +8556,8 @@ export default function App() {
                   <>
                     <TableFilter groups={analyticsFilterGroups} />
                     {periodFilter?.value[0] === 'Custom range' && (
-                      <span style={{ minWidth: '240px' }}>
-                        <EarningsDateRangePicker
+                      <span>
+                        <EarningsDateRangePicker compact
                           startDate={analyticsCustomRange.from}
                           endDate={analyticsCustomRange.to}
                           onChange={(from, to) => setAnalyticsCustomRange({ from, to })}
@@ -8520,34 +8586,12 @@ export default function App() {
                     />
                   </>
                 )}
-                {/* Import Carrier Load Files lives on Shipments now (it's
+                {/* Import Carrier lives on Shipments now (it's
                     load data entry, not an Analytics stat). Fuel Receipts
                     / Overnight Parking review moved to the Alert Panel
                     (Alert Monitors consolidation) — this tab only ever
                     shows the already-approved totals now, so there's no
                     review entry point left to render here. */}
-                {activeTab === 'shipments' && (
-                  <button
-                    type="button"
-                    onClick={() => setIsDispatchOpen(true)}
-                    className="flex items-center text-xs font-bold"
-                    style={{ gap: '6px', padding: '8px 14px', borderRadius: '8px', border: '1px solid var(--border-color)', background: 'var(--card-bg)', color: 'var(--charcoal)', cursor: 'pointer' }}
-                  >
-                    <Truck size={14} />
-                    Assign Load
-                  </button>
-                )}
-                {activeTab === 'shipments' && (
-                  <button
-                    type="button"
-                    onClick={() => setIsImportModalOpen(true)}
-                    className="flex items-center text-xs font-bold"
-                    style={{ gap: '6px', padding: '8px 14px', borderRadius: '8px', border: 'none', background: 'var(--brand-red)', color: '#fff', cursor: 'pointer' }}
-                  >
-                    <UploadCloud size={14} />
-                    Import Carrier Load Files
-                  </button>
-                )}
               </div>
             </div>
 
@@ -8776,7 +8820,7 @@ export default function App() {
             {/* Shipments splits into the live board (active loads, the
                 assign action, and the shift ledger) and the delivery
                 history (completed loads with proof of delivery). */}
-            <div className="telemetry-tabs mt-16" style={{ maxWidth: '1600px' }}>
+            <div className="telemetry-tabs mt-16">
               {([['tracking', 'Live Tracking'], ['history', 'Delivery History']] as const).map(([key, label]) => (
                 <button
                   key={key}
@@ -8787,6 +8831,15 @@ export default function App() {
                   {label}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => { setDispatchMode('files'); setIsDispatchOpen(true); }}
+                className="flex items-center text-xs font-bold"
+                style={{ gap: '6px', padding: '8px 14px', borderRadius: '8px', border: 'none', background: 'var(--brand-red)', color: '#fff', cursor: 'pointer', marginLeft: 'auto', whiteSpace: 'nowrap' }}
+              >
+                <UploadCloud size={14} />
+                Import Carrier
+              </button>
             </div>
             {shipmentsView === 'tracking' && (
               <ShipmentsTracking
@@ -8796,7 +8849,7 @@ export default function App() {
                 liveLocations={liveLocations}
                 depots={depots}
                 employees={employees}
-                onAssign={(driverId) => { setDispatchDriverId(driverId); setIsDispatchOpen(true); }}
+                onAssign={(driverId) => { setDispatchDriverId(driverId); setDispatchMode('assign'); setIsDispatchOpen(true); }}
               />
             )}
             {shipmentsView === 'history' && <DeliveryHistory />}
@@ -8874,8 +8927,8 @@ export default function App() {
                     }]}
                     search={{ value: fuelModalDriverSearch, onChange: setFuelModalDriverSearch, placeholder: 'Search driver name…' }}
                   />
-                  <span style={{ minWidth: '240px' }}>
-                    <EarningsDateRangePicker
+                  <span>
+                    <EarningsDateRangePicker compact
                       startDate={fuelModalDateStart}
                       endDate={fuelModalDateEnd}
                       onChange={(from, to) => { setFuelModalDateStart(from); setFuelModalDateEnd(to); }}
@@ -10393,37 +10446,28 @@ export default function App() {
         <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 10001, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
           <div className="modal-content glass-panel" style={{ width: '420px', padding: '28px', borderRadius: '16px', backgroundColor: 'var(--card-bg)', boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)', border: '1px solid var(--border-color)' }}>
             <div className="flex align-center gap-12 mb-16" style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-              <span style={{ display: 'flex', width: '36px', height: '36px', borderRadius: '50%', backgroundColor: confirmDialog.tone === 'danger' ? '#FEE2E2' : '#EFF6FF', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                <ShieldAlert size={18} color={confirmDialog.tone === 'danger' ? '#DC2626' : '#2563EB'} />
+              <span style={{ display: 'flex', width: '36px', height: '36px', borderRadius: '50%', backgroundColor: confirmDialog.tone === 'danger' ? '#FEE2E2' : '#EEEEEE', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <ShieldAlert size={18} color={confirmDialog.tone === 'danger' ? '#DC2626' : '#333333'} />
               </span>
               <h2 className="text-lg font-black text-primary m-0" style={{ margin: 0 }}>Please confirm</h2>
             </div>
             <p className="text-sm text-secondary mb-24" style={{ marginBottom: '24px', lineHeight: 1.5 }}>{confirmDialog.message}</p>
             <div className="flex gap-12 justify-end" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
               <button
-                className="btn btn-secondary"
+                className="payroll-pill-btn payroll-pill-btn--outline"
                 onClick={() => setConfirmDialog(null)}
-                style={{ padding: '6px 12px', borderRadius: '8px', fontWeight: 'bold' }}
               >
-                CANCEL
+                Cancel
               </button>
               <button
-                className="btn btn-primary"
+                className="payroll-pill-btn"
                 onClick={() => {
                   const action = confirmDialog.onConfirm;
                   setConfirmDialog(null);
                   action();
                 }}
-                style={{
-                  padding: '6px 12px',
-                  borderRadius: '8px',
-                  fontWeight: 'bold',
-                  backgroundColor: confirmDialog.tone === 'danger' ? '#DC2626' : '#4F46E5',
-                  borderColor: confirmDialog.tone === 'danger' ? '#DC2626' : '#4F46E5',
-                  color: 'white',
-                }}
               >
-                CONFIRM
+                Confirm
               </button>
             </div>
           </div>
@@ -10510,18 +10554,13 @@ export default function App() {
 
             <div className="flex gap-12 justify-end" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
               <button
-                className="btn btn-secondary"
+                className="payroll-pill-btn payroll-pill-btn--outline"
                 onClick={() => setEditTimeModal(null)}
-                style={{ padding: '6px 12px', borderRadius: '8px', fontWeight: 'bold' }}
               >
-                CANCEL
+                Cancel
               </button>
-              <button
-                className="btn btn-primary"
-                onClick={performEditShiftTime}
-                style={{ padding: '6px 12px', borderRadius: '8px', backgroundColor: '#4F46E5', borderColor: '#4F46E5', color: 'white', fontWeight: 'bold' }}
-              >
-                SAVE CHANGES
+              <button className="payroll-pill-btn" onClick={performEditShiftTime}>
+                Save changes
               </button>
             </div>
           </div>
@@ -10540,9 +10579,9 @@ export default function App() {
               {depotSelectModal.depots.map(depot => (
                 <button
                   key={depot.id}
-                  className="btn btn-secondary"
+                  className="payroll-pill-btn payroll-pill-btn--outline"
                   onClick={() => performManualClockIn(depotSelectModal.driverId, depot)}
-                  style={{ padding: '6px 12px', borderRadius: '8px', textAlign: 'left', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '10px' }}
+                  style={{ justifyContent: 'flex-start', padding: '8px 14px' }}
                 >
                   <MapPinned size={15} />
                   {depot.name}
@@ -10551,11 +10590,10 @@ export default function App() {
             </div>
             <div className="flex justify-end">
               <button
-                className="btn btn-secondary"
+                className="payroll-pill-btn payroll-pill-btn--outline"
                 onClick={() => setDepotSelectModal(null)}
-                style={{ padding: '6px 12px', borderRadius: '8px', fontWeight: 'bold' }}
               >
-                CANCEL
+                Cancel
               </button>
             </div>
           </div>
@@ -10577,8 +10615,8 @@ export default function App() {
             gap: '10px',
             padding: '14px 16px',
             borderRadius: '10px',
-            backgroundColor: toast.tone === 'error' ? '#FEF2F2' : toast.tone === 'success' ? '#F0FDF4' : '#F0F9FF',
-            border: `1px solid ${toast.tone === 'error' ? '#FECACA' : toast.tone === 'success' ? '#BBF7D0' : '#BAE6FD'}`,
+            backgroundColor: toast.tone === 'error' ? '#FEF2F2' : toast.tone === 'success' ? '#F0FDF4' : '#F5F5F5',
+            border: `1px solid ${toast.tone === 'error' ? '#FECACA' : toast.tone === 'success' ? '#BBF7D0' : '#DDDDDD'}`,
             boxShadow: '0 10px 30px -8px rgba(0, 0, 0, 0.25)',
           }}
         >
@@ -10587,7 +10625,7 @@ export default function App() {
           ) : toast.tone === 'success' ? (
             <Check size={18} color="#16A34A" style={{ flexShrink: 0, marginTop: '1px' }} />
           ) : (
-            <Bell size={18} color="#0284C7" style={{ flexShrink: 0, marginTop: '1px' }} />
+            <Bell size={18} color="#333333" style={{ flexShrink: 0, marginTop: '1px' }} />
           )}
           <span
             className="text-sm"

@@ -8,10 +8,9 @@ import TableFilter from './ui/table-filter';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import '@maplibre/maplibre-gl-leaflet';
-import { Package, Clock, ChevronDown, Phone, Truck, Camera, MapPin, PackageCheck, Timer, ShieldCheck, X, Route, ListChecks, Flag, ShieldAlert } from 'lucide-react';
+import { Banknote, Package, Clock, ChevronDown, Phone, Truck, Camera, MapPin, PackageCheck, Timer, ShieldCheck, X, Route, ListChecks, Flag, ShieldAlert } from 'lucide-react';
 import { supabase, isMockMode } from '../App';
-import type { TimelineStep } from './ui/tracking-timeline';
-import ShipmentStages from './ShipmentStages';
+import { TruckImage } from '../lib/truck-makes';
 
 // Shipments → Live Tracking: the tracking list on the left, KPI cards, the
 // live map with the selected shipment's driver and route so far, a delivery
@@ -53,6 +52,11 @@ interface Shipment {
   notes: string | null;
   cargoPath: string | null;
   sealed: boolean;
+  /** the load's price (revenue), and whether it came from the carrier file or was typed in */
+  price: number | null;
+  priceSource: 'file' | 'manual' | null;
+  /** the pool load the price lives on (assigned loads) */
+  carrierLoadId: string | null;
   proofs: Proof[];
   /** On-phone signature taken at delivery (delivery_signatures, migration 081). */
   signature: { name: string; svg: string; signedAt: string; lat: number | null; lng: number | null } | null;
@@ -180,6 +184,23 @@ function stagesOf(s: Shipment): string {
   return `${completed} completed · ${flags.length - completed} remaining`;
 }
 
+/** The driver has sent delivery photos or a signature for this load. */
+const hasProof = (s: Shipment) => s.proofs.length > 0 || !!s.signature;
+
+/** A short code for a place: a code already in its name (LBA4, DXB), else its first letters. */
+function codeOf(name: string | null): string {
+  if (!name) return '—';
+  const m = name.match(/\b[A-Z][A-Z0-9]{2,4}\b/);
+  return (m ? m[0] : name.replace(/[^A-Za-z0-9]/g, '').slice(0, 3)).toUpperCase() || '—';
+}
+const gbp = (n: number | null) => (n == null ? '—' : `£${n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+const dateOnly = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—');
+/** Time on the road so far (or in total once delivered). */
+function roadTime(s: Shipment): string {
+  if (!s.departure) return '—';
+  return span(s.departure, s.delivered ?? new Date().toISOString());
+}
+
 function Delta({ current, previous }: { current: number; previous: number }) {
   if (previous === 0) return <span style={{ color: 'var(--charcoal-light)' }}>{current === 0 ? '—' : 'New'}</span>;
   const pct = ((current - previous) / previous) * 100;
@@ -218,14 +239,14 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
     const [d, m] = await Promise.all([
       supabase
         .from('dispatch_loads')
-        .select(`id, driver_id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at, loading_started_at, loading_completed_at, delivery_notes, cargo_photo_path, trailer_sealed, drivers(full_name), ${PROOF_SELECT}`)
+        .select(`id, driver_id, vrid, origin, destination, booking_cutoff_at, trailer_number, status, odometer_start, odometer_end, created_at, accepted_at, completed_at, loading_started_at, loading_completed_at, delivery_notes, cargo_photo_path, trailer_sealed, carrier_load_id, price, price_source, drivers(full_name), ${PROOF_SELECT}`)
         .neq('status', 'cancelled')
         .gte('created_at', since)
         .order('created_at', { ascending: false })
         .limit(400),
       supabase
         .from('shift_loads')
-        .select(`id, load_reference, carrier_name, booked_departure_at, booked_delivery_at, delivered_at, created_at, loading_started_at, loading_completed_at, delivery_notes, cargo_photo_path, trailer_sealed, delivery_paperwork_path, delivery_evidence_path, shifts(driver_id, start_time, end_time, vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), drivers(full_name)), ${PROOF_SELECT}`)
+        .select(`id, load_reference, carrier_name, revenue_amount, booked_departure_at, booked_delivery_at, delivered_at, created_at, loading_started_at, loading_completed_at, delivery_notes, cargo_photo_path, trailer_sealed, delivery_paperwork_path, delivery_evidence_path, shifts(driver_id, start_time, end_time, vehicle:vehicles!vehicle_id(vehicle_number), trailer:vehicles!trailer_id(vehicle_number), drivers(full_name)), ${PROOF_SELECT}`)
         .gte('created_at', since)
         .order('created_at', { ascending: false })
         .limit(400),
@@ -268,6 +289,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
         shiftStart: sh?.start_time ?? null, shiftEnd: sh?.end_time ?? null, odoStart: r.odometer_start, odoEnd: r.odometer_end,
         loadingStart: r.loading_started_at ?? null, loadingEnd: r.loading_completed_at ?? null,
         notes: r.delivery_notes, cargoPath: r.cargo_photo_path, sealed: !!r.trailer_sealed, proofs: proofsOf(r, {}, r.completed_at ?? r.created_at), signature: signatureOf(r),
+        price: r.price != null ? Number(r.price) : null, priceSource: r.price_source ?? null, carrierLoadId: r.carrier_load_id ?? null,
         sortTime: new Date(r.completed_at ?? r.accepted_at ?? r.created_at).getTime(),
       });
     }
@@ -283,6 +305,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
         shiftStart: r.shifts?.start_time ?? null, shiftEnd: r.shifts?.end_time ?? null, odoStart: null, odoEnd: null,
         loadingStart: r.loading_started_at ?? null, loadingEnd: r.loading_completed_at ?? null,
         notes: r.delivery_notes, cargoPath: r.cargo_photo_path, sealed: !!r.trailer_sealed,
+        price: r.revenue_amount != null ? Number(r.revenue_amount) : null, priceSource: r.revenue_amount != null ? 'manual' : null, carrierLoadId: null,
         proofs: proofsOf(r, { paper: r.delivery_paperwork_path, evidence: r.delivery_evidence_path }, r.delivered_at ?? r.created_at), signature: signatureOf(r),
         sortTime: new Date(r.delivered_at ?? r.created_at).getTime(),
       });
@@ -295,7 +318,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
         key: `w-${s.id}`, kind: 'awaiting', ref: `Shift ${new Date(s.start_time).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`, driverId, driver: s.driver_name ?? '—',
         status: 'awaiting', progress: 10, typeLabel: 'No load yet', origin: null, destination: null, cutoff: null, carrier: null,
         trailer: s.trailer_number ?? null, unit: s.vehicle_number ?? null, createdAt: s.start_time, departure: null, delivered: null,
-        shiftStart: s.start_time, shiftEnd: null, odoStart: null, odoEnd: null, loadingStart: null, loadingEnd: null, notes: null, cargoPath: null, sealed: false, proofs: [], signature: null,
+        shiftStart: s.start_time, shiftEnd: null, odoStart: null, odoEnd: null, loadingStart: null, loadingEnd: null, notes: null, cargoPath: null, sealed: false, price: null, priceSource: null, carrierLoadId: null, proofs: [], signature: null,
         sortTime: new Date(s.start_time).getTime(),
       });
     }
@@ -327,6 +350,11 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
       inTransit: shipments.filter(s => s.status === 'in_transit').length,
       awaiting: shipments.filter(s => s.status === 'awaiting' || s.status === 'assigned').length,
       done: completed(thisStart, Infinity), donePrev: completed(lastStart, thisStart),
+      otd: (() => {
+        const rated = loads.filter(s => s.status === 'completed' && s.delivered && s.cutoff && new Date(s.delivered).getTime() >= thisStart);
+        const onTime = rated.filter(s => new Date(s.delivered!).getTime() <= new Date(s.cutoff!).getTime()).length;
+        return { pct: rated.length ? Math.round((onTime / rated.length) * 100) : null, onTime, rated: rated.length };
+      })(),
     };
   }, [shipments]);
 
@@ -431,13 +459,13 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
       L.marker([live.latitude, live.longitude], {
         icon: L.divIcon({
           className: '',
-          html: driverPinHtml({ name: selected?.driver ?? 'Driver', state: live.status === 'idle' ? 'idle' : 'live', label: unitLabel || null }),
+          html: driverPinHtml({ name: selected?.driver ?? 'Driver', state: live.status === 'idle' ? 'idle' : live.status === 'stationary' ? 'stationary' : 'live', label: unitLabel || null }),
           iconSize: DRIVER_PIN_SIZE,
           iconAnchor: DRIVER_PIN_ANCHOR,
         }),
         zIndexOffset: 500,
       })
-        .bindTooltip(`${selected?.driver ?? 'Driver'} · ${live.status === 'moving' ? `${Math.round(live.speed_mph)} mph` : live.status}`, { permanent: false, direction: 'top', offset: [0, -44] })
+        .bindTooltip(`${selected?.driver ?? 'Driver'} · ${live.status === 'moving' ? `${Math.round(live.speed_mph)} mph` : live.status}`, { permanent: false, direction: 'top', offset: [0, -42] })
         .addTo(layer);
       if (selected?.trailer) {
         L.marker([live.latitude - 0.00018, live.longitude + 0.00028], {
@@ -451,42 +479,6 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
     else if (depots.length > 0) map.fitBounds(L.latLngBounds(depots.map(d => [d.latitude, d.longitude] as [number, number])), { padding: [60, 60], maxZoom: 12 });
   }, [trail, live?.latitude, live?.longitude, depots, selected?.key, selected?.status, selected?.driver]);
 
-  // ── timeline ──
-  const steps: TimelineStep[] = useMemo(() => {
-    if (!selected) return [];
-    const s = selected;
-    const list: TimelineStep[] = [];
-    list.push({ title: 'Clocked in', detail: [s.unit, s.trailer].filter(Boolean).join(' / ') || 'No unit recorded', time: timeOnly(s.shiftStart), status: s.shiftStart ? 'completed' : 'pending' });
-    // One stage at a time for the load: "Loading" while the driver is being
-    // loaded, then "Load attached" (immediately, if no loading was tracked).
-    const loaded = !!s.loadingEnd || s.status === 'completed';
-    const loadingNow = !!s.loadingStart && !loaded && s.kind !== 'awaiting';
-    if (s.kind === 'awaiting') {
-      list.push({ title: 'Load', detail: 'Waiting for a load — assign one', status: 'active' });
-    } else if (loadingNow) {
-      list.push({ title: 'Loading', detail: `${s.ref} · in progress since ${timeOnly(s.loadingStart)}`, time: timeOnly(s.loadingStart), status: 'active' });
-    } else {
-      const bits = [s.ref, s.kind === 'assigned' ? `${s.origin ?? '—'} → ${s.destination ?? '—'}` : s.carrier].filter(Boolean).join(' · ');
-      const took = s.loadingStart && s.loadingEnd ? ` · loaded in ${span(s.loadingStart, s.loadingEnd)}` : '';
-      const waiting = s.kind === 'assigned' && !s.departure ? ' · waiting for the driver to accept' : '';
-      list.push({ title: 'Load attached', detail: `${bits}${took}${s.sealed ? ' · trailer sealed' : ''}${waiting}`, time: timeOnly(s.loadingEnd ?? s.createdAt), status: 'completed' });
-    }
-    if (s.kind !== 'awaiting') {
-      list.push({
-        title: 'On the road',
-        detail: s.status === 'completed' ? `Took ${span(s.departure, s.delivered)}` : live ? (live.status === 'moving' ? `Moving at ${Math.round(live.speed_mph)} mph` : live.status === 'idle' ? 'Idle' : 'Stopped') : 'No live signal',
-        status: s.status === 'completed' ? 'completed' : s.status === 'in_transit' && !loadingNow ? 'active' : 'pending',
-      });
-      list.push({
-        title: 'Delivered',
-        detail: s.status === 'completed' ? `${s.proofs.length} proof photo${s.proofs.length === 1 ? '' : 's'}` : 'Not confirmed yet',
-        time: timeOnly(s.delivered),
-        status: s.status === 'completed' ? 'completed' : 'pending',
-      });
-    }
-    list.push({ title: 'Clocked out', detail: s.shiftEnd ? new Date(s.shiftEnd).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : 'Still on shift', time: timeOnly(s.shiftEnd), status: s.shiftEnd ? 'completed' : 'pending' });
-    return list;
-  }, [selected, live]);
 
   const riskOf = (num: string | null) => (num ? unitRisk[num.trim().toUpperCase()] : undefined);
   const riskUnits = (sh: Shipment) => [sh.unit, sh.trailer]
@@ -529,16 +521,34 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
     setSettingLoading(false);
     load();
   };
+  // The load's price: typed in here, or read from the carrier file (shown with its source).
+  const [editingPrice, setEditingPrice] = useState(false);
+  const [priceDraft, setPriceDraft] = useState('');
+  const [savingPrice, setSavingPrice] = useState(false);
+  const canEditPrice = (sh: Shipment) => sh.kind !== 'awaiting' && (sh.kind === 'manual' || !!sh.carrierLoadId);
+  const savePrice = async (sh: Shipment) => {
+    if (isMockMode || !supabase || !canEditPrice(sh)) return;
+    const t = priceDraft.replace(/[£,\s]/g, '');
+    const n = t === '' ? null : Number(t);
+    if (n !== null && (!Number.isFinite(n) || n < 0)) return;
+    setSavingPrice(true);
+    const amount = n === null ? null : Math.round(n * 100) / 100;
+    if (sh.kind === 'manual') await supabase.from('shift_loads').update({ revenue_amount: amount }).eq('id', sh.key.slice(2));
+    else await supabase.from('carrier_loads').update({ price: amount, price_source: amount === null ? null : 'manual' }).eq('id', sh.carrierLoadId!);
+    setSavingPrice(false);
+    setEditingPrice(false);
+    load();
+  };
   const distance = selected && selected.odoStart != null && selected.odoEnd != null ? `${selected.odoEnd - selected.odoStart} mi` : '—';
 
   const kpiCard = (label: string, value: React.ReactNode, footer: React.ReactNode, icon: React.ReactNode) => (
-    <div className="glass-card" style={{ padding: '16px 18px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px' }}>
-      <div>
-        <p className="text-xs font-bold text-muted m-0">{label}</p>
-        <p className="font-black m-0 mt-4 tabular-nums" style={{ fontSize: '28px', color: 'var(--charcoal)' }}>{typeof value === 'number' ? value.toLocaleString('en-GB') : value}</p>
-        <p className="text-xs text-muted m-0 mt-4">{footer}</p>
+    <div className="glass-card ship-kpi">
+      <div style={{ minWidth: 0 }}>
+        <p className="ship-kpi-label">{label}</p>
+        <p className="ship-kpi-value tabular-nums">{typeof value === 'number' ? value.toLocaleString('en-GB') : value}</p>
+        <p className="ship-kpi-foot">{footer}</p>
       </div>
-      <span style={{ width: 40, height: 40, borderRadius: 10, background: 'var(--brand-red-light)', color: 'var(--brand-red)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{icon}</span>
+      <span className="ship-kpi-ico">{icon}</span>
     </div>
   );
 
@@ -670,7 +680,7 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
   ) : <p className="text-xs text-muted">Select a shipment.</p>;
 
   const mapCard = (
-    <div className="glass-card" style={{ padding: 0, overflow: 'hidden', position: 'relative', minHeight: '360px' }}>
+    <div className="glass-card" style={{ padding: 0, overflow: 'hidden', position: 'relative', minHeight: '440px' }}>
       <div ref={mapEl} style={{ position: 'absolute', inset: 0 }} />
       {selected && trail.length === 0 && !live && !selected.proofs.some(p => p.gps_lat != null) && (
         <span className="badge badge-dark" style={{ position: 'absolute', left: 12, top: 12, zIndex: 500 }}>No GPS for this shipment</span>
@@ -678,24 +688,129 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
     </div>
   );
 
-  // One panel: shipment details on top, delivery stages underneath.
-  const activityPanel = panel('Shipment Activity', (
-    <>
-      {selected && selected.status !== 'completed' && riskLines(selected).length > 0 && (
-        <div className="flex items-center" style={{ gap: '8px', margin: '0 0 14px', fontSize: '12.5px', color: 'var(--brand-red)', fontWeight: 700 }}>
-          {riskIcon(selected)} <span>{riskLines(selected).join(' · ')}</span>
+  // Shipment overview in the layout of the reference: lorry, route, estimate;
+  // the full shipment details follow underneath.
+  const activityPanel = (() => {
+    if (!selected) return panel('Shipment Activity', <p className="text-xs text-muted">Select a shipment.</p>);
+    const sched = scheduleOf(selected);
+    const fill = barFill(selected);
+    const pct = selected.kind === 'awaiting' ? 0 : (fill.loading * 0.3 + fill.transit * 0.5 + fill.delivered * 0.2);
+    const SEGMENTS = 6;
+    const onWay = selected.kind === 'awaiting' ? 'WAITING FOR A LOAD' : selected.status === 'completed' ? `DELIVERED IN ${roadTime(selected).toUpperCase()}` : selected.departure ? `ON THE WAY: ${roadTime(selected).toUpperCase()}` : 'NOT STARTED';
+    return (
+      <div className="glass-card sa">
+        <div className="sa-head">
+          <h3 className="sa-ref">{selected.ref}</h3>
+          <span className={`badge ${STATUS_META[selected.status].badge}`}>{STATUS_META[selected.status].label}</span>
         </div>
-      )}
-      {infoBlock}
-      <div style={{ borderTop: '1px solid var(--border-color)', marginTop: '18px', paddingTop: '16px' }}>
-        <p className="font-black text-primary m-0" style={{ fontSize: '14px', marginBottom: '10px' }}>Delivery Stages</p>
-        {selected ? <ShipmentStages steps={steps} /> : <p className="text-xs text-muted">Select a shipment.</p>}
+        <div className="sa-grid">
+          <div className="sa-truck">
+            <TruckImage width={170} />
+            <p className="sa-model">{selected.unit ?? 'No tractor'}</p>
+            <p className="sa-sub">{selected.trailer ? `Trailer ${selected.sealed ? `${selected.trailer} · sealed` : selected.trailer}` : 'No trailer'}</p>
+          </div>
+
+          <div className="sa-route">
+            <div className="sa-route-head"><strong>Route</strong><span>{onWay}</span></div>
+            <div className="sa-bar" aria-hidden="true">
+              {Array.from({ length: SEGMENTS }, (_, i) => {
+                const f = Math.max(0, Math.min(1, (pct / 100) * SEGMENTS - i));
+                return <span key={i} className={f > 0 && f < 1 ? 'sa-seg sa-seg--now' : 'sa-seg'}><span style={{ width: `${f * 100}%` }} /></span>;
+              })}
+            </div>
+            <div className="sa-ends">
+              <span><i className="sa-pin" /> {codeOf(selected.origin)}</span>
+              <span>{codeOf(selected.destination)} <i className="sa-pin" /></span>
+            </div>
+            <div className="sa-ends sa-ends--names">
+              <strong>{selected.origin ?? '—'}</strong>
+              <strong style={{ textAlign: 'right' }}>{selected.destination ?? '—'}</strong>
+            </div>
+            <div className="sa-ends sa-ends--foot">
+              <span>{[selected.carrier, selected.driver].filter(Boolean).join(' · ')}</span>
+              <span>{selected.status === 'completed' ? 'Delivered' : 'ETA'} <b>{dateOnly(selected.status === 'completed' ? selected.delivered : selected.cutoff)}</b></span>
+            </div>
+          </div>
+
+          <div className="sa-side">
+            <div className="sa-stat">
+              <span className="sa-stat-ico"><Clock size={14} /></span>
+              <p>Estimate</p>
+              <strong>{dateOnly(selected.status === 'completed' ? selected.delivered : selected.cutoff)}</strong>
+              <em style={{ color: sched.late ? 'var(--brand-red)' : undefined }}>{sched.text}</em>
+            </div>
+            {selected.kind !== 'awaiting' && (
+              <div className="sa-stat">
+                <span className="sa-stat-ico"><Banknote size={14} /></span>
+                <p>Price</p>
+                {editingPrice ? (
+                  <span style={{ display: 'flex', gap: '6px', alignItems: 'center', marginTop: '6px' }}>
+                    <input
+                      autoFocus
+                      className="input-field"
+                      inputMode="decimal"
+                      style={{ width: '90px', padding: '4px 8px', fontSize: '13px' }}
+                      value={priceDraft}
+                      placeholder="£ 0.00"
+                      onChange={(e) => setPriceDraft(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') savePrice(selected); if (e.key === 'Escape') setEditingPrice(false); }}
+                    />
+                    <button type="button" className="comp-edit-btn" disabled={savingPrice} onClick={() => savePrice(selected)}>Save</button>
+                  </span>
+                ) : (
+                  <>
+                    <strong>{gbp(selected.price)}</strong>
+                    <em>
+                      {selected.price == null ? 'No price yet' : selected.priceSource === 'file' ? 'From the carrier file' : 'Entered by hand'}
+                      {canEditPrice(selected) && (
+                        <button type="button" className="comp-edit-btn" style={{ marginLeft: '8px' }} onClick={() => { setPriceDraft(selected.price == null ? '' : String(selected.price)); setEditingPrice(true); }}>
+                          {selected.price == null ? 'Add' : 'Edit'}
+                        </button>
+                      )}
+                    </em>
+                  </>
+                )}
+              </div>
+            )}
+            <div className="sa-stat">
+              <span className="sa-stat-ico"><Route size={14} /></span>
+              <p>Distance</p>
+              <strong>{distance}</strong>
+              <em>{selected.shiftStart ? `Shift since ${timeOnly(selected.shiftStart)}` : '—'}</em>
+            </div>
+          </div>
+        </div>
+
+        {selected.status !== 'completed' && riskLines(selected).length > 0 && (
+          <div className="flex items-center" style={{ gap: '8px', margin: '16px 0 0', fontSize: '12.5px', color: 'var(--brand-red)', fontWeight: 700 }}>
+            {riskIcon(selected)} <span>{riskLines(selected).join(' · ')}</span>
+          </div>
+        )}
+        <div style={{ borderTop: '1px solid var(--border-color)', marginTop: '18px', paddingTop: '16px' }}>{infoBlock}</div>
       </div>
-    </>
-  ));
+    );
+  })();
 
   return (
-    <div className="ship-grid mt-16">
+    <div className="mt-16">
+      <div className={`ship-kpis ${history ? '' : 'ship-kpis--5'}`}>
+          {history ? (
+            <>
+              {kpiCard('Deliveries', histKpi.count, <>in the last {period} days</>, <PackageCheck size={18} />)}
+              {kpiCard('Avg. Duration', histKpi.avg == null ? '—' : histKpi.avg >= 60 ? `${Math.floor(histKpi.avg / 60)}h ${String(histKpi.avg % 60).padStart(2, '0')}m` : `${histKpi.avg}m`, <>departure to delivery</>, <Timer size={18} />)}
+              {kpiCard('With Proof', `${histKpi.proofPct}%`, <>{histKpi.photos} photo{histKpi.photos === 1 ? '' : 's'} on file</>, <ShieldCheck size={18} />)}
+            </>
+          ) : (
+            <>
+              {kpiCard('Total Shipments', kpi.total, <><Delta current={kpi.total} previous={kpi.totalPrev} /> vs last month</>, <Package size={18} />)}
+              {kpiCard('In Transit', kpi.inTransit, <>on the road now</>, <Truck size={18} />)}
+              {kpiCard('Delivered', kpi.done, <><Delta current={kpi.done} previous={kpi.donePrev} /> vs last month</>, <PackageCheck size={18} />)}
+              {kpiCard('OTD', kpi.otd.pct == null ? '—' : `${kpi.otd.pct}%`, <>{kpi.otd.rated === 0 ? 'on-time delivery, no rated loads yet' : `${kpi.otd.onTime} of ${kpi.otd.rated} on time this month`}</>, <ShieldCheck size={18} />)}
+              {kpiCard('Pending', kpi.awaiting, <>assigned or waiting for a load</>, <Clock size={18} />)}
+            </>
+          )}
+        </div>
+      <div className="ship-grid" style={{ marginTop: '16px' }}>
       {/* ── Tracking / history list ── */}
       <aside className="glass-card ship-list">
         <div className="flex items-center" style={{ gap: '8px', marginBottom: '12px' }}>
@@ -730,27 +845,27 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
                 onClick={() => setSelectedKey(s.key)}
                 style={{ padding: '12px', borderRadius: '14px', marginBottom: '10px', cursor: 'pointer', background: 'var(--card-bg)', border: `1.5px solid ${active ? 'var(--brand-red)' : 'var(--border-color)'}` }}
               >
-                <div className="flex items-start" style={{ gap: '10px' }}>
-                  <span style={{ width: 44, height: 44, borderRadius: 10, background: 'var(--card-bg-hover)', color: 'var(--charcoal)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    {history ? <PackageCheck size={20} /> : <Package size={20} />}
-                  </span>
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div className="flex items-center justify-between" style={{ gap: '6px' }}>
-                      <span className="text-xs text-muted">{s.typeLabel}</span>
-                      <span className={`badge ${STATUS_META[s.status].badge}`}>{STATUS_META[s.status].label}</span>
-                    </div>
-                    <p className="flex items-center m-0" style={{ gap: '6px', margin: '2px 0 4px' }}>
-                      <MemberAvatar name={s.driver} size={18} />
-                      <span className="text-xs font-bold text-primary" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.driver}</span>
-                    </p>
-                    <p className="font-mono font-bold text-primary m-0" style={{ fontSize: '13.5px', overflowWrap: 'anywhere' }}>{s.ref} <LoadingChip s={s} />{s.status !== 'completed' && riskLines(s).length > 0 && riskIcon(s)}</p>
-                    <p className="text-xs text-muted m-0 mt-4" style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <Clock size={11} /> {dtShort(s.delivered ?? s.departure ?? s.createdAt)}
-                    </p>
-                  </div>
+                <div className="tl-top">
+                  <span className="tl-ref">{s.ref}</span>
+                  <LoadingChip s={s} />
+                  {s.status !== 'completed' && riskLines(s).length > 0 && riskIcon(s)}
+                  <span className={`badge ${STATUS_META[s.status].badge}`} style={{ marginLeft: 'auto' }}>{STATUS_META[s.status].label}</span>
                   <button type="button" onClick={(e) => { e.stopPropagation(); setExpanded(expanded === s.key ? null : s.key); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--charcoal-light)', padding: 0 }} aria-label="Details">
                     <ChevronDown size={16} style={{ transform: expanded === s.key ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }} />
                   </button>
+                </div>
+                <div className="tl-route">
+                  <span className="tl-code">{codeOf(s.origin)}</span>
+                  <span className="tl-line"><i /><Truck size={13} /><i /><em>{roadTime(s)}</em></span>
+                  <span className="tl-code">{codeOf(s.destination)}</span>
+                </div>
+                <div className="tl-places">
+                  <strong>{s.origin ?? (s.kind === 'awaiting' ? 'No load yet' : '—')}</strong>
+                  <strong>{s.destination ?? '—'}</strong>
+                </div>
+                <div className="tl-meta">
+                  <span className="tl-meta-l"><MemberAvatar name={s.driver} size={16} /><span>{s.driver}</span><span className="tl-dot">·</span><span>{[s.carrier ?? s.typeLabel, s.trailer].filter(Boolean).join(' · ')}</span></span>
+                  <span className="tl-eta">{s.status === 'completed' ? 'Delivered' : 'ETA'} <b>{dateOnly(s.status === 'completed' ? s.delivered : s.cutoff)}</b></span>
                 </div>
                 {(() => {
                   const fill = barFill(s);
@@ -768,12 +883,19 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
                         ))}
                       </div>
                       <div className="si-rows">
+                        {s.price != null && <div className="si-row"><span><Banknote size={13} /> Price</span><strong>{gbp(s.price)}</strong></div>}
                         <div className="si-row"><span><Route size={13} /> Distance</span><strong>{s.odoStart != null && s.odoEnd != null ? `${s.odoEnd - s.odoStart} mi` : '—'}</strong></div>
                         <div className="si-row"><span><Timer size={13} /> Schedule</span><strong style={{ color: sched.late ? 'var(--brand-red)' : undefined }}>{sched.text}</strong></div>
                         <div className="si-row"><span><ListChecks size={13} /> Stages</span><strong>{stagesOf(s)}</strong></div>
                         <div className="si-row"><span><Flag size={13} /> {s.status === 'completed' ? 'Delivered' : 'Cut-off'}</span><strong>{s.status === 'completed' ? (timeOnly(s.delivered) ?? '—') : (timeOnly(s.cutoff) ?? '—')}</strong></div>
-                        {history && <div className="si-row"><span><Camera size={13} /> Proof</span><strong>{s.proofs.length} photo{s.proofs.length === 1 ? '' : 's'}</strong></div>}
+                        {hasProof(s) && <div className="si-row"><span><Camera size={13} /> Proof of delivery</span><strong>{s.proofs.length > 0 ? `${s.proofs.length} photo${s.proofs.length === 1 ? '' : 's'}` : ''}{s.proofs.length > 0 && s.signature ? ' + ' : ''}{s.signature ? 'signature' : ''}</strong></div>}
                       </div>
+                      {active && hasProof(s) && (
+                        <div className="tl-proof" onClick={(e) => e.stopPropagation()}>
+                          <p className="tl-proof-title">Proof of delivery</p>
+                          {proofBlock}
+                        </div>
+                      )}
                     </>
                   );
                 })()}
@@ -796,27 +918,10 @@ export default function ShipmentsTracking({ mode = 'live', shifts, unitRisk = {}
 
       {/* ── Right side ── */}
       <div className="ship-main">
-        <div className="ship-kpis">
-          {history ? (
-            <>
-              {kpiCard('Deliveries', histKpi.count, <>in the last {period} days</>, <PackageCheck size={18} />)}
-              {kpiCard('Avg. Duration', histKpi.avg == null ? '—' : histKpi.avg >= 60 ? `${Math.floor(histKpi.avg / 60)}h ${String(histKpi.avg % 60).padStart(2, '0')}m` : `${histKpi.avg}m`, <>departure to delivery</>, <Timer size={18} />)}
-              {kpiCard('With Proof', `${histKpi.proofPct}%`, <>{histKpi.photos} photo{histKpi.photos === 1 ? '' : 's'} on file</>, <ShieldCheck size={18} />)}
-            </>
-          ) : (
-            <>
-              {kpiCard('Total Shipments', kpi.total, <><Delta current={kpi.total} previous={kpi.totalPrev} /> vs last month</>, <Package size={18} />)}
-              {kpiCard('In Transit', kpi.inTransit, <>{kpi.awaiting} waiting to start</>, <Truck size={18} />)}
-              {kpiCard('Delivered', kpi.done, <><Delta current={kpi.done} previous={kpi.donePrev} /> vs last month</>, <PackageCheck size={18} />)}
-            </>
-          )}
-        </div>
-
-        <div className="ship-map-row">
-          {mapCard}
-          {panel('Proof of Delivery', proofBlock, { minHeight: '360px' })}
-        </div>
+        {mapCard}
         {activityPanel}
+      </div>
+
       </div>
 
       {lightbox && (

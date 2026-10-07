@@ -23,3 +23,7 @@ supabase/.temp/
 
 # Claude Code local config
 .claude/
+
+# Local test logins and Supabase CLI scratch files: never commit
+test-data/QA_LOCAL_LOGINS.md
+supabase/supabase/.temp/
