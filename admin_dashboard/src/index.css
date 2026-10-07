@@ -2390,12 +2390,10 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
 }
 .an-page-head {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--border-color);
 }
 .an-page-head-text { min-width: 0; }
 .an-page-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -2497,7 +2495,7 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
   justify-content: space-between;
   gap: 10px 16px;
   flex-wrap: wrap;
-  margin-top: -14px;
+  margin-top: -16px;
 }
 .an-toolbar-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
 .an-toolbar-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -2652,50 +2650,106 @@ button.dash-stat:hover { background: var(--card-bg-hover); }
   .tp-deltas { align-items: flex-start; }
 }
 
-/* Rank bars (21st.dev @eugeneshilow/rank-bars) */
-.rank-bars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.rank-bars-row {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 150px) minmax(0, 1fr) auto;
+/* Drivers / vehicles / customers: compact category selector with an
+   animated information banner under it (AnalyticsBreakdowns). */
+.bd-selector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.bd-option {
+  display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 8px 0;
-  border-bottom: 1px dashed var(--border-color);
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--card-bg);
+  color: var(--charcoal);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
 }
-.rank-bars-row:last-child { border-bottom: none; }
-.rank-bars-pos {
+.bd-option:hover { border-color: var(--charcoal-light); }
+.bd-option.is-active { border-color: var(--brand-red); box-shadow: 0 0 0 1px var(--brand-red); }
+.bd-option-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: var(--brand-red-light);
+  color: var(--brand-red);
+}
+.bd-option-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.bd-option-title { font-size: 13.5px; font-weight: 700; }
+.bd-option-metric { font-size: 11px; color: var(--charcoal-light); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bd-option-value { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bd-option-change { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border-color); }
+.bd-option-change.is-up { color: #047857; }
+.bd-option-change.is-down { color: var(--brand-red); }
+.bd-option-chevron { flex-shrink: 0; color: var(--charcoal-light); transition: transform 0.2s ease; }
+.bd-banner {
+  margin-top: 10px;
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(204, 0, 0, 0.25);
+  border-left: 4px solid var(--brand-red);
+  background: var(--brand-red-light);
+}
+.bd-banner-summary { margin: 0 0 12px; font-size: 13px; color: var(--charcoal); line-height: 1.5; }
+.bd-banner-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.bd-fact { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 9px; background: var(--card-bg); border: 1px solid var(--border-color); }
+.bd-fact-label { font-size: 11px; color: var(--charcoal-light); }
+.bd-fact-value { font-size: 15px; font-weight: 800; color: var(--charcoal); font-variant-numeric: tabular-nums; }
+.bd-banner-extremes { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 12px; font-size: 12.5px; color: var(--charcoal-mid); }
+.bd-extreme { display: inline-flex; align-items: center; gap: 5px; }
+.bd-extreme--best svg { color: #047857; }
+.bd-extreme--low svg { color: var(--brand-red); }
+.bd-banner-note { margin: 10px 0 0; font-size: 12px; color: var(--charcoal-mid); }
+@media (max-width: 900px) {
+  .bd-selector { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Driver profitability — compact progress-bar list, most profitable
+   first (DriverProfitability.tsx). */
+.dp-bars { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 14px 32px; }
+.dp-bar-row { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.dp-bar-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.dp-bar-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 13.5px; font-weight: 700; color: var(--charcoal); }
+.dp-rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   border-radius: 6px;
   background: var(--card-bg-hover);
   font-size: 11px;
   font-weight: 700;
   color: var(--charcoal-light);
-  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
-.rank-bars-pos.is-top { background: var(--brand-red); color: #FFFFFF; }
-.rank-bars-label, .rank-bars-value { display: flex; flex-direction: column; min-width: 0; }
-.rank-bars-value { align-items: flex-end; font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.rank-bars-name { font-size: 13px; font-weight: 600; color: var(--charcoal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rank-bars-sub { font-size: 11px; font-weight: 400; color: var(--charcoal-light); white-space: nowrap; }
-.rank-bars-track { height: 10px; border-radius: 0 4px 4px 0; background: var(--card-bg-hover); overflow: hidden; }
-.rank-bars-fill {
-  display: block;
+.dp-rank.is-top { background: #10B981; color: #FFFFFF; }
+.dp-rank.is-low { background: #F59E0B; color: #FFFFFF; }
+.dp-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 6px; border-radius: 999px; }
+.dp-tag--most { color: #047857; background: rgba(16, 185, 129, 0.12); }
+.dp-tag--least { color: #B45309; background: rgba(245, 158, 11, 0.14); }
+.dp-bar-value { display: inline-flex; align-items: baseline; gap: 8px; font-size: 14px; font-weight: 800; color: var(--charcoal); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dp-bar-margin { font-size: 11px; font-weight: 600; color: var(--charcoal-light); }
+.dp-track { position: relative; height: 8px; width: 100%; overflow: hidden; border-radius: 999px; background: var(--card-bg-hover); }
+.dp-fill {
   height: 100%;
-  border-radius: 0 4px 4px 0;
+  border-radius: 999px;
   transform-origin: left;
-  animation: rank-bars-grow 0.6s cubic-bezier(0.2, 0.7, 0.3, 1) both;
-  animation-delay: calc(var(--i) * 40ms);
+  transition: width 0.4s ease;
+  animation: dp-grow 0.7s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
-@keyframes rank-bars-grow { from { transform: scaleX(0); } }
-@media (prefers-reduced-motion: reduce) { .rank-bars-fill { animation: none; } }
-@media (max-width: 640px) {
-  .rank-bars-row { grid-template-columns: 22px minmax(0, 1fr) auto; }
-  .rank-bars-track { grid-column: 2 / -1; grid-row: 2; }
-}
+@keyframes dp-grow { from { transform: scaleX(0); } }
+@media (prefers-reduced-motion: reduce) { .dp-fill { animation: none; } }
+.dp-bar-meta { font-size: 11.5px; color: var(--charcoal-light); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dp-warn { color: var(--brand-red); }
+@media (max-width: 640px) { .dp-bars { grid-template-columns: minmax(0, 1fr); } .dp-bar-meta { white-space: normal; } }
 
 /* ── Analytics stats cards (21st.dev @kavikatiyar/stats-card) ── */
 

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { createPortal } from 'react-dom';
 import * as XLSX from 'xlsx';
-import { Copy, Check, Download, Lock, FileSpreadsheet, FileText, Link2, Mail, Trophy, LayoutGrid, List, Users, UserRound, Truck, Building2, Sigma, X } from 'lucide-react';
+import { Copy, Check, ChevronDown, Download, Lock, TrendingDown, TrendingUp, FileSpreadsheet, FileText, Link2, Mail, Trophy, LayoutGrid, List, Users, UserRound, Truck, Building2, Sigma, X } from 'lucide-react';
 import { ActivityStatsCard, StatsCardRows, type ChartDataPoint } from '../ui/stats-card';
 import { supabase, isMockMode } from '../../App';
 import { computeBreakdowns, type BreakdownExtras, type BreakdownFuel, type BreakdownShift, type CustomerScore, type DriverScore, type VehicleScore } from '../../lib/analytics-breakdowns';
@@ -65,7 +66,6 @@ const initials = (name: string) => {
   if (words.length === 1) return words[0].slice(0, 3).toUpperCase();
   return words.slice(0, 3).map(w => w[0]).join('').toUpperCase();
 };
-const regShort = (reg: string) => reg.replace(/\s+/g, '').slice(-3);
 
 /** How many fixed-width columns fit in the scorecard grid right now. */
 function useGridColumns(el: HTMLDivElement | null, minWidth = 300, max = 3) {
@@ -85,7 +85,10 @@ export default function AnalyticsBreakdowns(p: Props) {
   const [tab, setTab] = useState<Tab>('drivers');
   // Scorecards (stats cards) are the default view for all three tabs;
   // the table stays one click away.
-  const [view, setView] = useState<'cards' | 'table'>('cards');
+  // Table first: compact and readable; scorecards stay one click away.
+  const [view, setView] = useState<'cards' | 'table'>('table');
+  // The information banner under the category selector.
+  const [bannerOpen, setBannerOpen] = useState(true);
   const [gridEl, setGridEl] = useState<HTMLDivElement | null>(null);
   const detailRef = useRef<HTMLDivElement | null>(null);
   const [sortKey, setSortKey] = useState<DriverSortKey>('profitPerHour');
@@ -265,45 +268,97 @@ export default function AnalyticsBreakdowns(p: Props) {
   const prevCustomer = (name: string) => trend.previousTotal?.customers.find(c => c.customer === name) ?? null;
   const prevOrZero = <T,>(row: T | null, pick: (r: T) => number) => (comparing ? (row ? pick(row) : 0) : null);
 
-  // ── Summary cards (one per dimension; they also switch the tab) ──
-  const openTab = (next: Tab, scroll = false) => {
+  // ── Category selector + information banner ──────────────────
+  // Selecting a category switches the detail below and drops down a
+  // banner with that category's exact figures; selecting the open
+  // category again folds the banner away.
+  const selectTab = (next: Tab) => {
+    if (next === tab) { setBannerOpen(o => !o); return; }
     setTab(next);
-    if (scroll) requestAnimationFrame(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    setBannerOpen(true);
   };
   const prev = trend.previousTotal;
   const driverProfit = sum(data.drivers, d => d.profit);
   const driverHours = sum(data.drivers, d => d.hours);
   const vehicleProfit = sum(data.vehicles, v => v.profit);
+  const vehicleRevenue = sum(data.vehicles, v => v.revenue);
+  const truckDays = sum(data.vehicles, v => v.daysUsed);
+  const vehicleMiles = sum(data.vehicles, v => v.miles);
   const customerRevenue = sum(data.customers, c => c.revenue);
   const customerContribution = sum(data.customers, c => c.contribution);
-  const entityBars = <T,>(rows: T[], label: (r: T) => string, name: (r: T) => string, value: (r: T) => number, previous: (r: T) => number): ChartDataPoint[] =>
-    rows.slice(0, BUCKETS).map(r => ({
-      label: label(r),
-      currentValue: value(r),
-      previousValue: comparing ? previous(r) : 0,
-      hint: `${name(r)}: ${money(value(r))}${comparing ? ` · previous period ${money(previous(r))}` : ''}`,
-    }));
+  const customerLoads = sum(data.customers, c => c.loads);
+  const customerRatedLoads = sum(data.customers, c => c.ratedLoads);
+  const avgOf = (vals: (number | null)[]) => {
+    const real = vals.filter((v): v is number => v !== null);
+    return real.length > 0 ? real.reduce((t, v) => t + v, 0) / real.length : null;
+  };
 
-  const summaryCards: { key: Tab; title: string; icon: React.ReactNode; value: number; previous: number | null; subtitle: string; bars: ChartDataPoint[] }[] = [
-    {
-      key: 'drivers', title: 'Drivers', icon: <Users size={20} />,
-      value: driverProfit, previous: prev ? sum(prev.drivers, d => d.profit) : null,
-      subtitle: `Profit before fixed costs · ${data.drivers.length} driver${data.drivers.length === 1 ? '' : 's'}${driverHours > 0 ? ` · ${money(driverProfit / driverHours)}/h` : ''}`,
-      bars: entityBars([...data.drivers].sort((a, b) => b.profit - a.profit), d => initials(d.name), d => d.name, d => d.profit, d => prevDriver(d.driverId)?.profit ?? 0),
-    },
-    {
-      key: 'vehicles', title: 'Vehicles', icon: <Truck size={20} />,
-      value: vehicleProfit, previous: prev ? sum(prev.vehicles, v => v.profit) : null,
-      subtitle: `Profit · ${data.vehicles.length} vehicle${data.vehicles.length === 1 ? '' : 's'} · ${sum(data.vehicles, v => v.daysUsed)} truck-days`,
-      bars: entityBars(data.vehicles, v => regShort(v.registration), v => v.registration, v => v.profit, v => prevVehicle(v.vehicleId)?.profit ?? 0),
-    },
-    {
-      key: 'customers', title: 'Customers', icon: <Building2 size={20} />,
-      value: customerRevenue, previous: prev ? sum(prev.customers, c => c.revenue) : null,
-      subtitle: `Revenue · ${data.customers.length} customer${data.customers.length === 1 ? '' : 's'}${customerRevenue > 0 ? ` · ${pct((customerContribution / customerRevenue) * 100)} margin` : ''}`,
-      bars: entityBars([...data.customers].sort((a, b) => b.revenue - a.revenue), c => initials(c.customer), c => c.customer, c => c.revenue, c => prevCustomer(c.customer)?.revenue ?? 0),
-    },
+  const categories: { key: Tab; title: string; icon: React.ReactNode; metric: string; value: number; previous: number | null }[] = [
+    { key: 'drivers', title: 'Drivers', icon: <Users size={16} />, metric: 'Profit before fixed costs', value: driverProfit, previous: prev ? sum(prev.drivers, d => d.profit) : null },
+    { key: 'vehicles', title: 'Vehicles', icon: <Truck size={16} />, metric: 'Profit after vehicle costs', value: vehicleProfit, previous: prev ? sum(prev.vehicles, v => v.profit) : null },
+    { key: 'customers', title: 'Customers', icon: <Building2 size={16} />, metric: 'Revenue', value: customerRevenue, previous: prev ? sum(prev.customers, c => c.revenue) : null },
   ];
+
+  type Fact = { label: string; value: string; bad?: boolean };
+  const banner: Record<Tab, { summary: string; facts: Fact[]; best: string | null; lowest: string | null }> = (() => {
+    const topDriver = data.drivers.reduce<DriverScore | null>((t, d) => (t === null || (d.profitPerHour ?? -Infinity) > (t.profitPerHour ?? -Infinity) ? d : t), null);
+    const lowDriver = data.drivers.reduce<DriverScore | null>((t, d) => (t === null || (d.profitPerHour ?? Infinity) < (t.profitPerHour ?? Infinity) ? d : t), null);
+    const topVehicle = data.vehicles.reduce<VehicleScore | null>((t, v) => (t === null || v.profit > t.profit ? v : t), null);
+    const lowVehicle = data.vehicles.reduce<VehicleScore | null>((t, v) => (t === null || v.profit < t.profit ? v : t), null);
+    const topCustomer = data.customers.reduce<CustomerScore | null>((t, c) => (t === null || c.contribution > t.contribution ? c : t), null);
+    const lowCustomer = data.customers.reduce<CustomerScore | null>((t, c) => (t === null || c.contribution < t.contribution ? c : t), null);
+    const wtd = data.drivers.filter(d => d.wtdBreach).length;
+    const many = data.drivers.length > 1;
+    return {
+      drivers: {
+        summary: data.drivers.length === 0
+          ? 'No completed shifts in this period.'
+          : `${data.drivers.length} driver${data.drivers.length === 1 ? '' : 's'} worked ${driverHours.toFixed(1)} hours and made ${money(driverProfit)} after wages, NI & pension and fuel.`,
+        facts: [
+          { label: 'Profit', value: money(driverProfit), bad: driverProfit < 0 },
+          { label: 'Profit / hour', value: driverHours > 0 ? money(driverProfit / driverHours) : '—', bad: driverProfit < 0 },
+          { label: 'Hours', value: driverHours.toFixed(1) },
+          { label: 'Avg hours / week', value: num(avgOf(data.drivers.map(d => d.avgWeeklyHours))) },
+          { label: 'Over 48h (WTD)', value: String(wtd), bad: wtd > 0 },
+          { label: 'Walk-around done', value: pct(avgOf(data.drivers.map(d => d.walkaroundPct))) },
+          { label: 'On time', value: pct(avgOf(data.drivers.map(d => d.onTimePct))) },
+          { label: 'Idle alerts', value: String(sum(data.drivers, d => d.idleAlerts)) },
+        ],
+        best: topDriver && many ? `${topDriver.name} · ${money(topDriver.profitPerHour)}/h` : null,
+        lowest: lowDriver && many ? `${lowDriver.name} · ${money(lowDriver.profitPerHour)}/h` : null,
+      },
+      vehicles: {
+        summary: data.vehicles.length === 0
+          ? 'No shifts with an assigned vehicle in this period.'
+          : `${data.vehicles.length} vehicle${data.vehicles.length === 1 ? '' : 's'} ran ${truckDays} truck-day${truckDays === 1 ? '' : 's'} and made ${money(vehicleProfit)} after direct and vehicle costs.`,
+        facts: [
+          { label: 'Profit', value: money(vehicleProfit), bad: vehicleProfit < 0 },
+          { label: 'Revenue', value: money(vehicleRevenue) },
+          { label: 'Truck-days', value: String(truckDays) },
+          { label: 'Revenue / truck-day', value: truckDays > 0 ? money(vehicleRevenue / truckDays) : '—', bad: p.settings.target_revenue_per_truck_day !== null && truckDays > 0 && vehicleRevenue / truckDays < p.settings.target_revenue_per_truck_day },
+          { label: 'Miles', value: Math.round(vehicleMiles).toLocaleString('en-GB') },
+          { label: '£ / mile', value: vehicleMiles > 0 ? `£${(vehicleProfit / vehicleMiles).toFixed(2)}` : '—', bad: vehicleMiles > 0 && vehicleProfit < 0 },
+        ],
+        best: topVehicle && data.vehicles.length > 1 ? `${topVehicle.registration} · ${money(topVehicle.profit)}` : null,
+        lowest: lowVehicle && data.vehicles.length > 1 ? `${lowVehicle.registration} · ${money(lowVehicle.profit)}` : null,
+      },
+      customers: {
+        summary: data.customers.length === 0
+          ? 'No loads attached to shifts in this period.'
+          : `${data.customers.length} customer${data.customers.length === 1 ? '' : 's'} · ${customerLoads} load${customerLoads === 1 ? '' : 's'} worth ${money(customerRevenue)}, leaving ${money(customerContribution)} after each load's share of driver and fuel cost.`,
+        facts: [
+          { label: 'Revenue', value: money(customerRevenue) },
+          { label: 'Contribution', value: money(customerContribution), bad: customerContribution < 0 },
+          { label: 'Margin', value: customerRevenue > 0 ? pct((customerContribution / customerRevenue) * 100) : '—', bad: customerContribution < 0 },
+          { label: 'Loads rated', value: `${customerRatedLoads} / ${customerLoads}`, bad: customerRatedLoads < customerLoads },
+          { label: 'Avg / load', value: customerRatedLoads > 0 ? money(customerRevenue / customerRatedLoads) : '—' },
+          { label: 'On time', value: pct(avgOf(data.customers.filter(c => c.bookedLoads > 0).map(c => c.onTimePct))) },
+        ],
+        best: topCustomer && data.customers.length > 1 ? `${topCustomer.customer} · ${money(topCustomer.contribution)}` : null,
+        lowest: lowCustomer && data.customers.length > 1 ? `${lowCustomer.customer} · ${money(lowCustomer.contribution)}` : null,
+      },
+    };
+  })();
 
   // ── Scorecard grid: one stats card per entity, plus an "average"
   // card that spans whatever is left of the last row so the grid never
@@ -444,10 +499,10 @@ export default function AnalyticsBreakdowns(p: Props) {
   return (
     <AnalyticsSection
       title="Drivers, vehicles & customers"
-      description="Profit by driver, vehicle and customer. Pick a card to open its scorecards below."
+      description="Pick a category to see its figures; the table below lists every driver, vehicle or customer."
       actions={(
         <>
-          {comparing && (
+          {comparing && view === 'cards' && (
             <span className="stats-card-legend">
               <span><i style={{ background: 'var(--brand-red)' }} />This period</span>
               <span><i style={{ background: 'var(--stats-bar-secondary)' }} />Previous period</span>
@@ -459,39 +514,83 @@ export default function AnalyticsBreakdowns(p: Props) {
     >
       {p.reportActionsTarget && createPortal(reportActions, p.reportActionsTarget)}
 
-      {/* Summary stats cards — one per dimension, top 8 of each as paired
-          bars. Clicking a card (or its arrow) opens that tab below. */}
-      <div className="grid grid-cols-1 lg:grid-cols-3" style={{ gap: '14px', marginBottom: '14px' }}>
-        {summaryCards.map(c => (
-          <ActivityStatsCard
-            key={c.key}
-            title={c.title}
-            icon={c.icon}
-            mainValue={money(c.value)}
-            negative={c.value < 0}
-            subtitle={c.subtitle}
-            changeValue={pctChange(c.value, c.previous)}
-            changeDescription={changeDescription}
-            noChangeText={noChangeText}
-            chartData={c.bars.length > 0 ? c.bars : [{ label: '—', currentValue: 0, previousValue: 0, hint: 'Nothing in this period yet' }]}
-            onActionClick={() => openTab(c.key, true)}
-            actionLabel={`Open ${c.title.toLowerCase()} scorecards`}
-            active={tab === c.key}
-            onClick={() => openTab(c.key)}
-            style={{ cursor: 'pointer' }}
-          />
-        ))}
+      {/* Category selector — compact; the selected category's figures
+          drop down in an animated banner underneath. */}
+      <div className="bd-selector" role="tablist" aria-label="Breakdown">
+        {categories.map(c => {
+          const change = pctChange(c.value, c.previous);
+          const active = tab === c.key;
+          return (
+            <button
+              key={c.key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-expanded={active && bannerOpen}
+              className={`bd-option ${active ? 'is-active' : ''}`}
+              onClick={() => selectTab(c.key)}
+            >
+              <span className="bd-option-icon">{c.icon}</span>
+              <span className="bd-option-text">
+                <span className="bd-option-title">{c.title}</span>
+                <span className="bd-option-metric">{c.metric}</span>
+              </span>
+              <span className="bd-option-value" style={{ color: c.value < 0 ? 'var(--brand-red)' : undefined }}>{money(c.value)}</span>
+              {change !== null && (
+                <span className={`bd-option-change ${change >= 0 ? 'is-up' : 'is-down'}`}>{change >= 0 ? '+' : ''}{change.toFixed(0)}%</span>
+              )}
+              <ChevronDown size={15} className="bd-option-chevron" style={{ transform: active && bannerOpen ? 'rotate(180deg)' : undefined }} />
+            </button>
+          );
+        })}
       </div>
+
+      <AnimatePresence initial={false} mode="wait">
+        {bannerOpen && (
+          <motion.div
+            key={tab}
+            initial={{ height: 0, opacity: 0, y: -6 }}
+            animate={{ height: 'auto', opacity: 1, y: 0 }}
+            exit={{ height: 0, opacity: 0, y: -6 }}
+            transition={{ duration: 0.26, ease: [0.2, 0.7, 0.3, 1] }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div className="bd-banner" role="region" aria-label={`${categories.find(c => c.key === tab)?.title} summary`}>
+              <p className="bd-banner-summary">{banner[tab].summary}</p>
+              <div className="bd-banner-facts">
+                {banner[tab].facts.map(f => (
+                  <div key={f.label} className="bd-fact">
+                    <span className="bd-fact-label">{f.label}</span>
+                    <span className="bd-fact-value" style={{ color: f.bad ? 'var(--brand-red)' : undefined }}>{f.value}</span>
+                  </div>
+                ))}
+              </div>
+              {(banner[tab].best || banner[tab].lowest) && (
+                <div className="bd-banner-extremes">
+                  {banner[tab].best && <span className="bd-extreme bd-extreme--best"><TrendingUp size={13} /> Best: <strong>{banner[tab].best}</strong></span>}
+                  {banner[tab].lowest && <span className="bd-extreme bd-extreme--low"><TrendingDown size={13} /> Lowest: <strong>{banner[tab].lowest}</strong></span>}
+                </div>
+              )}
+              {comparing && (
+                <p className="bd-banner-note">
+                  {(() => {
+                    const c = categories.find(x => x.key === tab)!;
+                    const change = pctChange(c.value, c.previous);
+                    return change === null ? noChangeText : `${c.metric} ${change >= 0 ? 'up' : 'down'} ${Math.abs(change).toFixed(0)}% on the previous period (${money(c.previous ?? 0)}).`;
+                  })()}
+                </p>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div ref={detailRef} className="an-card an-card--flush" style={{ overflow: 'hidden', scrollMarginTop: '16px' }}>
         <div className="flex items-center justify-between" style={{ padding: '10px 14px', borderBottom: '1px solid var(--border-color)', gap: '10px', flexWrap: 'wrap' }}>
-          <div className="telemetry-tabs">
-            {([['drivers', 'Drivers', Users], ['vehicles', 'Vehicles', Truck], ['customers', 'Customers', Building2]] as const).map(([key, label, Icon]) => (
-              <button key={key} type="button" className={`telemetry-tab ${tab === key ? 'telemetry-tab--active' : ''}`} onClick={() => setTab(key)}>
-                <Icon size={13} /> {label}
-              </button>
-            ))}
-          </div>
+          <p className="an-card-title" style={{ margin: 0 }}>
+            {tab === 'drivers' ? <Users size={14} /> : tab === 'vehicles' ? <Truck size={14} /> : <Building2 size={14} />}
+            {tab === 'drivers' ? 'Drivers' : tab === 'vehicles' ? 'Vehicles' : 'Customers'} in detail
+          </p>
           <div className="flex items-center" style={{ gap: '8px', flexWrap: 'wrap' }}>
             {tab === 'drivers' && view === 'cards' && (
               <select className="select-field" aria-label="Sort drivers by" style={{ width: 'auto', padding: '5px 10px', fontSize: '11.5px' }} value={sortKey} onChange={e => setSortKey(e.target.value as DriverSortKey)}>
