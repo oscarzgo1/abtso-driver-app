@@ -172,7 +172,7 @@ class _TrackingSetupSheetState extends State<TrackingSetupSheet> with WidgetsBin
               const Text('Keep Tachyo tracking', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: TachyoTheme.charcoal)),
               const SizedBox(height: 4),
               const Text(
-                'Your manager sees your shift live and your journey is saved. Three phone settings keep that working with the screen off.',
+                'Your manager sees your shift live and your journey is saved. These phone settings keep that working with the screen off.',
                 style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: TachyoTheme.charcoalMid, height: 1.4),
               ),
               const SizedBox(height: 16),
@@ -192,6 +192,17 @@ class _TrackingSetupSheetState extends State<TrackingSetupSheet> with WidgetsBin
                   buttonLabel: h.permanentlyDenied ? 'Open app settings' : 'Allow all the time',
                   onPressed: () => _run(TrackingGuard.requestAlwaysLocation),
                 ),
+                if (TrackingGuard.isIOS)
+                  _row(
+                    icon: Icons.center_focus_strong_rounded,
+                    title: 'Precise Location on',
+                    detail: h.precise
+                        ? 'Tachyo gets your exact position.'
+                        : 'Precise Location is off, so your position is only roughly known and isn\'t sent. Open Location in Tachyo\'s settings and turn Precise Location on.',
+                    ok: h.precise,
+                    buttonLabel: 'Open app settings',
+                    onPressed: () => _run(TrackingGuard.openAppSettings),
+                  ),
                 _row(
                   icon: Icons.gps_fixed_rounded,
                   title: 'GPS switched on',

@@ -252,36 +252,8 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
 
     if (kIsWeb) return;
 
-    await tl.Tracelet.ready(const tl.Config(
-      app: tl.AppConfig(
-        stopOnTerminate: false,
-        startOnBoot: true,
-        // Native timer (keeps running with the screen off / app in the
-        // background, unlike a Dart Timer): one position every 3 minutes.
-        heartbeatInterval: 180,
-      ),
-      geo: tl.GeoConfig(
-        desiredAccuracy: tl.DesiredAccuracy.high,
-        distanceFilter: 0.0, // Force 0.0 distance filter so OS delivers location updates continuously when stationary
-        filter: tl.LocationFilter(
-          rejectMockLocations: kDebugMode ? false : true,
-        ),
-      ),
-      motion: tl.MotionConfig(
-        // Never switch to "stationary": in that mode the plugin stops asking
-        // for GPS, iOS then suspends the app and nothing (not even the
-        // heartbeat) runs until the driver opens it. Updates keep flowing, the
-        // app is kept alive, and uploads are still limited to one per 3 minutes.
-        disableStopDetection: true,
-        stationaryPeriodicInterval: 180,
-      ),
-      android: tl.AndroidConfig(
-        foregroundService: tl.ForegroundServiceConfig(
-          notificationTitle: 'Tachyo',
-          notificationText: 'Shift active. Tracking location in background.',
-        ),
-      ),
-    ));
+    // Same config as app start (see LocationService.trackingConfig).
+    await tl.Tracelet.ready(LocationService.trackingConfig);
 
     // Heartbeat: upload the latest known position even if the phone is still
     // and no new GPS fix arrived (the gap that showed as "no signal").
@@ -324,6 +296,32 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
     });
 
     await tl.Tracelet.start();
+    // start() is a no-op when tracking is already running (e.g. resumed at
+    // launch), so it can't be relied on to leave the stationary state: force
+    // "moving" so GPS stays on and iOS keeps the app alive in the background.
+    try {
+      await tl.Tracelet.changePace(true);
+    } catch (e) {
+      debugPrint('Tracelet.changePace failed: $e');
+    }
+  }
+
+  /// Switches native tracking off when there is no shift but it is still
+  /// running — e.g. the office ended the shift while the app was closed and
+  /// launching resumed the old session. Otherwise GPS (and the blue location
+  /// indicator) would stay on after the shift.
+  Future<void> _stopOrphanedTracking() async {
+    if (kIsWeb) return;
+    try {
+      if (!(await tl.Tracelet.getState()).enabled) return;
+      _traceletSubscription?.cancel();
+      _traceletSubscription = null;
+      _heartbeatSubscription?.cancel();
+      _heartbeatSubscription = null;
+      await tl.Tracelet.stop();
+    } catch (e) {
+      debugPrint('Stopping leftover tracking failed: $e');
+    }
   }
 
   Future<void> _stopBackgroundTrackingService() async {
@@ -870,6 +868,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
       } else {
         state = state.copyWith(clearActiveShift: true);
         _stopGpsPingTimer();
+        await _stopOrphanedTracking();
       }
     } catch (e) {
       state = state.copyWith(errorMessage: 'Could not load active shift state');
@@ -1485,6 +1484,7 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
                 lastCompletedShift: completedShift ?? state.lastCompletedShift,
               );
               _stopGpsPingTimer();
+              unawaited(_stopBackgroundTrackingService());
             }
           } else {
             final activeShift = DriverShift.fromJson(activeShiftMap);
@@ -1503,8 +1503,14 @@ class ShiftNotifier extends StateNotifier<ShiftState> {
                 state.activeShift?.nightOutStatus != activeShift.nightOutStatus ||
                 state.activeShift?.nightOutAmount != activeShift.nightOutAmount) {
               debugPrint('Active shift or Night Out status updated: ${activeShift.nightOutStatus}');
+              final isNewShift = state.activeShift?.id != activeShift.id;
               state = state.copyWith(activeShift: activeShift);
               _startGpsPingTimer();
+              // A shift that didn't start through clockIn()/loadActiveShift()
+              // (e.g. opened by the office) still needs background tracking.
+              if (isNewShift && !kIsWeb) {
+                unawaited(_startBackgroundTrackingService(driverId, activeShift.id));
+              }
               
               final pos = state.currentPosition;
               if (pos != null) {

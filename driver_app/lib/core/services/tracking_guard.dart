@@ -13,6 +13,10 @@ class TrackingHealth {
   final bool servicesOn;
   final bool always;
   final bool permanentlyDenied;
+
+  /// iPhone "Precise Location". With it off every fix is 1-3 km out, the
+  /// tracker discards them all and no pings reach the office.
+  final bool precise;
   final bool batteryOk;
   final bool notificationsOk;
 
@@ -20,22 +24,24 @@ class TrackingHealth {
     required this.servicesOn,
     required this.always,
     required this.permanentlyDenied,
+    required this.precise,
     required this.batteryOk,
     required this.notificationsOk,
   });
 
-  static const healthyOnWeb = TrackingHealth(servicesOn: true, always: true, permanentlyDenied: false, batteryOk: true, notificationsOk: true);
+  static const healthyOnWeb = TrackingHealth(servicesOn: true, always: true, permanentlyDenied: false, precise: true, batteryOk: true, notificationsOk: true);
 
   /// Everything a shift needs to be tracked reliably. Notifications are
   /// recommended (they carry the "tracking stopped" warning) but don't
   /// block clocking in.
-  bool get healthy => servicesOn && always && batteryOk;
+  bool get healthy => servicesOn && always && precise && batteryOk;
 }
 
 class TrackingGuard {
   TrackingGuard._();
 
   static bool get _isAndroid => !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  static bool get isIOS => !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
 
   static Future<TrackingHealth> check() async {
     if (kIsWeb) return TrackingHealth.healthyOnWeb;
@@ -48,6 +54,8 @@ class TrackingGuard {
         servicesOn: provider.enabled,
         always: auth == tl.AuthorizationStatus.always,
         permanentlyDenied: auth == tl.AuthorizationStatus.deniedForever,
+        // Only iOS reports this reliably; Android counts as precise.
+        precise: !isIOS || provider.accuracyAuthorization == tl.AccuracyAuthorization.full,
         batteryOk: battery,
         notificationsOk: notif == tl.NotificationAuthorizationStatus.granted,
       );
@@ -70,6 +78,12 @@ class TrackingGuard {
     if (status != tl.AuthorizationStatus.always) {
       await tl.Tracelet.openAppSettings();
     }
+  }
+
+  /// Precise Location is switched on in the app's own Location settings.
+  static Future<void> openAppSettings() async {
+    if (kIsWeb) return;
+    await tl.Tracelet.openAppSettings();
   }
 
   static Future<void> openLocationSettings() async {

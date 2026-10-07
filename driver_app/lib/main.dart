@@ -1,10 +1,13 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/theme.dart';
 import 'config/router.dart';
+import 'core/network/supabase_service.dart';
 import 'core/services/entrance_gate.dart';
 import 'core/services/location_service.dart';
+import 'features/shift/presentation/shift_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,18 +34,26 @@ Future<void> main() async {
   );
 }
 
-class DriverApp extends StatefulWidget {
+class DriverApp extends ConsumerStatefulWidget {
   const DriverApp({super.key});
 
   @override
-  State<DriverApp> createState() => _DriverAppState();
+  ConsumerState<DriverApp> createState() => _DriverAppState();
 }
 
-class _DriverAppState extends State<DriverApp> with WidgetsBindingObserver {
+class _DriverAppState extends ConsumerState<DriverApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // Start the shift manager (which uploads the GPS pings) as soon as a
+    // signed-in driver's app launches, not only once the home screen opens.
+    // When iOS relaunches Tachyo in the background mid-shift no screen is
+    // ever shown, so without this nothing would send the pings.
+    if (!kIsWeb && SupabaseService.isAuthenticated) {
+      ref.read(shiftProvider);
+    }
   }
 
   @override
