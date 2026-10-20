@@ -3,7 +3,7 @@ import 'legal_compliance_screen.dart';
 
 /// Consolidated legal review for the login/onboarding screen — a single
 /// continuous vertical scroll through every document in [policyPages]
-/// (Master SaaS Terms, Privacy Notice, DPA, Telematics Policy), each
+/// (Driver Privacy Notice, App Terms of Use, Telematics & GPS Policy), each
 /// under its own sticky section header. Deliberately not the paginated
 /// swipe-through-one-document-at-a-time LegalComplianceScreen used by
 /// Settings → Legal & Compliance — that one stays for a driver revisiting
@@ -12,20 +12,11 @@ import 'legal_compliance_screen.dart';
 ///
 /// No forced "scroll to the bottom to continue" gate and no bottom
 /// sticky action bar — closing or accepting is a plain header button,
-/// available immediately. A driver who already knows the terms
-/// shouldn't have to scroll past four documents to get back to login.
+/// available immediately.
 ///
-/// Reuses the exact same real legal text as LegalComplianceScreen (via
-/// the shared `policyPages` list) rather than duplicating it — nothing
-/// here is separately-maintained copy that could drift out of sync.
-///
-/// A spec that asked for this screen named 5 documents, including a
-/// standalone "Commercial Refund & Data Purge Policy". The real legal
-/// text only has 4 documents; the refund/data-purge terms already live
-/// inside sections of the Master SaaS Terms and the DPA (both have their
-/// own "Termination & Data Purge" clauses) rather than as a separate
-/// instrument, so this screen presents the 4 real documents rather than
-/// inventing a 5th one with fabricated legal text.
+/// Reuses the exact same text as LegalComplianceScreen (via the shared
+/// `policyPages` list) rather than duplicating it — nothing here is
+/// separately-maintained copy that could drift out of sync.
 class LegalReviewScreen extends StatelessWidget {
   const LegalReviewScreen({super.key});
 
